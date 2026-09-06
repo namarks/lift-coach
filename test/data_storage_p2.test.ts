@@ -32,9 +32,11 @@ function payload(rows: unknown[]): Fetcher {
 async function freshUser(): Promise<string> {
   const id = crypto.randomUUID();
   await env.DB.prepare(
-    'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,NULL,?3,?4)',
+    `INSERT INTO users
+       (id,apple_sub,email,display_name,created_at,intervals_api_key,intervals_athlete_id)
+     VALUES (?1,?2,NULL,?3,?4,?5,?6)`,
   )
-    .bind(id, `sub-${id}`, 'P2 Rider', Date.now())
+    .bind(id, `sub-${id}`, 'P2 Rider', Date.now(), `key-${id}`, `athlete-${id}`)
     .run();
   return id;
 }
@@ -123,7 +125,7 @@ describe('P2 intervals cache write elision', () => {
     }
   });
 
-  it('events: raw-only provider drift writes zero rows and preserves raw and synced_at', async () => {
+  it('events: raw-only provider drift writes only freshness and preserves cache raw/synced_at', async () => {
     const userId = await freshUser();
     const firstResponse = plannedEvent({
       provider_revision: 1,
@@ -158,7 +160,9 @@ describe('P2 intervals cache write elision', () => {
       fetcher: payload([secondResponse]),
     });
     expect(result).toMatchObject({ status: 'ok', synced: 1 });
-    expect(observed.usage.rows_written).toBe(0);
+    // P2 cache rows remain untouched; P4 records one successful-poll
+    // freshness write on users so a later cron can skip this cache.
+    expect(observed.usage.rows_written).toBe(1);
 
     const after = await env.DB.prepare(
       'SELECT raw, synced_at FROM external_events WHERE id = ?1',
@@ -193,8 +197,9 @@ describe('P2 intervals cache write elision', () => {
       today: TODAY,
       fetcher: payload([changedResponse]),
     });
-    // One logical row mutation maintains the date and P2 cursor indexes.
-    expect(changed.usage.rows_written).toBe(3);
+    // One logical cache mutation maintains the date and P2 cursor indexes,
+    // plus P4's one users-row successful-poll freshness write.
+    expect(changed.usage.rows_written).toBe(4);
     const changedRow = await env.DB.prepare(
       'SELECT description, raw, synced_at FROM external_events WHERE id = ?1',
     )
@@ -230,7 +235,7 @@ describe('P2 intervals cache write elision', () => {
       today: TODAY,
       fetcher: payload([resurrectionResponse]),
     });
-    expect(resurrected.usage.rows_written).toBe(3);
+    expect(resurrected.usage.rows_written).toBe(4);
     const liveAgain = await env.DB.prepare(
       'SELECT raw, synced_at, deleted_at FROM external_events WHERE id = ?1',
     )
@@ -243,7 +248,7 @@ describe('P2 intervals cache write elision', () => {
     expect(liveAgain!.raw).toBe(tombstone!.raw);
   });
 
-  it('activities: raw-only provider drift writes zero rows and preserves raw and synced_at', async () => {
+  it('activities: raw-only drift writes only freshness and preserves cache data', async () => {
     const userId = await freshUser();
     const firstResponse = completedActivity({
       provider_revision: 1,
@@ -276,7 +281,7 @@ describe('P2 intervals cache write elision', () => {
       fetcher: payload([secondResponse]),
     });
     expect(result).toMatchObject({ status: 'ok', synced: 1 });
-    expect(observed.usage.rows_written).toBe(0);
+    expect(observed.usage.rows_written).toBe(1);
 
     const after = await env.DB.prepare(
       'SELECT raw, synced_at FROM external_activities WHERE id = ?1',
@@ -311,7 +316,7 @@ describe('P2 intervals cache write elision', () => {
       today: TODAY,
       fetcher: payload([changedResponse]),
     });
-    expect(changed.usage.rows_written).toBe(3);
+    expect(changed.usage.rows_written).toBe(4);
     const changedRow = await env.DB.prepare(
       'SELECT average_watts, raw, synced_at FROM external_activities WHERE id = ?1',
     )
@@ -347,7 +352,7 @@ describe('P2 intervals cache write elision', () => {
       today: TODAY,
       fetcher: payload([resurrectionResponse]),
     });
-    expect(resurrected.usage.rows_written).toBe(3);
+    expect(resurrected.usage.rows_written).toBe(4);
     const liveAgain = await env.DB.prepare(
       'SELECT raw, synced_at, deleted_at FROM external_activities WHERE id = ?1',
     )

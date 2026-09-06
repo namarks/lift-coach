@@ -118,15 +118,23 @@ webhookRoutes.post('/intervals', async (c) => {
         for (const userId of eventsToSync) {
           try {
             await syncExternalEvents(env.DB, env, { userId });
-          } catch (e) {
-            console.error('webhook syncExternalEvents failed', userId, e);
+          } catch (error) {
+            console.error({
+              event: 'intervals_webhook_sync_failed',
+              cache: 'events',
+              error_type: error instanceof Error ? error.name : 'unknown',
+            });
           }
         }
         for (const userId of activitiesToSync) {
           try {
             await syncExternalActivities(env.DB, env, { userId });
-          } catch (e) {
-            console.error('webhook syncExternalActivities failed', userId, e);
+          } catch (error) {
+            console.error({
+              event: 'intervals_webhook_sync_failed',
+              cache: 'activities',
+              error_type: error instanceof Error ? error.name : 'unknown',
+            });
           }
         }
       })(),

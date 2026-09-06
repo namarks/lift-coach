@@ -111,6 +111,12 @@ export interface User {
    * the env-seed/fallback back-off and the `needs_reauth` profile flag (0023).
    */
   intervals_auth_error_at: number | null;
+  /** Monotonic fence for intervals provider identity changes and disconnects. */
+  intervals_credential_generation: number;
+  /** Last successful planned-events reconcile for the current credential identity. */
+  intervals_events_synced_at: number | null;
+  /** Last successful completed-activities reconcile for the current credential identity. */
+  intervals_activities_synced_at: number | null;
   /**
    * Per-user MCP passphrase (M3 multi-tenant, 0025). PBKDF2-SHA256 hash +
    * per-user salt; never plaintext. NULL → no passphrase set, so this user
