@@ -2751,6 +2751,7 @@ export interface PlanWriteAttribution {
   reason?: string | null;
   note?: string | null;
   noteAuthor?: 'claude' | 'nick';
+  result?: unknown;
 }
 
 /**
@@ -2789,14 +2790,14 @@ export function preparePlanSnapshotInsert(
                'exercises',json(COALESCE((
                  SELECT json_group_array(json(slot_document)) FROM (
                    SELECT json_object(
-                     'id',te.id,'exercise_id',te.exercise_id,'exercise_name',e.name,
+                     'id',te.id,'exercise_id',te.exercise_id,
                      'order_index',te.order_index,'target_sets',te.target_sets,
                      'target_reps',te.target_reps,'target_reps_max',te.target_reps_max,
                      'target_rpe',te.target_rpe,'rest_seconds',te.rest_seconds,
                      'target_weight',te.target_weight,'target_duration_s',te.target_duration_s,
                      'progression',te.progression,'cues',te.cues,'is_warmup',te.is_warmup
                    ) AS slot_document
-                   FROM template_exercises te JOIN exercises e ON e.id=te.exercise_id
+                   FROM template_exercises te
                    WHERE te.day_template_id=d.id
                    ORDER BY te.order_index,te.created_at,te.id
                  )), '[]'))
@@ -2866,7 +2867,9 @@ export function preparePlanWriteFinish(
         WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
     ).bind(plan.id, plan.user_id, nextVersion, nonce, uuid(), attribution.actor,
       attribution.operation, JSON.stringify(attribution.args ?? {}),
-      JSON.stringify({ plan_id: plan.id, version: nextVersion }), ts),
+      typeof attribution.result === 'string'
+        ? attribution.result
+        : JSON.stringify(attribution.result ?? { plan_id: plan.id, version: nextVersion }), ts),
   ];
   if (attribution.note) {
     statements.push(db.prepare(
@@ -2919,6 +2922,7 @@ export async function listPlanHistory(
       ORDER BY version DESC LIMIT ?4`,
   ).bind(userId, plan.id, beforeVersion ?? null, capped + 1).all<PlanSnapshotRow>();
   const visible = rows.results.slice(0, capped);
+  const exerciseNames = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.name]));
   const items = await Promise.all(visible.map(async (row) => {
     const prior = await db.prepare(
       `SELECT document FROM plan_snapshots
@@ -2926,7 +2930,7 @@ export async function listPlanHistory(
         ORDER BY version DESC LIMIT 1`,
     ).bind(userId, plan.id, row.version).first<{ document: string }>();
     const summary = prior
-      ? comparePlanSnapshots(parsePlanSnapshot(prior.document), parsePlanSnapshot(row.document)).summary
+      ? comparePlanSnapshots(parsePlanSnapshot(prior.document), parsePlanSnapshot(row.document), { exerciseNames }).summary
       : null;
     return {
       version: row.version, actor: row.actor, operation: row.operation,
@@ -2962,9 +2966,10 @@ export async function comparePlanVersions(
     if (!to) return { error: 'snapshot_not_found' as const };
     toDocument = to.parsed;
   }
+  const exerciseNames = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.name]));
   return {
     plan_id: plan.id, from_version: fromVersion, to_version: resolvedTo,
-    ...comparePlanSnapshots(from.parsed, toDocument),
+    ...comparePlanSnapshots(from.parsed, toDocument, { exerciseNames }),
   };
 }
 
@@ -3387,7 +3392,7 @@ export async function addDayTemplateAtVersion(
     ),
   ];
   const versionResultIndex = statements.length;
-  statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
+  statements.push(...preparePlanWriteFinish(db, plan, { ...attribution, result: row.id }, ts, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
   const inserted = results[2];
   const updatedPlan = results[versionResultIndex]?.results[0];
@@ -3650,7 +3655,7 @@ export async function addTemplateExercise(
     ).bind(slot.id, index, ts, plan.id, plan.user_id, plan.version, nonce)),
   ];
   const versionResultIndex = statements.length;
-  statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
+  statements.push(...preparePlanWriteFinish(db, plan, { ...attribution, result: row.id }, ts, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
   if ((results[0]?.meta.changes ?? 0) !== 1 || (results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
     throw new Error('plan_write_conflict');
@@ -5649,6 +5654,7 @@ export async function updatePlanTree(
     }[];
   },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_plan' },
+  retryConcurrentBootstrap = true,
 ): Promise<
   | { conflict: true; current_version: number }
   | { conflict: false; plan: PlanTree }
@@ -5680,6 +5686,7 @@ export async function updatePlanTree(
   });
   if (malformedDays.length > 0) return { error: 'invalid_fields', fields: malformedDays.sort() };
   let plan = await getActivePlan(db, userId);
+  let createsPlan = false;
   if (
     plan &&
     input.expected_version != null &&
@@ -5737,9 +5744,18 @@ export async function updatePlanTree(
   });
   if (invalidFields.size > 0) return { error: 'invalid_fields', fields: [...invalidFields].sort() };
   if (!plan) {
-    // Bootstrap only after the complete proposed tree has passed resolution
-    // and runtime validation. A rejected first write must not create state.
-    plan = (await ensureActivePlan(db, userId, input.name ?? 'My Plan')).plan;
+    // Build the candidate only after the complete proposed tree has passed
+    // resolution and runtime validation. Its INSERT joins the tree rebuild's
+    // transaction below, so a downstream failure cannot leave an empty plan.
+    const prior = await db.prepare(
+      'SELECT COALESCE(MAX(version),0) AS version FROM plans WHERE user_id=?1',
+    ).bind(userId).first<{ version: number }>();
+    const ts = now();
+    plan = {
+      id: uuid(), user_id: userId, name: input.name ?? 'My Plan', status: 'active',
+      version: (prior?.version ?? 0) + 1, meta: null, created_at: ts, updated_at: ts,
+    };
+    createsPlan = true;
   }
 
   // Capture the OLD day identity (id → name/label) before the rebuild so we
@@ -5892,9 +5908,18 @@ export async function updatePlanTree(
   // before-INSERT order failed FK the moment any real session or set_log
   // referenced a row being deleted.
   const nonce = uuid();
-  const stmts: D1PreparedStatement[] = [
-    ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-  ];
+  const stmts: D1PreparedStatement[] = createsPlan
+    ? [db.prepare(
+        `INSERT INTO plans
+           (id,user_id,name,status,version,meta,created_at,updated_at,plan_write_nonce)
+         SELECT ?1,?2,?3,'active',?4,NULL,?5,?5,?6
+          WHERE EXISTS (SELECT 1 FROM users u WHERE u.id=?2)
+            AND NOT EXISTS (SELECT 1 FROM account_deletion_intents i WHERE i.user_id=?2)
+            AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts r WHERE r.user_id=?2)
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+      ).bind(plan.id, userId, plan.name, -plan.version, ts, nonce)]
+    : [...preparePlanWriteStart(db, plan, attribution, ts, nonce)];
   // 1) INSERT new day_templates (parents) — coexist with old by id.
   input.days.forEach((d, di) => {
     const dayId = newDayIds[di]!;
@@ -6132,6 +6157,9 @@ export async function updatePlanTree(
   const documentUpdate = results[documentUpdateIndex];
   const versionUpdate = results[versionResultIndex];
   if ((claimed?.meta.changes ?? 0) !== 1 || (documentUpdate?.meta.changes ?? 0) !== 1 || !versionUpdate?.results[0]) {
+    if (createsPlan && retryConcurrentBootstrap) {
+      return updatePlanTree(db, userId, input, attribution, false);
+    }
     const current = await getActivePlan(db, userId);
     return { conflict: true, current_version: current?.version ?? plan.version };
   }

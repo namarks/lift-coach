@@ -40,7 +40,7 @@ describe('plan snapshots', () => {
     changed.days[0]!.exercises[0]!.target_weight = 145;
     const diff = comparePlanSnapshots(stored!.parsed, changed);
     expect(diff.summary.exercises_changed).toBe(1);
-    expect(diff.changes[0]?.path).toContain('exercises');
+    expect(diff.changes[0]?.path).toContain('Strength A');
   });
 
   it('restores a caller-owned snapshot as a new version and retains both versions', async () => {
@@ -96,5 +96,116 @@ describe('plan snapshots', () => {
     };
     expect(exported.schema_version).toBe(2);
     expect(exported.training.plan_snapshots).toHaveLength(2);
+  });
+
+  it('does not leave an empty plan when first-plan snapshot contribution fails', async () => {
+    const userId = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,display_name,created_at) VALUES (?1,?2,?3,?4)',
+    ).bind(userId, `sub-${userId}`, 'atomic bootstrap', Date.now()).run();
+    await env.DB.prepare(
+      `CREATE TRIGGER fail_bootstrap_snapshot BEFORE INSERT ON plan_snapshots
+       WHEN NEW.user_id='${userId}' BEGIN SELECT RAISE(ABORT,'snapshot_failure'); END`,
+    ).run();
+    try {
+      await expect(updatePlanTree(env.DB, userId, {
+        name: 'First plan',
+        days: [{ name: 'A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }],
+      })).rejects.toThrow();
+    } finally {
+      await env.DB.prepare('DROP TRIGGER fail_bootstrap_snapshot').run();
+    }
+    expect(await getPlanTree(env.DB, userId)).toBeNull();
+  });
+
+  it('rolls back the document, version, audit, and note when a result snapshot fails', async () => {
+    const { userId, plan } = await fixture('rollback');
+    const stored = await getPlanSnapshot(env.DB, userId, plan.id, plan.version);
+    await env.DB.prepare(
+      `INSERT INTO plan_snapshots
+       (id,user_id,plan_id,version,document,actor,operation,reason,created_at)
+       VALUES (?1,?2,?3,?4,?5,'system','collision',NULL,?6)`,
+    ).bind(crypto.randomUUID(), userId, plan.id, plan.version + 1,
+      stored!.document, Date.now()).run();
+    const beforeAudit = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM audit_log WHERE user_id=?1',
+    ).bind(userId).first<{ n: number }>();
+    const beforeNotes = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM notes WHERE user_id=?1',
+    ).bind(userId).first<{ n: number }>();
+    await expect(updatePlanTree(env.DB, userId, {
+      expected_version: plan.version,
+      days: [{ name: 'Should roll back', exercises: [{ exercise: 'squat', target_sets: 3, target_reps: 5 }] }],
+    }, { actor: 'mcp', operation: 'update_plan', note: 'Must not survive' })).rejects.toThrow();
+    const after = await getPlanTree(env.DB, userId);
+    expect(after?.version).toBe(plan.version);
+    expect(after?.days[0]?.name).toBe('Strength A');
+    expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_log WHERE user_id=?1').bind(userId).first<{ n: number }>())?.n)
+      .toBe(beforeAudit?.n);
+    expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM notes WHERE user_id=?1').bind(userId).first<{ n: number }>())?.n)
+      .toBe(beforeNotes?.n);
+  });
+
+  it('does not add history after account deletion has claimed the user', async () => {
+    const { userId, plan } = await fixture('deletion fence');
+    const before = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM plan_snapshots WHERE user_id=?1',
+    ).bind(userId).first<{ n: number }>();
+    await env.DB.prepare(
+      `INSERT INTO account_deletion_intents
+       (user_id,idempotency_key_sha256,apple_revocation,created_at)
+       VALUES (?1,?2,'manual_required',?3)`,
+    ).bind(userId, 'f'.repeat(64), Date.now()).run();
+    expect(await updatePlanTree(env.DB, userId, {
+      expected_version: plan.version,
+      days: [{ name: 'Blocked', exercises: [] }],
+    })).toMatchObject({ conflict: true });
+    expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM plan_snapshots WHERE user_id=?1').bind(userId).first<{ n: number }>())?.n)
+      .toBe(before?.n);
+    expect((await getPlanTree(env.DB, userId))?.version).toBe(plan.version);
+  });
+
+  it('preserves historical session and set values while safely detaching replaced refs', async () => {
+    const { userId, plan } = await fixture('historical refs');
+    const day = plan.days[0]!;
+    const slot = day.exercises[0]!;
+    const session = await getOrCreateSession(env.DB, userId, plan.id, '2026-08-01', day.id);
+    const setId = crypto.randomUUID();
+    await env.DB.prepare(
+      `INSERT INTO set_logs
+       (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,is_warmup,logged_at,source)
+       VALUES (?1,?2,?3,?4,1,135,5,0,?5,'ios')`,
+    ).bind(setId, session.id, slot.exercise_id, slot.id, Date.now()).run();
+    const changed = await updatePlanTree(env.DB, userId, {
+      expected_version: plan.version,
+      days: [{ name: 'Different', day_label: 'B', exercises: [
+        { exercise: 'squat', target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    if (!('plan' in changed)) throw new Error('changed_plan_failed');
+    const restored = await restorePlanSnapshot(env.DB, userId, {
+      plan_id: plan.id, snapshot_version: plan.version,
+      expected_version: changed.plan.version, actor: 'ios',
+    });
+    expect(restored).toMatchObject({ ok: true });
+    expect(await env.DB.prepare('SELECT day_template_id,date FROM sessions WHERE id=?1').bind(session.id).first())
+      .toEqual({ day_template_id: null, date: '2026-08-01' });
+    expect(await env.DB.prepare('SELECT template_exercise_id,weight,reps FROM set_logs WHERE id=?1').bind(setId).first())
+      .toEqual({ template_exercise_id: null, weight: 135, reps: 5 });
+  });
+
+  it('keeps a large canonical snapshot within a measured portable bound', async () => {
+    const { userId, plan } = await fixture('growth');
+    const stored = (await getPlanSnapshot(env.DB, userId, plan.id, plan.version))!.parsed;
+    stored.days = Array.from({ length: 50 }, (_, dayIndex) => ({
+      ...structuredClone(stored.days[0]!), id: crypto.randomUUID(), name: `Day ${dayIndex}`,
+      exercises: Array.from({ length: 20 }, (_, slotIndex) => ({
+        ...structuredClone(stored.days[0]!.exercises[0]!), id: crypto.randomUUID(),
+        order_index: slotIndex, cues: 'Controlled eccentric and consistent setup.',
+      })),
+    }));
+    const bytes = new TextEncoder().encode(JSON.stringify(stored)).byteLength;
+    expect(bytes).toBeGreaterThan(100_000);
+    expect(bytes).toBeLessThan(1_000_000);
   });
 });
