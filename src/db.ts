@@ -2934,6 +2934,24 @@ async function materializeSnapshotPlan(
   };
 }
 
+async function readCommittedSnapshotPlan(
+  db: D1Database,
+  base: PlanRow,
+  version: number,
+  updatedAt: number,
+): Promise<PlanTree | null> {
+  try {
+    const snapshot = await getPlanSnapshot(db, base.user_id, base.id, version);
+    return snapshot
+      ? await materializeSnapshotPlan(db, base, version, updatedAt, snapshot.parsed)
+      : null;
+  } catch {
+    // The mutation is already committed. A refresh failure must preserve its
+    // acknowledgement so callers do not retry and create another version.
+    return null;
+  }
+}
+
 export async function listPlanHistory(
   db: D1Database,
   userId: string,
@@ -3041,6 +3059,7 @@ export async function restorePlanSnapshot(
   | { ok: true; acknowledged: true; refresh_required: true; plan_id: string; restored_from_version: number; version: number }
   | { conflict: true; current_plan_id: string; current_version: number }
   | { error: 'snapshot_not_found' | 'active_workout' | 'no_active_plan' }
+  | PrescriptionValidationError
 > {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
@@ -3049,6 +3068,22 @@ export async function restorePlanSnapshot(
   }
   const snapshot = await getPlanSnapshot(db, userId, plan.id, input.snapshot_version);
   if (!snapshot) return { error: 'snapshot_not_found' };
+  const modalities = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.modality]));
+  const invalidFields = new Set<string>();
+  for (const day of snapshot.parsed.days) for (const slot of day.exercises) {
+    let progression: unknown = null;
+    try { progression = slot.progression == null ? null : JSON.parse(slot.progression); }
+    catch { invalidFields.add(`${day.day_label ?? day.name}/${slot.exercise_id}.progression`); }
+    const invalid = validateExercisePrescription({ ...slot, progression }, {
+      modality: modalities.get(slot.exercise_id),
+    });
+    for (const field of invalid?.fields ?? []) {
+      invalidFields.add(`${day.day_label ?? day.name}/${slot.exercise_id}.${field}`);
+    }
+  }
+  if (invalidFields.size > 0) {
+    return { error: 'invalid_fields', fields: [...invalidFields].sort() };
+  }
   const active = await db.prepare(
     `SELECT 1 FROM sessions
       WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
@@ -3151,8 +3186,8 @@ export async function restorePlanSnapshot(
     };
   }
   const restoredVersion = plan.version + 1;
-  const committed = await getPlanSnapshot(db, userId, plan.id, restoredVersion);
-  if (!committed) {
+  const committedPlan = await readCommittedSnapshotPlan(db, plan, restoredVersion, ts);
+  if (!committedPlan) {
     return {
       ok: true, acknowledged: true, refresh_required: true, plan_id: plan.id,
       restored_from_version: input.snapshot_version, version: restoredVersion,
@@ -3160,7 +3195,7 @@ export async function restorePlanSnapshot(
   }
   return {
     ok: true, plan_id: plan.id, restored_from_version: input.snapshot_version,
-    version: restoredVersion, plan: await materializeSnapshotPlan(db, plan, restoredVersion, ts, committed.parsed),
+    version: restoredVersion, plan: committedPlan,
   };
 }
 
@@ -6228,8 +6263,8 @@ export async function updatePlanTree(
     return { conflict: true, current_version: current?.version ?? plan.version };
   }
   const acknowledgedVersion = plan.version + 1;
-  const committed = await getPlanSnapshot(db, userId, plan.id, acknowledgedVersion);
-  if (!committed) {
+  const committedPlan = await readCommittedSnapshotPlan(db, plan, acknowledgedVersion, ts);
+  if (!committedPlan) {
     return {
       conflict: false, acknowledged: true, refresh_required: true,
       plan_id: plan.id, version: acknowledgedVersion,
@@ -6237,7 +6272,7 @@ export async function updatePlanTree(
   }
   return {
     conflict: false,
-    plan: await materializeSnapshotPlan(db, plan, acknowledgedVersion, ts, committed.parsed),
+    plan: committedPlan,
   };
 }
 
@@ -6629,6 +6664,7 @@ export async function adjustToday(
     };
   }
   const changes: string[] = [];
+  const computedInvalid = new Set<string>();
   const ts = now();
   const nonce = uuid();
   const stmts: D1PreparedStatement[] = [
@@ -6648,6 +6684,16 @@ export async function adjustToday(
         // assistance, but never let a small negative value round to zero.
         const w = Math.min(te.target_weight, rounded);
         if (w === te.target_weight) continue;
+        const invalid = validateExercisePrescription({
+          ...te, target_weight: w,
+          progression: te.progression == null ? null : JSON.parse(te.progression),
+        }, { modality: te.exercise_modality });
+        if (invalid) {
+          for (const field of invalid.fields) {
+            computedInvalid.add(`${d.day_label ?? d.name}/${te.exercise_name}.${field}`);
+          }
+          continue;
+        }
         stmts.push(
           db
             .prepare(`UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1
@@ -6658,6 +6704,16 @@ export async function adjustToday(
       } else {
         const s = Math.max(1, Math.round(te.target_sets * setF));
         if (s === te.target_sets) continue;
+        const invalid = validateExercisePrescription({
+          ...te, target_sets: s,
+          progression: te.progression == null ? null : JSON.parse(te.progression),
+        }, { modality: te.exercise_modality });
+        if (invalid) {
+          for (const field of invalid.fields) {
+            computedInvalid.add(`${d.day_label ?? d.name}/${te.exercise_name}.${field}`);
+          }
+          continue;
+        }
         stmts.push(
           db
             .prepare(`UPDATE template_exercises SET target_sets=?2, updated_at=?3 WHERE id=?1
@@ -6667,6 +6723,13 @@ export async function adjustToday(
         changes.push(`${d.day_label ?? d.name}/${te.exercise_name}: sets ${te.target_sets}→${s}`);
       }
     }
+  }
+  if (computedInvalid.size > 0) {
+    return {
+      error: 'invalid_fields', fields: [...computedInvalid].sort(), plan: tree,
+      changes: [], recurring: true,
+      affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: true,
+    };
   }
   if (changes.length) {
     const versionResultIndex = stmts.length;
@@ -6686,8 +6749,8 @@ export async function adjustToday(
       };
     }
     const committedVersion = tree.version + 1;
-    const committed = await getPlanSnapshot(db, userId, tree.id, committedVersion);
-    if (!committed) {
+    const committedPlan = await readCommittedSnapshotPlan(db, tree, committedVersion, ts);
+    if (!committedPlan) {
       return {
         plan: null, changes, recurring: true,
         affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: false,
@@ -6695,7 +6758,7 @@ export async function adjustToday(
       };
     }
     return {
-      plan: await materializeSnapshotPlan(db, tree, committedVersion, ts, committed.parsed),
+      plan: committedPlan,
       changes, recurring: true,
       affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: false,
     };

@@ -99,6 +99,36 @@ describe('plan snapshots', () => {
     expect((await getPlanTree(env.DB, userId))?.name).toBe('Concurrent second write');
   });
 
+  it('keeps a committed update acknowledged when its response snapshot read fails', async () => {
+    const { userId, plan } = await fixture('refresh failure');
+    let committed = false;
+    const failingRefreshDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'batch') return async (statements: D1PreparedStatement[]) => {
+          const result = await target.batch(statements);
+          committed = true;
+          return result;
+        };
+        if (property === 'prepare') return (sql: string) => {
+          if (committed && sql.includes('FROM plan_snapshots WHERE user_id')) {
+            throw new Error('injected_refresh_failure');
+          }
+          return target.prepare(sql);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as D1Database;
+    expect(await updatePlanTree(failingRefreshDb, userId, {
+      expected_version: plan.version, name: 'Committed despite refresh failure',
+      days: [{ name: 'A', exercises: [] }],
+    })).toMatchObject({
+      conflict: false, acknowledged: true, refresh_required: true,
+      plan_id: plan.id, version: plan.version + 1,
+    });
+    expect((await getPlanTree(env.DB, userId))?.version).toBe(plan.version + 1);
+  });
+
   it('restores a caller-owned snapshot as a new version and retains both versions', async () => {
     const { userId, plan } = await fixture('restore');
     const changed = await updatePlanTree(env.DB, userId, {
@@ -321,6 +351,18 @@ describe('plan snapshots', () => {
       .toMatchObject({ error: 'invalid_fields' });
     expect((await getPlanTree(env.DB, invalidFixture.userId))?.version).toBe(invalidFixture.plan.version);
 
+    const overflow = await fixture('adjustment overflow');
+    const overflowPlan = await updatePlanTree(env.DB, overflow.userId, {
+      expected_version: overflow.plan.version,
+      days: [{ name: 'Assisted', exercises: [
+        { exercise: 'pull-up', target_sets: 3, target_reps: 5, target_weight: -Number.MAX_VALUE },
+      ] }],
+    });
+    if (!('plan' in overflowPlan)) throw new Error('overflow_plan_failed');
+    expect(await adjustToday(env.DB, overflow.userId, 'reduce_intensity'))
+      .toMatchObject({ error: 'invalid_fields', fields: [expect.stringContaining('target_weight')] });
+    expect((await getPlanTree(env.DB, overflow.userId))?.version).toBe(overflowPlan.plan.version);
+
     const raced = await fixture('adjustment race');
     let injected = false;
     const racingDb = new Proxy(env.DB, {
@@ -343,5 +385,33 @@ describe('plan snapshots', () => {
     }) as D1Database;
     expect(await adjustToday(racingDb, raced.userId, 'reduce_volume'))
       .toMatchObject({ conflict: true, current_version: raced.plan.version + 1 });
+  });
+
+  it('refuses to restore an invalid legacy baseline after a valid repair', async () => {
+    const { userId, plan } = await fixture('invalid restore');
+    const slot = plan.days[0]!.exercises[0]!;
+    await env.DB.prepare('DELETE FROM plan_snapshots WHERE plan_id=?1').bind(plan.id).run();
+    await env.DB.prepare('UPDATE template_exercises SET target_sets=?2,target_rpe=?3 WHERE id=?1')
+      .bind(slot.id, 'three', 99).run();
+    const repaired = await updatePlanTree(env.DB, userId, {
+      expected_version: plan.version,
+      days: [{ name: 'Strength A', day_label: 'A', exercises: [
+        { exercise: 'bench', target_sets: 3, target_reps: 5, target_rpe: 8 },
+      ] }],
+    });
+    if (!('plan' in repaired)) throw new Error('repair_failed');
+    const beforeAudit = await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_log WHERE user_id=?1')
+      .bind(userId).first<{ n: number }>();
+    const beforeSnapshots = await env.DB.prepare('SELECT COUNT(*) AS n FROM plan_snapshots WHERE user_id=?1')
+      .bind(userId).first<{ n: number }>();
+    expect(await restorePlanSnapshot(env.DB, userId, {
+      plan_id: plan.id, snapshot_version: plan.version,
+      expected_version: repaired.plan.version, actor: 'ios',
+    })).toMatchObject({ error: 'invalid_fields' });
+    expect((await getPlanTree(env.DB, userId))?.version).toBe(repaired.plan.version);
+    expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_log WHERE user_id=?1').bind(userId).first<{ n: number }>())?.n)
+      .toBe(beforeAudit?.n);
+    expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM plan_snapshots WHERE user_id=?1').bind(userId).first<{ n: number }>())?.n)
+      .toBe(beforeSnapshots?.n);
   });
 });
