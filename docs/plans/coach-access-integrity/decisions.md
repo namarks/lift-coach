@@ -125,8 +125,10 @@ Worker version **`58d830ac-6a1f-4bf7-adeb-8b19c6bcba94`**, created at
 Its annotation contains the exact approved source and tree. `/health`, OAuth
 authorization-server discovery and protected-resource discovery returned HTTP
 200. A second Sol agent independently verified the version, source annotation,
-migration ledger, disabled policy and unchanged source fence. Every verification
-SELECT reported `changed_db=false` and `rows_written=0`.
+migration ledger, disabled policy and unchanged source fence. Every source/schema
+verification SELECT in that independent check reported `changed_db=false` and
+`rows_written=0`. The later prescription diagnostic's import-transport metadata
+caveat is recorded separately in the [prescription evidence](../prescription-integrity/decisions.md).
 
 The authenticated read check remains **unexercised**. Computer-use inventory
 reported a locked Mac; a normal Claude CLI attempt with read-only tools allowed
