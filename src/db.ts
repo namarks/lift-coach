@@ -6012,9 +6012,15 @@ export async function adjustToday(
   intent: 'deload' | 'reduce_volume' | 'reduce_intensity',
   magnitude: 'light' | 'moderate' | 'heavy' = 'moderate',
   dayLabel?: string,
-): Promise<{ plan: PlanTree | null; changes: string[] }> {
+): Promise<{
+  plan: PlanTree | null;
+  changes: string[];
+  recurring: true;
+  affected_workouts: string[];
+  no_op: boolean;
+}> {
   const tree = await getPlanTree(db, userId);
-  if (!tree) return { plan: null, changes: [] };
+  if (!tree) return { plan: null, changes: [], recurring: true, affected_workouts: [], no_op: true };
   const setF = { light: 0.8, moderate: 0.65, heavy: 0.5 }[magnitude];
   const wtF = { light: 0.95, moderate: 0.9, heavy: 0.85 }[magnitude];
   const days = dayLabel
@@ -6035,7 +6041,8 @@ export async function adjustToday(
         const rounded = Math.round(scaled / 5) * 5;
         // Keep the existing five-pound convention when it increases
         // assistance, but never let a small negative value round to zero.
-        const w = assisted ? Math.min(te.target_weight, rounded) : rounded;
+        const w = Math.min(te.target_weight, rounded);
+        if (w === te.target_weight) continue;
         stmts.push(
           db
             .prepare('UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1')
@@ -6044,6 +6051,7 @@ export async function adjustToday(
         changes.push(`${d.day_label ?? d.name}/${te.exercise_id}: weight ${te.target_weight}→${w}`);
       } else {
         const s = Math.max(1, Math.round(te.target_sets * setF));
+        if (s === te.target_sets) continue;
         stmts.push(
           db
             .prepare('UPDATE template_exercises SET target_sets=?2, updated_at=?3 WHERE id=?1')
@@ -6059,9 +6067,15 @@ export async function adjustToday(
         .prepare('UPDATE plans SET version = version + 1, updated_at = ?2 WHERE id = ?1')
         .bind(tree.id, ts),
     );
-    await db.batch(stmts);
+    await runWorkoutWriteBatch(db, stmts);
   }
-  return { plan: await getPlanTree(db, userId), changes };
+  return {
+    plan: await getPlanTree(db, userId),
+    changes,
+    recurring: true,
+    affected_workouts: days.map((day) => day.day_label ?? day.name),
+    no_op: changes.length === 0,
+  };
 }
 
 const epley = (w: number, r: number) => Math.round(w * (1 + r / 30) * 10) / 10;

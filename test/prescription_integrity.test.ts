@@ -1,6 +1,7 @@
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  adjustToday,
   getActivePlan,
   getPlanTree,
   updateExercise,
@@ -124,5 +125,37 @@ describe('prescription integrity', () => {
       updateExercise(env.DB, userId, { template_exercise_id: slot.id }, { cues: 'new' }),
     ]);
     expect((await getPlanTree(env.DB, userId))!.days[0]!.exercises[0]).toMatchObject({ target_weight: 110, cues: 'new' });
+  });
+
+  it('never makes an intensity or volume reduction harder and reports no-ops', async () => {
+    const userId = await user('monotonic-adjustment');
+    await updatePlanTree(env.DB, userId, {
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'bench', target_sets: 1, target_reps: 5, target_weight: 4 },
+        { exercise: 'dumbbell curl', target_sets: 3, target_reps: 8, target_weight: 7.5 },
+        { exercise: 'pull-up', target_sets: 3, target_reps: 5, target_weight: -30 },
+        { exercise: 'chin-up', target_sets: 3, target_reps: 5, target_weight: -1 },
+        { exercise: 'squat', target_sets: 3, target_reps: 5, target_weight: 0 },
+      ] }],
+    });
+    const before = (await getActivePlan(env.DB, userId))!.version;
+    const intensity = await adjustToday(env.DB, userId, 'reduce_intensity', 'moderate', 'A');
+    expect(intensity).toMatchObject({ recurring: true, affected_workouts: ['A'], no_op: false });
+    const weights = intensity.plan!.days[0]!.exercises.map((slot) => slot.target_weight);
+    expect(weights).toEqual([4, 5, -35, -1, 0]);
+    expect(intensity.changes).toHaveLength(2);
+    expect(intensity.plan!.version).toBe(before + 1);
+
+    const oneSetOnly = await updatePlanTree(env.DB, userId, {
+      expected_version: intensity.plan!.version,
+      days: [{ name: 'A', day_label: 'A', exercises: [
+        { exercise: 'bench', target_sets: 1, target_reps: 5, target_weight: 4 },
+      ] }],
+    });
+    expect('conflict' in oneSetOnly && oneSetOnly.conflict).toBe(false);
+    const oneSetVersion = (await getActivePlan(env.DB, userId))!.version;
+    const volume = await adjustToday(env.DB, userId, 'reduce_volume', 'heavy', 'A');
+    expect(volume).toMatchObject({ no_op: true, changes: [], recurring: true, affected_workouts: ['A'] });
+    expect(volume.plan!.version).toBe(oneSetVersion);
   });
 });
