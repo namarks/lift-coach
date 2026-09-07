@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: planned · Updated: 2026-09-05 · Theme: gym-floor
+Slug: workout-library · Status: planned · Updated: 2026-09-07 · Theme: gym-floor
 
 ## Goal
 
@@ -69,6 +69,9 @@ No second editor, no per-session template copies, no weeks table.
     "day template" is described as a library workout that the schedule may
     reference.
 - [ ] **P1 — Library metadata: tags and archive**
+  - Reuse prescription-integrity's validated atomic writer contract for every
+    new metadata mutation, including conflicts and audit. P0 presentation work
+    remains independent of this backend prerequisite.
   - Add `day_templates.tags` (JSON array of short strings such as `travel`,
     `quick`, `bodyweight`, `hotel`) and `day_templates.archived_at`
     (nullable epoch-ms) in one migration. Both are plan-tree fields: every
@@ -135,13 +138,17 @@ No second editor, no per-session template copies, no weeks table.
     the same idempotent `POST /api/sessions/{id}/sets` with
     `template_exercise_id = NULL`.
   - **Save as workout** converts a completed freestyle session into a library
-    workout: one `add_day` call with slots derived from the logged sets
-    (distinct exercises in first-logged order, `target_sets` = working sets
-    logged). Derivation branches on the logged shape: sets with `is_timed`
-    produce a timed slot with `target_duration_s` = median `duration_s` and
-    no rep target; rep sets produce `target_reps` = median reps and
-    `target_weight` = top working weight; a cardio-modality exercise follows
-    the timed branch. Warm-up sets are excluded from the derivation. The
+    workout: one `add_day` call with member-reviewed slots derived from
+    compatible exercise, execution-mode and external-load cohorts in
+    first-logged order. `target_sets` is the cohort's working-set count.
+    A timed cohort defaults duration to its median observed duration, rounded
+    to a valid positive integer number of seconds and shown for review, with no
+    rep target; a rep cohort defaults reps to its median observed reps, rounded
+    to a valid integer and shown for review. Load comes from that same cohort,
+    never the maximum from incompatible sets. Cardio follows the timed branch.
+    Separate mixed cohorts into slots or require an explicit member target
+    selection before saving; do not merge them by exercise identity alone.
+    Warm-up sets are excluded from the derivation. The
     new workout is unscheduled and, on the same write, the session is
     re-pointed at it so history attaches to the library entry. The re-point
     is an assignment change, so the same write advances `sessions.attempt`
@@ -151,6 +158,12 @@ No second editor, no per-session template copies, no weeks table.
     the new workout's id, so a retry after a lost response returns the same
     workout and the already-advanced attempt instead of creating a second
     workout or bumping again. This is a plan-tree write and audits normally.
+  - Before saving, show an editable derived prescription with its provenance.
+    Do not silently combine median reps from one load/assistance condition with
+    the highest weight from a different set and present that pair as performed
+    or recommended. Mixed timed/rep, assistance/strict/added-load and variation
+    cases must remain separate or require an explicit target selection. Pass
+    the chosen prescription through the same runtime validator as other writes.
   - MCP: `log_set` on a date with no session creates a freestyle session
     when the date has no scheduled workout, instead of a null-template
     planned session, and the coach brief names it as such.
@@ -163,6 +176,8 @@ No second editor, no per-session template copies, no weeks table.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P1 | blocked_by | plan:prescription-integrity#P1 | New authoring metadata must share validated atomic mutation/version/audit semantics. |
+| P2 | blocked_by | plan:prescription-integrity#P1 | Save-as-workout creates a prescription and session reassignment at a proven commit boundary. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P1 | coordinates_with | plan:reversible-plan-management#P0 | Snapshots must serialize `tags` and `archived_at`; land whichever ships second against the other's serializer. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `day_templates` columns and serializers; whichever lands second rebases onto the other's migration. |

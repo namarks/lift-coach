@@ -191,6 +191,8 @@ Two model corrections that the workout library exposed:
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P0 | gated_by | external:owner-workout-rename-rollout | The existing Next step requires acceptance of the compatibility window and three-release rename rollout; encode it rather than leave it only in prose. |
+| P1 | blocked_by | plan:prescription-integrity#P1 | Additional-session authoring must preserve the repaired mutation/version/audit contract. |
 | P0 | coordinates_with | plan:reversible-plan-management#P0 | Snapshot serialization must use one set of names; agree on `workouts`/`workout_id` before either ships. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the Today runner surface; share the slice, do not fork the runner. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
@@ -203,6 +205,12 @@ expand-contract rollout for the rename. P1 waits on P0 and on a member who actua
 sessions in a day; keep it planned until then.
 
 ## Notes / open questions
+
+- The [September app review](../../reviews/2026-09-app-review/report.md)
+  recommends deferring the storage/wire rename behind prescription fidelity,
+  feedback and library P0. The owner-requested naming outcome is retained;
+  its three-release compatibility cost has no immediate workout benefit and
+  is not a prerequisite for those fixes. Library UI language can change now.
 
 - Source: owner request (2026-09-05) following the workout-library plan,
   which recorded both items as constraints it did not address.

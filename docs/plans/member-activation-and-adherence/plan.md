@@ -1,6 +1,6 @@
 # Member Activation and Adherence
 
-Slug: member-activation-and-adherence · Status: planned · Updated: 2026-08-28 · Theme: gym-floor
+Slug: member-activation-and-adherence · Status: planned · Updated: 2026-09-07 · Theme: gym-floor
 
 ## Goal
 
@@ -16,9 +16,18 @@ correct workout.
   - Preserve invite and Coach Connect intent through sign-in, then return the
     member to the intended group or setup action instead of a generic home
     screen.
-  - Replace the dead-end no-plan state with two first-class choices: build a
-    workout manually or connect a coach. Explain what each path does and allow
-    either one to be completed later.
+  - Keep the shipped manual-builder CTA and add a direct coach setup choice.
+    Explain both paths and allow either one to be completed later. Reconcile
+    signed-out/onboarding/Profile copy: independent and invited members already
+    have personal Coach Connect; do not say it is coming soon or that a group
+    owner's coach controls another member's plan.
+  - Distinguish a verified empty account from initial read failure and cached
+    stale state. A cold offline/500 response must offer retry without claiming
+    that the member has no plan or encouraging a duplicate replacement.
+  - Keep pending invite/coach intent across sign-in and onboarding. Bind async
+    step completions to the step that started them so a delayed result after
+    Skip cannot advance a different step. Verify owner, invited, independent,
+    manual-only and coach-connected entry with the shared synthetic fixtures.
   - Verify the invite, manual, and coach-connected paths through focused
     end-to-end walkthroughs from entry to first completed workout; fix concrete
     breaks without adding an activation analytics system.
@@ -54,6 +63,10 @@ backlog. P2 evidence and recommendation remain ungated; only P2(a) waits on the
 starter-plan product decision.
 
 ## Notes / open questions
+
+- The [September app review](../../reviews/2026-09-app-review/report.md)
+  revalidated the working manual entry path. P0 closes remaining intent,
+  capability-copy and error-state gaps rather than rebuilding manual authoring.
 
 - P0 does not require a user to choose between AI and manual control forever.
   Both paths converge on the same active plan and can be used later.

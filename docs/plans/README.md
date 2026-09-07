@@ -93,6 +93,12 @@ recoverable before adding product depth.
 
 - [Reversible plan management](reversible-plan-management/plan.md) —
   **planned**; make coach and manual plan changes inspectable and reversible.
+- [Coach access integrity](coach-access-integrity/plan.md) — **planned**;
+  make code redemption/refresh atomic and add scoped grant replay/revocation
+  behavior with an explicit lifecycle transition.
+- [Prescription integrity](prescription-integrity/plan.md) — **planned**;
+  reject invalid targets, preserve concurrent edits and make reductions honest
+  before expanding plan authoring.
 
 ### Coaching (`coaching`)
 
@@ -127,9 +133,9 @@ AI coaching.
   only after the round, authored by the member or Claude, without changing
   how sets log or roll up.
 - [Bodyweight training support](bodyweight-training-support/plan.md) —
-  **planned**; make holds, rep ranges, added load, assistance, and rep-based
-  history first-class for calisthenics and bodyweight-first members, and seed
-  the missing gymnastic-strength movements.
+  **active**; holds/catalog and signed-load support are delivered. Variation
+  swaps remain at P2, now blocked on prescription integrity; P3 corrects
+  comparisons across assistance/load conditions and unsupported e1RM claims.
 
 ### Connected training (`connected-training`)
 
@@ -142,6 +148,25 @@ integration or social breadth.
 - [Group experience and governance](group-experience-and-governance/plan.md) —
   **planned**; deliver a correct feed, durable invites, lightweight reactions
   and notifications, and essential group controls.
+
+### Platform (`platform`)
+
+Keep the application verifiable and responsive as its history and feature set
+grow, without changing the product data model.
+
+- [App quality and maintainability](app-quality-and-maintainability/plan.md) —
+  **planned**; make iOS checks repeatable, verify accessible core journeys and
+  improve measured client costs through bounded module extraction.
+
+### Review-driven ordering
+
+The [September app review](../reviews/2026-09-app-review/report.md) recommends
+coach-access and prescription integrity, runner prescription fidelity, and
+feedback before more authoring depth. Comparable metrics, accessible journeys
+and repeatable iOS checks complete that foundation. Library P0 remains a small
+independent presentation improvement; storage/wire rename, multiple sessions
+and engagement features follow their existing decisions and demonstrated need.
+This order does not activate planned work or replace canonical phase readiness.
 
 ## Adding a workstream
 
