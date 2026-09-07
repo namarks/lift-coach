@@ -3,6 +3,53 @@
 Supporting material for [`plan.md`](plan.md). This file records owner
 decisions and measured baselines; it carries no live checklist.
 
+## 2026-09-06 — P4.7 privacy-safe read-only production preflight
+
+The current authoritative ledger reports migrations `0036` through `0039`
+pending. The active 100% Worker remains version
+`1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`, annotated with exact source
+`079f0359c898935c68513db74bba384bce260c0c` and tree
+`fec23bff1cb94a83d55eb297a64dac458b2a16f9`. D1 remains 1,462,272 bytes.
+
+Aggregate status found no release-blocking condition under the plan's aggregate
+preflight criteria. Exact personal/auth counts and state were intentionally
+omitted from this public repository record. Every query was aggregate and
+read-only: `changed_db=false`,
+`rows_written=0`. No user identifier or credential value was returned, logged,
+or retained, and no provider or Worker route was called.
+
+This preflight does not authorize a migration, deploy, fence activation,
+credential-state mutation, reconciliation, or provider call. The documented
+possibility that an already-sent OAuth refresh may rotate provider state and
+require reconnect remains part of the owner gate, and the aggregate status must
+be checked again in the authorized maintenance window before any mutation.
+
+## 2026-09-06 — P4.6 repository delivery and remaining owner gates
+
+PR #135 delivered the inert-until-enabled P4-to-P4.5 source fence. Its exact
+reviewed head `a86f905fe130b70159b66d43861a32aa366a7adb` had tree
+`04c71626c598b94d95b449870fa686af0bb01d9c`, passed required CI run
+`34090668529` and local exact-head reviews, and received a completed GitHub
+Codex review with no findings or review threads. Squash merge
+`faa43ff9bbebf6175f3a8ce1b56ec08fa18fda0a` has parent
+`2d106fab89891a4085461116d0cffc1f91206c48` and the identical tree. Post-merge
+main CI run `34091077616` passed.
+
+This completes P4.6's repository build-and-publication scope only. It does not
+authorize or establish remote migrations `0036` through `0039`, a production
+Worker deployment, fence activation, credential-state mutation, cache
+reconciliation, provider writes, or natural-tick evidence. P3, P4, P4.5, and
+P4.7 therefore remain production-gated and incomplete.
+
+Two separate owner decisions remain. P4.7 needs explicit production-release
+authorization covering the maintenance window, exact-source rollback plan,
+status-only OAuth preflight, atomic activation, and the accepted possibility
+that an already-sent OAuth refresh may require reconnect. P5 needs an explicit
+retention decision. The current recommendation remains to keep audit arguments
+and provider raw JSON indefinitely in D1 for now, then revisit at 1 GB or if the
+provider/compliance threat model changes; repository delivery does not turn
+that recommendation into an owner decision.
+
 ## 2026-09-06 — P3 repository delivery
 
 PR #132 delivered the P3 member-first-index repository slice. Its exact head
@@ -131,10 +178,11 @@ the owner has not made the separate P5 retention decision.
 
 ## 2026-09-06 — Read-only production preflight and source-bound cutover decision
 
-The read-only production preflight used current Wrangler 4.129 after the
-repository-installed 4.92 client returned Cloudflare error 7403 for migration
-listing while other authenticated D1 reads succeeded. The authoritative remote
-ledger reports migrations `0036_member_first_hot_path_indexes.sql`,
+The pre-P4.6-publication read-only production preflight used current Wrangler
+4.129 after the repository-installed 4.92 client returned Cloudflare error 7403
+for migration listing while other authenticated D1 reads succeeded. At that
+point, the authoritative remote ledger reported migrations
+`0036_member_first_hot_path_indexes.sql`,
 `0037_intervals_sync_freshness.sql`, and
 `0038_intervals_sync_attempts.sql` pending. The active 100% Worker deployment is
 `73dbf38c-d517-435a-a57d-11e41d256a7f`, version

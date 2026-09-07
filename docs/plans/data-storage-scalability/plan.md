@@ -1,6 +1,6 @@
 # Data Storage Scalability
 
-Slug: data-storage-scalability · Status: active · Updated: 2026-09-06 · Theme: platform
+Slug: data-storage-scalability · Status: gated · Updated: 2026-09-06 · Theme: platform
 
 ## Goal
 
@@ -425,7 +425,7 @@ Done means:
     old-version quiescence, the connected-user generation epoch, both-cache
     repair reconciliation, and natural-tick evidence are absent, so P4.5
     remains unchecked and production-gated.
-- [ ] **P4.6 — Build and publish the P4-to-P4.5 source fence**
+- [x] **P4.6 — Build and publish the P4-to-P4.5 source fence**
   - Add an inert-until-enabled, additive D1 protocol fence and a shadow
     Intervals athlete identity that exact P4 cannot read. Before activation,
     old P4 and the dual-mode replacement both use the legacy identity and the
@@ -481,14 +481,39 @@ Done means:
     passed all 672 backend tests, 5 uploader checks, the query-plan guard,
     TypeScript, Wrangler 4.129 dry-run, the offline production dependency
     audit, and diff hygiene. A fresh independent exact-head review of that SHA
-    and tree passed with no blocking finding. This is local evidence awaiting
-    repository publication; it does not mark the phase complete.
+    and tree passed with no blocking finding. This established the local
+    implementation evidence before publication.
+  - Repository delivery completed on 2026-09-06: PR #135 exact reviewed head
+    `a86f905fe130b70159b66d43861a32aa366a7adb` had tree
+    `04c71626c598b94d95b449870fa686af0bb01d9c`, passed required CI run
+    `34090668529` and local exact-head reviews, and received a completed GitHub
+    Codex review with no findings or review threads. Squash merge
+    `faa43ff9bbebf6175f3a8ce1b56ec08fa18fda0a` has parent
+    `2d106fab89891a4085461116d0cffc1f91206c48` and the identical tree;
+    post-merge main CI run `34091077616` passed. This completes P4.6's
+    repository build-and-publication scope only. No remote migration, Worker
+    deployment, fence activation, credential mutation, cache reconciliation,
+    provider write, or natural-tick evidence accompanies it.
 - [ ] **P4.7 — Activate the source fence in production**
   - Recheck the authoritative migration ledger, deployed Worker version, and
     exact connected/environment-seed state. Report only aggregate connection
     and OAuth-refresh-token presence; never read, retain, or log credential
     values. Stop on a malformed, duplicate, exhausted, or unexpectedly
     environment-only row instead of repairing it silently.
+  - Privacy-safe read-only preflight completed on 2026-09-06. The authoritative
+    ledger reports migrations `0036` through `0039` pending; the active 100%
+    Worker remains version `1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`, source
+    `079f0359c898935c68513db74bba384bce260c0c`, tree
+    `fec23bff1cb94a83d55eb297a64dac458b2a16f9`; and D1 remains 1,462,272
+    bytes. Aggregate status found no release-blocking condition under the plan's
+    aggregate preflight criteria. Exact personal/auth counts and state were
+    intentionally omitted from this public repository record. Every preflight
+    query was aggregate and
+    read-only (`changed_db=false`, `rows_written=0`); no user identifier or
+    credential value was returned, logged, or retained, and no provider or
+    Worker route was called. This evidence does not authorize release and does
+    not remove the documented provider-rotation/reconnect risk or the required
+    live recheck at the authorized maintenance window.
   - With an exact P4.6-aware rollback artifact retained, apply additive
     migrations `0036` through `0039` in order, deploy the exact reviewed
     dual-mode Worker at 100%, and verify the deployed source before activation.
@@ -531,11 +556,8 @@ Done means:
 
 ## Execution frontier
 
-- P3
-- P4
-- P4.5
-- P4.6
 - P4.7
+- P5
 
 ## Dependencies
 
@@ -544,21 +566,24 @@ Done means:
 | P0.5 | coordinates_with | plan:activity-integration-integrity#P2 | Both exercise activity correction/deletion convergence and the existing intervals-to-HealthKit dedup regression boundary; preserve its semantics and do not edit the same reconcile path concurrently. |
 | P1 | coordinates_with | plan:activity-integration-integrity#P2 | Both change how tombstones ride `/api/state`; land the cursor rule once and share it. |
 | P2 | coordinates_with | plan:activity-integration-integrity#P2 | Both edit the intervals reconcile upsert; do not run concurrently. |
+| P4.7 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migrations `0036` through `0039`, a dual-mode Worker deploy, atomic fence activation, credential-state mutation, provider reconciliation, or natural-tick production evidence. |
 | P3 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0036`, a Worker deploy, or natural-tick production evidence. |
 | P4 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0037`, a Worker deploy, or natural-tick production evidence. |
 | P4.5 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0038`; production activation must include P4.6's source-bound transition before claiming the attempt-ordering invariant. |
-| P4.7 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migrations `0036` through `0039`, a dual-mode Worker deploy, atomic fence activation, credential-state mutation, provider reconciliation, or natural-tick production evidence. |
 | P5 | gated_by | external:owner-retention-decision | Deleting or trimming audit and source data is an owner data-retention decision, not an inferred cleanup. |
 
 ## Next step
 
-**Now (@agent):** Integrate the canonical plan writeback with reviewed P4.6
-commit `3ea535607ebaa1be6d002ae004dc0d1aef3b57fb`, repeat exact-head review for
-the combined tree, and publish the repository-only slice. Keep production
-read-only: do not apply migrations, deploy a Worker, activate the fence, mutate
-credentials, trigger a sync, or call the provider. After repository delivery,
-present the exact owner production-release gate and the separate P5 retention
-choice; do not infer either decision.
+**Now (@owner):** Decide separately whether to authorize the P4.7 production
+release and which P5 retention policy to record. P4.7 authorization must cover
+the exact reviewed source, maintenance window and rollback plan, remote
+migrations `0036` through `0039`, dual-mode Worker deployment, status-only
+OAuth preflight, atomic credential-state fence activation, both-cache
+reconciliation, natural-tick verification, and the documented possibility that
+an already-sent OAuth refresh may require reconnect. For P5, the current
+recommendation is to keep audit arguments and provider raw JSON indefinitely in
+D1 for now and revisit at 1 GB or on a provider/compliance threat-model change;
+that recommendation is not an owner decision and must not be inferred.
 
 ## Notes / open questions
 
@@ -597,7 +622,8 @@ choice; do not infer either decision.
   applied before P1's `0034`, then P2's `0035`, followed immediately by the
   freshly reviewed merged Worker. At that point the ledger had no pending
   migration through `0035`; the 2026-09-06 preflight recorded later migrations
-  `0036` through `0038` as currently pending.
+  `0036` through `0038` as pending, and merged-but-unreleased P4.6 adds
+  migration `0039` to the same production gate.
 - Apply `0034` only with the P1 Worker ready to deploy immediately. If Worker
   deployment fails after the migration commits, roll forward with the P1-aware
   Worker rather than attempting a migration rollback. For the entire gap, the
