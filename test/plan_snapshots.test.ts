@@ -12,6 +12,7 @@ import {
   listPlanHistory,
   restorePlanSnapshot,
   updatePlanTree,
+  updateExercise,
 } from '../src/db';
 import { comparePlanSnapshots, serializePlanSnapshot } from '../src/planSnapshots';
 
@@ -413,5 +414,41 @@ describe('plan snapshots', () => {
       .toBe(beforeAudit?.n);
     expect((await env.DB.prepare('SELECT COUNT(*) AS n FROM plan_snapshots WHERE user_id=?1').bind(userId).first<{ n: number }>())?.n)
       .toBe(beforeSnapshots?.n);
+  });
+
+  it('returns an explicit conflict after both legacy slot-patch claims lose', async () => {
+    const { userId, plan } = await fixture('slot retry exhaustion');
+    const slot = plan.days[0]!.exercises[0]!;
+    const before = await env.DB.prepare(
+      `SELECT
+        (SELECT COUNT(*) FROM audit_log WHERE user_id=?1) AS audits,
+        (SELECT COUNT(*) FROM plan_snapshots WHERE user_id=?1) AS snapshots`,
+    ).bind(userId).first<{ audits: number; snapshots: number }>();
+    let losses = 0;
+    const losingDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'batch') return async (statements: D1PreparedStatement[]) => {
+          losses += 1;
+          await env.DB.prepare('UPDATE plans SET version=version+1 WHERE id=?1')
+            .bind(plan.id).run();
+          return target.batch(statements);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as D1Database;
+    expect(await updateExercise(losingDb, userId, {
+      template_exercise_id: slot.id,
+    }, { target_weight: 145 }, {
+      actor: 'ios', operation: 'update_exercise', args: { target_weight: 145 },
+    })).toEqual({ conflict: true, current_version: plan.version + 2 });
+    expect(losses).toBe(2);
+    expect(await env.DB.prepare('SELECT target_weight FROM template_exercises WHERE id=?1')
+      .bind(slot.id).first()).toEqual({ target_weight: 135 });
+    expect(await env.DB.prepare(
+      `SELECT
+        (SELECT COUNT(*) FROM audit_log WHERE user_id=?1) AS audits,
+        (SELECT COUNT(*) FROM plan_snapshots WHERE user_id=?1) AS snapshots`,
+    ).bind(userId).first()).toEqual(before);
   });
 });

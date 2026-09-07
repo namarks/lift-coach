@@ -6353,7 +6353,7 @@ export async function updateExercise(
   > & { progression?: unknown },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_exercise' },
   retryLegacyConflict = true,
-): Promise<TemplateExerciseRow | { error: 'unknown_fields'; fields: string[] } | PrescriptionValidationError | null> {
+): Promise<TemplateExerciseRow | PlanVersionConflict | { error: 'unknown_fields'; fields: string[] } | PrescriptionValidationError | null> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   // Slot lookup first so a wrong ref returns the more actionable
@@ -6455,7 +6455,7 @@ export async function updateExercise(
     if (retryLegacyConflict) {
       return updateExercise(db, userId, ref, patch, attribution, false);
     }
-    return null;
+    return currentPlanVersion(db, userId, plan.version);
   }
   if ((results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
     const current = await findSlot(db, userId, ref);
