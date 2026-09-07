@@ -155,6 +155,8 @@ interface Tool {
   ) => Promise<unknown>;
   /** Write tools are audited; `note` (if it returns text) is persisted. */
   write?: boolean;
+  /** Plan writer persisted its audit/note in the same D1 transaction. */
+  atomicWrite?: boolean;
   note?: (args: Json, result: any) => string | null;
 }
 
@@ -238,6 +240,8 @@ const TOOLS: Record<string, Tool> = {
       expected_version: Number(a.expected_version), actor: 'mcp',
       reason: typeof a.reason === 'string' ? a.reason : null,
     }),
+    write: true,
+    atomicWrite: true,
     // restorePlanSnapshot persists its audit, note, and resulting snapshot in
     // the same D1 transaction as the restore; dispatcher-level writes would
     // duplicate the trail and could fail after acknowledgement.
@@ -801,8 +805,14 @@ const TOOLS: Record<string, Tool> = {
       ['days'],
     ),
     write: true,
+    atomicWrite: true,
     handler: (a, env, userId) =>
-      updatePlanTree(env.DB, userId, a as unknown as Parameters<typeof updatePlanTree>[2]),
+      updatePlanTree(
+        env.DB,
+        userId,
+        a as unknown as Parameters<typeof updatePlanTree>[2],
+        { actor: 'mcp', operation: 'update_plan', args: a, note: 'Rebuilt training plan.' },
+      ),
     note: (_a, r) =>
       r?.conflict || r?.error
         ? null
@@ -821,6 +831,7 @@ const TOOLS: Record<string, Tool> = {
       ['patch'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const r = await updateExercise(
         env.DB,
@@ -832,6 +843,7 @@ const TOOLS: Record<string, Tool> = {
           exercise: typeof a.exercise === 'string' ? a.exercise : undefined,
         },
         (a.patch as Json) ?? {},
+        { actor: 'mcp', operation: 'update_exercise', args: a, note: 'Updated exercise slot.' },
       );
       return r ?? { error: 'slot_not_found' };
     },
@@ -849,12 +861,16 @@ const TOOLS: Record<string, Tool> = {
       ['day', 'from_exercise', 'to_exercise'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const r = await swapExercise(env.DB, userId, {
         day: String(a.day),
         from_exercise: String(a.from_exercise),
         to_exercise: String(a.to_exercise),
         carry_targets: a.carry_targets === true,
+      }, {
+        actor: 'mcp', operation: 'swap_exercise', args: a,
+        note: `Swapped ${a.from_exercise} → ${a.to_exercise} on ${a.day}.`,
       });
       return r ?? { error: 'slot_not_found' };
     },
@@ -885,6 +901,7 @@ const TOOLS: Record<string, Tool> = {
       ['day', 'exercise', 'target_sets', 'target_reps'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
@@ -918,6 +935,9 @@ const TOOLS: Record<string, Tool> = {
         progression: a.progression == null ? null : JSON.stringify(a.progression),
         cues: null,
         is_warmup: a.is_warmup === undefined ? 0 : a.is_warmup as boolean,
+      }, {
+        actor: 'mcp', operation: 'add_exercise', args: a,
+        note: `Added ${a.exercise} to ${a.day}.`,
       });
     },
     note: (a, r) => (r?.error ? null : `Added ${a.exercise} to ${a.day}.`),
@@ -933,10 +953,13 @@ const TOOLS: Record<string, Tool> = {
       ['name'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       let plan = await getActivePlan(env.DB, userId);
       if (!plan) {
-        plan = (await ensureActivePlan(env.DB, userId, 'My Plan')).plan;
+        plan = (await ensureActivePlan(env.DB, userId, 'My Plan', {
+          actor: 'mcp', operation: 'ensure_active_plan', args: { name: 'My Plan' },
+        })).plan;
       }
       // Append densely (max+1) rather than the old 99 sentinel — same
       // fix the add_exercise path got. Honors an explicit order_index.
@@ -951,6 +974,7 @@ const TOOLS: Record<string, Tool> = {
         String(a.name),
         typeof a.day_label === 'string' ? a.day_label : null,
         orderIndex,
+        { actor: 'mcp', operation: 'add_day', args: a, note: `Added day "${a.name}".` },
       );
     },
     note: (a, r) =>
@@ -968,6 +992,7 @@ const TOOLS: Record<string, Tool> = {
       ['patch'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
@@ -990,6 +1015,7 @@ const TOOLS: Record<string, Tool> = {
         plan,
         dayId,
         (a.patch as Json) ?? {},
+        { actor: 'mcp', operation: 'update_day', args: a, note: 'Updated training day.' },
       );
       return r ?? { error: 'day_not_found' };
     },
@@ -1010,12 +1036,16 @@ const TOOLS: Record<string, Tool> = {
       [],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const r = await deleteTemplateExercise(env.DB, userId, {
         template_exercise_id:
           typeof a.template_exercise_id === 'string' ? a.template_exercise_id : undefined,
         day: typeof a.day === 'string' ? a.day : undefined,
         exercise: typeof a.exercise === 'string' ? a.exercise : undefined,
+      }, {
+        actor: 'mcp', operation: 'delete_exercise', args: a,
+        note: 'Deleted exercise slot.',
       });
       return r ?? { error: 'slot_not_found' };
     },
@@ -1035,6 +1065,7 @@ const TOOLS: Record<string, Tool> = {
       ['intent'],
     ),
     write: true,
+    atomicWrite: true,
     handler: (a, env, userId) =>
       adjustToday(
         env.DB,
@@ -1042,6 +1073,12 @@ const TOOLS: Record<string, Tool> = {
         a.intent as 'deload' | 'reduce_volume' | 'reduce_intensity',
         (a.magnitude as 'light' | 'moderate' | 'heavy') ?? 'moderate',
         typeof a.day_label === 'string' ? a.day_label : undefined,
+        {
+          actor: 'mcp', operation: 'adjust_today', args: a,
+          reason: typeof a.reason === 'string' ? a.reason : null,
+          note: `${a.intent}(${a.magnitude ?? 'moderate'})${a.day_label ? ` ${a.day_label}` : ''}.` +
+            (typeof a.reason === 'string' ? ` Reason: ${a.reason}` : ''),
+        },
       ),
     note: (a, r) =>
       `Recurring template adjustment ${a.intent}(${a.magnitude ?? 'moderate'}) for ` +
@@ -1075,6 +1112,7 @@ const TOOLS: Record<string, Tool> = {
       ['week'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const week = (a.week as Record<string, string | null>) ?? {};
       const r = await setPlanSchedule(
@@ -1083,6 +1121,7 @@ const TOOLS: Record<string, Tool> = {
         week as Partial<Record<Weekday, string | null>>,
         typeof a.expected_version === 'number' ? a.expected_version : null,
         typeof a.expected_plan_id === 'string' ? a.expected_plan_id : null,
+        { actor: 'mcp', operation: 'set_schedule', args: a, note: 'Set recurring weekly schedule.' },
       );
       return r;
     },
@@ -1153,6 +1192,7 @@ const TOOLS: Record<string, Tool> = {
       ['name', 'date', 'discipline'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const race: RaceGoal = {
         name: String(a.name),
@@ -1167,6 +1207,10 @@ const TOOLS: Record<string, Tool> = {
         userId,
         race,
         typeof a.expected_version === 'number' ? a.expected_version : null,
+        {
+          actor: 'mcp', operation: 'set_race', args: a,
+          note: `Set A-race: ${a.name} — ${a.discipline} on ${a.date}.`,
+        },
       );
     },
     note: (a, r) =>
@@ -1203,12 +1247,14 @@ const TOOLS: Record<string, Tool> = {
       ['phases'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) =>
       setPeriodization(
         env.DB,
         userId,
         (a.phases as PeriodizationPhase[]) ?? [],
         typeof a.expected_version === 'number' ? a.expected_version : null,
+        { actor: 'mcp', operation: 'set_periodization', args: a, note: 'Set periodization.' },
       ),
     note: (a, r) =>
       r?.ok
@@ -1230,6 +1276,7 @@ const TOOLS: Record<string, Tool> = {
       ['start', 'end'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const trip: Omit<Trip, 'id'> = {
         start: String(a.start),
@@ -1245,6 +1292,10 @@ const TOOLS: Record<string, Tool> = {
         userId,
         trip,
         typeof a.expected_version === 'number' ? a.expected_version : null,
+        {
+          actor: 'mcp', operation: 'add_trip', args: a,
+          note: `Added ${a.type ?? 'travel'} trip ${a.start}→${a.end}.`,
+        },
       );
     },
     note: (a, r) =>
@@ -1268,6 +1319,7 @@ const TOOLS: Record<string, Tool> = {
       ['id'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const patch: Partial<Omit<Trip, 'id'>> = {};
       if (typeof a.start === 'string') patch.start = a.start;
@@ -1281,6 +1333,7 @@ const TOOLS: Record<string, Tool> = {
         String(a.id),
         patch,
         typeof a.expected_version === 'number' ? a.expected_version : null,
+        { actor: 'mcp', operation: 'update_trip', args: a, note: `Updated trip ${a.id}.` },
       );
     },
     note: (a, r) => (r?.ok ? `Updated trip ${a.id}.` : null),
@@ -1293,12 +1346,14 @@ const TOOLS: Record<string, Tool> = {
       ['id'],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) =>
       removeTrip(
         env.DB,
         userId,
         String(a.id),
         typeof a.expected_version === 'number' ? a.expected_version : null,
+        { actor: 'mcp', operation: 'remove_trip', args: a, note: `Removed trip ${a.id}.` },
       ),
     note: (a, r) => (r?.ok ? `Removed trip ${a.id}.` : null),
   },
@@ -1315,6 +1370,7 @@ const TOOLS: Record<string, Tool> = {
       [],
     ),
     write: true,
+    atomicWrite: true,
     handler: async (a, env, userId) => {
       const model: StressModel = {};
       if (a.discipline_weights && typeof a.discipline_weights === 'object') {
@@ -1331,6 +1387,7 @@ const TOOLS: Record<string, Tool> = {
         userId,
         model,
         typeof a.expected_version === 'number' ? a.expected_version : null,
+        { actor: 'mcp', operation: 'set_stress_model', args: a, note: 'Updated planning stress model.' },
       );
     },
     note: (_a, r) => (r?.ok ? `Updated planning stress model.` : null),
@@ -1571,7 +1628,7 @@ async function dispatch(
       try {
         const args = (req.params?.arguments as Json) ?? {};
         const result = await tool.handler(args, env, userId, bg);
-        if (tool.write) {
+        if (tool.write && !tool.atomicWrite) {
           await writeAudit(env.DB, userId, name, args, JSON.stringify(result));
           const noteBody = tool.note?.(args, result);
           if (noteBody) await writeNote(env.DB, userId, 'plan', null, 'claude', noteBody);

@@ -270,22 +270,18 @@ apiRoutes.put('/plan/active', async (c) => {
   const invalid = invalidMutationFields(parsed.body, { name: isNonEmptyString });
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const userId = c.get('userId');
-  const result = await ensureActivePlan(c.env.DB, userId, String(parsed.body.name).trim());
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'ensure_active_plan',
-    { name: parsed.body.name },
-    JSON.stringify({ id: result.plan.id, created: result.created }),
-    'ios',
-  );
+  const result = await ensureActivePlan(c.env.DB, userId, String(parsed.body.name).trim(), {
+    actor: 'ios', operation: 'ensure_active_plan', args: parsed.body,
+  });
   return c.json(result, result.created ? 201 : 200);
 });
 
 apiRoutes.post('/plan', async (c) => {
   const b = await c.req.json<{ name: string; meta?: unknown }>();
   if (!b.name) return c.json({ error: 'missing_name' }, 400);
-  return c.json(await createPlan(c.env.DB, c.get('userId'), b.name, b.meta ?? null), 201);
+  return c.json(await createPlan(c.env.DB, c.get('userId'), b.name, b.meta ?? null, {
+    actor: 'ios', operation: 'create_plan', args: b,
+  }), 201);
 });
 
 apiRoutes.post('/days', async (c) => {
@@ -322,21 +318,9 @@ apiRoutes.post('/days', async (c) => {
     String(b.name).trim(),
     typeof b.day_label === 'string' ? b.day_label : null,
     orderIndex,
+    { actor: 'ios', operation: 'add_day', args: b },
   );
   if ('conflict' in row) return c.json(row, 409);
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'add_day',
-    {
-      name: b.name,
-      day_label: b.day_label ?? null,
-      order_index: orderIndex,
-      expected_plan_id: b.expected_plan_id ?? null,
-    },
-    row.id,
-    'ios',
-  );
   return c.json(row, 201);
 });
 
@@ -365,18 +349,11 @@ apiRoutes.patch('/days/:id', async (c) => {
   const { expected_version: _expectedVersion, ...patch } = b;
   const row = await patchDayTemplateAtVersion(
     c.env.DB, userId, plan, c.req.param('id'), patch,
+    { actor: 'ios', operation: 'update_day', args: b },
   );
   if (!row) return c.json({ error: 'not_found' }, 404);
   if ('conflict' in row) return c.json(row, 409);
   if ('error' in row) return c.json(row, 400);
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'update_day',
-    { day_template_id: c.req.param('id'), patch },
-    row.id,
-    'ios',
-  );
   return c.json(row);
 });
 
@@ -395,20 +372,14 @@ apiRoutes.delete('/days/:id', async (c) => {
     }
   }
   const dayId = c.req.param('id');
-  const result = await deleteDayTemplate(c.env.DB, userId, dayId, plan.version);
+  const result = await deleteDayTemplate(c.env.DB, userId, dayId, plan.version, {
+    actor: 'ios', operation: 'delete_day', args: { day_template_id: dayId },
+  });
   if ('conflict' in result) return c.json(result, 409);
   if ('error' in result && result.error === 'day_in_progress') {
     return c.json(result, 409);
   }
   if ('error' in result) return c.json({ error: 'not_found' }, 404);
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'delete_day',
-    { day_template_id: dayId },
-    JSON.stringify(result),
-    'ios',
-  );
   return c.json(result);
 });
 
@@ -442,10 +413,10 @@ apiRoutes.put('/plan/schedule', async (c) => {
     week as Partial<Record<Weekday, string | null>>,
     typeof b.expected_version === 'number' ? b.expected_version : null,
     typeof b.expected_plan_id === 'string' ? b.expected_plan_id : null,
+    { actor: 'ios', operation: 'set_schedule', args: b },
   );
   if ('conflict' in result) return c.json(result, 409);
   if ('error' in result) return c.json(result, 400);
-  await writeAudit(c.env.DB, userId, 'set_schedule', { week }, JSON.stringify(result), 'ios');
   return c.json(result);
 });
 
@@ -536,18 +507,8 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
     progression: b.progression == null ? null : JSON.stringify(b.progression),
     cues: b.cues ?? null,
     is_warmup: b.is_warmup === undefined ? 0 : b.is_warmup as unknown as number | boolean,
-  });
+  }, { actor: 'ios', operation: 'add_exercise', args: b });
   if ('error' in row) return c.json(row, 400);
-  // Audit the in-app plan edit (actor='ios') so the trust/undo trail covers
-  // app-side mutations the same as MCP ones (DESIGN §5).
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'add_exercise',
-    { day_template_id: dayId, exercise: b.exercise, is_warmup: !!b.is_warmup },
-    row.id,
-    'ios',
-  );
   return c.json(row, 201);
 });
 
@@ -576,10 +537,11 @@ apiRoutes.patch('/days/:id/exercises/:teId', async (c) => {
   }>();
   const patch: Record<string, unknown> = { ...b };
   if (typeof b.is_warmup === 'boolean') patch.is_warmup = b.is_warmup ? 1 : 0;
-  const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId }, patch);
+  const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId }, patch, {
+    actor: 'ios', operation: 'update_exercise', args: b,
+  });
   if (!row) return c.json({ error: 'not_found' }, 404);
   if ('error' in row) return c.json(row, 400);
-  await writeAudit(c.env.DB, userId, 'update_exercise', { template_exercise_id: teId, patch: b }, row.id, 'ios');
   return c.json(row);
 });
 
@@ -591,9 +553,10 @@ apiRoutes.delete('/days/:id/exercises/:teId', async (c) => {
   const userId = c.get('userId');
   const dayId = c.req.param('id');
   const teId = c.req.param('teId');
-  const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId });
+  const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId }, {
+    actor: 'ios', operation: 'delete_exercise', args: { template_exercise_id: teId },
+  });
   if (!row) return c.json({ error: 'not_found' }, 404);
-  await writeAudit(c.env.DB, userId, 'delete_exercise', { template_exercise_id: teId }, row.id, 'ios');
   return c.json(row);
 });
 
