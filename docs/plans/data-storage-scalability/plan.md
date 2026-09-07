@@ -425,7 +425,7 @@ Done means:
     old-version quiescence, the connected-user generation epoch, both-cache
     repair reconciliation, and natural-tick evidence are absent, so P4.5
     remains unchecked and production-gated.
-- [ ] **P4.6 — Fence the P4-to-P4.5 source transition**
+- [ ] **P4.6 — Build and publish the P4-to-P4.5 source fence**
   - Add an inert-until-enabled, additive D1 protocol fence and a shadow
     Intervals athlete identity that exact P4 cannot read. Before activation,
     old P4 and the dual-mode replacement both use the legacy identity and the
@@ -483,11 +483,32 @@ Done means:
     audit, and diff hygiene. A fresh independent exact-head review of that SHA
     and tree passed with no blocking finding. This is local evidence awaiting
     repository publication; it does not mark the phase complete.
-  - Repository delivery does not authorize migration `0039`, the dual-mode
-    Worker deployment, atomic activation, credential-state mutation, provider
-    reconciliation, or natural-tick evidence. Production activation requires a
-    separate owner-approved maintenance window, exact-source rollback plan,
-    status-only OAuth preflight, and acceptance of the residual reconnect risk.
+- [ ] **P4.7 — Activate the source fence in production**
+  - Recheck the authoritative migration ledger, deployed Worker version, and
+    exact connected/environment-seed state. Report only aggregate connection
+    and OAuth-refresh-token presence; never read, retain, or log credential
+    values. Stop on a malformed, duplicate, exhausted, or unexpectedly
+    environment-only row instead of repairing it silently.
+  - With an exact P4.6-aware rollback artifact retained, apply additive
+    migrations `0036` through `0039` in order, deploy the exact reviewed
+    dual-mode Worker at 100%, and verify the deployed source before activation.
+    Migration `0039` is inert until the explicit fence update, so a failed
+    pre-activation deploy can roll back to P4 without changing Intervals
+    identity behavior.
+  - After the owner-approved maintenance and residual-risk gate, run the one
+    guarded activation update and retain its aggregate `RETURNING` evidence. If
+    the response is lost, query fence state instead of retrying blindly. Verify
+    that activation is enabled, the legacy athlete count is zero, the shadow
+    connected count matches the captured activation count, and both freshness
+    and attempt pairs were reset. Then reconcile both caches through the exact
+    P4.6 Worker and require natural-tick evidence before marking P3, P4, P4.5,
+    and P4.7 complete.
+  - Activation is a credential-state mutation and is not authorized by
+    repository delivery. It requires a separate owner-approved maintenance
+    window, exact-source rollback plan, status-only OAuth preflight, and
+    acceptance that an already-sent OAuth refresh may rotate provider state and
+    require reconnect. After activation, plain P4 is only a safe disconnected
+    holding state, not a functional rollback.
 - [ ] **P5 — Retention decision for the two unbounded tables**
   - Using P0 numbers, the owner decides retention for `audit_log` (for
     example keep `args` for twelve months, keep the row forever) and for the
@@ -514,6 +535,7 @@ Done means:
 - P4
 - P4.5
 - P4.6
+- P4.7
 
 ## Dependencies
 
@@ -525,7 +547,7 @@ Done means:
 | P3 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0036`, a Worker deploy, or natural-tick production evidence. |
 | P4 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0037`, a Worker deploy, or natural-tick production evidence. |
 | P4.5 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0038`; production activation must include P4.6's source-bound transition before claiming the attempt-ordering invariant. |
-| P4.6 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0039`, a dual-mode Worker deploy, atomic fence activation, credential-state mutation, provider reconciliation, or natural-tick production evidence. |
+| P4.7 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migrations `0036` through `0039`, a dual-mode Worker deploy, atomic fence activation, credential-state mutation, provider reconciliation, or natural-tick production evidence. |
 | P5 | gated_by | external:owner-retention-decision | Deleting or trimming audit and source data is an owner data-retention decision, not an inferred cleanup. |
 
 ## Next step
@@ -573,7 +595,9 @@ choice; do not infer either decision.
   `0033_gymnastic_strength_catalog.sql` pending after the P0.5 deploy-only
   release. The owner authorized the combined release on 2026-09-05; `0033`
   applied before P1's `0034`, then P2's `0035`, followed immediately by the
-  freshly reviewed merged Worker. The ledger now has no pending migration.
+  freshly reviewed merged Worker. At that point the ledger had no pending
+  migration through `0035`; the 2026-09-06 preflight recorded later migrations
+  `0036` through `0038` as currently pending.
 - Apply `0034` only with the P1 Worker ready to deploy immediately. If Worker
   deployment fails after the migration commits, roll forward with the P1-aware
   Worker rather than attempting a migration rollback. For the entire gap, the
