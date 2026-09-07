@@ -53,11 +53,28 @@ export async function validateBearer(env: Env, token: string): Promise<string | 
       : null;
   }
   const row = await env.DB.prepare(
-    'SELECT user_id, expires_at FROM oauth_tokens WHERE access_token = ?1',
+    `SELECT t.user_id, t.expires_at
+       FROM oauth_tokens t
+       LEFT JOIN oauth_grants g ON g.id = t.grant_id
+       LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
+      WHERE t.access_token = ?1
+        AND t.expires_at > unixepoch('now')
+        AND (
+          (p.id = 1 AND p.activated_at IS NULL
+           AND (t.grant_id IS NULL
+                OR (g.revoked_at IS NULL
+                    AND g.inactivity_expires_at IS NULL
+                    AND g.absolute_expires_at IS NULL)))
+          OR
+          (p.activated_at IS NOT NULL
+           AND g.revoked_at IS NULL
+           AND g.inactivity_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER)
+           AND g.absolute_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER))
+        )`,
   )
     .bind(token)
     .first<{ user_id: string | null; expires_at: number }>();
-  if (!row || row.expires_at <= Math.floor(Date.now() / 1000)) return null;
+  if (!row) return null;
   if (row.user_id) {
     const principal = await env.DB
       .prepare(
@@ -321,7 +338,7 @@ oauthRoutes.post('/oauth/token', async (c) => {
       refresh_token: tokens.refresh_token,
       scope: tokens.scope,
       token_type: 'Bearer',
-      expires_in: ACCESS_TTL,
+      expires_in: Math.max(0, tokens.access_expires_at - Math.floor(Date.now() / 1000)),
     });
   }
 
@@ -363,7 +380,7 @@ oauthRoutes.post('/oauth/token', async (c) => {
       refresh_token: tokens.refresh_token,
       scope: tokens.scope,
       token_type: 'Bearer',
-      expires_in: ACCESS_TTL,
+      expires_in: Math.max(0, tokens.access_expires_at - Math.floor(Date.now() / 1000)),
     });
   }
 

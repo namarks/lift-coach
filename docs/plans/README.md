@@ -94,7 +94,7 @@ recoverable before adding product depth.
 - [Reversible plan management](reversible-plan-management/plan.md) —
   **gated**; authorize the service/app release for shared snapshots and restore.
 - [Coach access integrity](coach-access-integrity/plan.md) — **gated**;
-  choose refresh lifetime/legacy transition and authorize production release.
+  authorize the reviewed service release and activation of the approved lifetime policy.
 - [Prescription integrity](prescription-integrity/plan.md) — **gated**;
   authorize production validation/atomic-writer release and any legacy correction.
 

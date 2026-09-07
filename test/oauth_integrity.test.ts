@@ -2,7 +2,10 @@ import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
 import {
+  activateOAuthGrantLifecyclePolicy,
   listOAuthGrants,
+  OAUTH_GRANT_ABSOLUTE_MS,
+  OAUTH_GRANT_INACTIVITY_MS,
   redeemOAuthAuthorizationCode,
   refreshOAuthGrant,
   rotateOAuthRefreshToken,
@@ -55,7 +58,7 @@ async function seedCode(options: { expired?: boolean; userId?: string; clientId?
        VALUES (?1, ?2, ?3, ?4, 'S256', 'mcp', NULL, ?5, ?6, ?7)`,
     ).bind(code, clientId, redirect, await challenge(verifier), options.expired ? now - 1 : now + 60_000, now, userId),
   ]);
-  return { code, verifier, redirect, clientId, userId };
+  return { code, verifier, redirect, clientId, userId, createdAt: now };
 }
 
 function codeRequest(grant: Awaited<ReturnType<typeof seedCode>>, overrides: Record<string, string> = {}) {
@@ -384,5 +387,250 @@ describe('OAuth grant families and caller revocation', () => {
     } finally {
       await env.DB.prepare('DROP TRIGGER oauth_integrity_fail_revoke_audit').run();
     }
+  });
+});
+
+describe('OAuth grant lifecycle policy', () => {
+  it('activates atomically once, initializes only live grants, and binds retries to the full request', async () => {
+    const live = await seedRefresh();
+    const revoked = await seedRefresh();
+    await listOAuthGrants(env.DB, live.userId, undefined);
+    await listOAuthGrants(env.DB, revoked.userId, undefined);
+    await env.DB.prepare(
+      `UPDATE oauth_grants SET revoked_at = ?2 WHERE user_id = ?1`,
+    ).bind(revoked.userId, Date.now()).run();
+
+    await expect(env.DB.prepare(
+      `UPDATE oauth_grant_lifecycle_policy
+          SET activated_at = 0, activation_nonce = '' WHERE id = 1`,
+    ).run()).rejects.toThrow();
+
+    await env.DB.prepare(
+      `UPDATE oauth_grants SET absolute_expires_at = ?2 WHERE user_id = ?1`,
+    ).bind(live.userId, Date.now() + OAUTH_GRANT_ABSOLUTE_MS).run();
+    await expect(activateOAuthGrantLifecyclePolicy(env.DB, Date.now(), 'malformed-policy'))
+      .rejects.toThrow('unexpected deadlines');
+    expect(await env.DB.prepare(
+      'SELECT activated_at FROM oauth_grant_lifecycle_policy WHERE id = 1',
+    ).first<number>('activated_at')).toBeNull();
+    await env.DB.prepare(
+      `UPDATE oauth_grants SET absolute_expires_at = NULL WHERE user_id = ?1`,
+    ).bind(live.userId).run();
+
+    await env.DB.prepare(
+      `CREATE TRIGGER oauth_lifecycle_fail_initialization
+       BEFORE UPDATE ON oauth_grants WHEN OLD.user_id = '${live.userId}'
+       BEGIN SELECT RAISE(ABORT, 'synthetic_activation_failure'); END`,
+    ).run();
+    const activatedAt = Date.now();
+    try {
+      await expect(activateOAuthGrantLifecyclePolicy(env.DB, activatedAt, 'activation-1'))
+        .rejects.toThrow();
+      expect(await env.DB.prepare(
+        'SELECT activated_at FROM oauth_grant_lifecycle_policy WHERE id = 1',
+      ).first<number>('activated_at')).toBeNull();
+    } finally {
+      await env.DB.prepare('DROP TRIGGER oauth_lifecycle_fail_initialization').run();
+    }
+
+    expect(await activateOAuthGrantLifecyclePolicy(env.DB, activatedAt, 'activation-1'))
+      .toEqual({ newly_activated: true, activated_at: activatedAt });
+    expect(await activateOAuthGrantLifecyclePolicy(env.DB, activatedAt, 'activation-1'))
+      .toEqual({ newly_activated: false, activated_at: activatedAt });
+    await expect(activateOAuthGrantLifecyclePolicy(env.DB, activatedAt + 1, 'activation-1'))
+      .rejects.toThrow('already activated');
+    await expect(activateOAuthGrantLifecyclePolicy(env.DB, activatedAt, 'activation-2'))
+      .rejects.toThrow('already activated');
+
+    const liveFamily = await env.DB.prepare(
+      `SELECT inactivity_expires_at, absolute_expires_at FROM oauth_grants WHERE user_id = ?1`,
+    ).bind(live.userId).first<{ inactivity_expires_at: number; absolute_expires_at: number }>();
+    expect(liveFamily).toEqual({
+      inactivity_expires_at: activatedAt + OAUTH_GRANT_INACTIVITY_MS,
+      absolute_expires_at: activatedAt + OAUTH_GRANT_ABSOLUTE_MS,
+    });
+    const revokedFamily = await env.DB.prepare(
+      `SELECT inactivity_expires_at, absolute_expires_at FROM oauth_grants WHERE user_id = ?1`,
+    ).bind(revoked.userId).first<{ inactivity_expires_at: number | null; absolute_expires_at: number | null }>();
+    expect(revokedFamily).toEqual({ inactivity_expires_at: null, absolute_expires_at: null });
+  });
+
+  it('starts new grants at authorization and caps issued access tokens', async () => {
+    await activateOAuthGrantLifecyclePolicy(env.DB, Date.now() - 1, 'new-grant-policy');
+    const grant = await seedCode();
+    const response = await codeRequest(grant);
+    expect(response.status).toBe(200);
+    const body = await response.json<{ access_token: string; expires_in: number }>();
+    const row = await env.DB.prepare(
+      `SELECT g.created_at, g.inactivity_expires_at, g.absolute_expires_at, t.expires_at
+         FROM oauth_grants g JOIN oauth_tokens t ON t.grant_id = g.id
+        WHERE t.access_token = ?1`,
+    ).bind(body.access_token).first<any>();
+    expect(row.inactivity_expires_at).toBe(grant.createdAt + OAUTH_GRANT_INACTIVITY_MS);
+    expect(row.absolute_expires_at).toBe(grant.createdAt + OAUTH_GRANT_ABSOLUTE_MS);
+    expect(row.expires_at).toBeLessThanOrEqual(Math.floor(row.inactivity_expires_at / 1000));
+    expect(body.expires_in).toBeLessThanOrEqual(30 * 24 * 60 * 60);
+  });
+
+  it('rechecks activation after stale code and legacy refresh pre-reads', async () => {
+    const code = await seedCode();
+    const refresh = await seedRefresh();
+    const codeSnapshot = await env.DB.prepare(
+      'SELECT * FROM oauth_codes WHERE code = ?1',
+    ).bind(code.code).first<any>();
+    const refreshSnapshot = await env.DB.prepare(
+      'SELECT * FROM oauth_tokens WHERE refresh_token = ?1',
+    ).bind(refresh.refresh).first<any>();
+    const activatedAt = Date.now();
+    await activateOAuthGrantLifecyclePolicy(env.DB, activatedAt, 'stale-read-policy');
+
+    const redeemed = await redeemOAuthAuthorizationCode(env.DB, {
+      ...codeSnapshot,
+      access_token: `stale-policy-access-${crypto.randomUUID()}`,
+      refresh_token: `stale-policy-refresh-${crypto.randomUUID()}`,
+      access_expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+      grant_id: crypto.randomUUID(),
+    });
+    expect(redeemed).not.toBeNull();
+    const redeemedFamily = await env.DB.prepare(
+      `SELECT inactivity_expires_at, absolute_expires_at
+         FROM oauth_grants WHERE id = ?1`,
+    ).bind(redeemed!.grant_id).first<any>();
+    expect(redeemedFamily.inactivity_expires_at).toBe(activatedAt + OAUTH_GRANT_INACTIVITY_MS);
+    expect(redeemedFamily.absolute_expires_at).toBe(activatedAt + OAUTH_GRANT_ABSOLUTE_MS);
+
+    const rotated = await rotateOAuthRefreshToken(env.DB, {
+      ...refreshSnapshot,
+      presented_refresh_token: refresh.refresh,
+      presented_client_id: refresh.clientId,
+      access_token: `stale-legacy-access-${crypto.randomUUID()}`,
+      refresh_token: `stale-legacy-refresh-${crypto.randomUUID()}`,
+      access_expires_at: Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+      grant_id: null,
+      consumed_refresh_sha256: await hexDigest(refresh.refresh),
+    });
+    expect(rotated).not.toBeNull();
+    const rotatedFamily = await env.DB.prepare(
+      `SELECT inactivity_expires_at, absolute_expires_at
+         FROM oauth_grants WHERE id = ?1`,
+    ).bind(rotated!.grant_id).first<any>();
+    expect(rotatedFamily.absolute_expires_at).toBe(activatedAt + OAUTH_GRANT_ABSOLUTE_MS);
+    expect(rotatedFamily.inactivity_expires_at).toBeGreaterThanOrEqual(
+      activatedAt + OAUTH_GRANT_INACTIVITY_MS,
+    );
+  });
+
+  it('fails closed at lifecycle boundaries for bearer, refresh, and listing', async () => {
+    await activateOAuthGrantLifecyclePolicy(env.DB, Date.now() - 1, 'boundary-policy');
+    const grant = await seedRefresh();
+    await listOAuthGrants(env.DB, grant.userId, undefined);
+    const snapshot = await env.DB.prepare(
+      'SELECT * FROM oauth_tokens WHERE refresh_token = ?1',
+    ).bind(grant.refresh).first<any>();
+    await env.DB.prepare(
+      `UPDATE oauth_grants
+          SET inactivity_expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER),
+              absolute_expires_at = CAST(unixepoch('subsec') * 1000 AS INTEGER) + 100000
+        WHERE id = ?1`,
+    ).bind(snapshot.grant_id).run();
+    expect(await validateBearer(env, grant.access)).toBeNull();
+    expect(await rotateOAuthRefreshToken(env.DB, {
+      ...snapshot,
+      presented_refresh_token: grant.refresh,
+      presented_client_id: grant.clientId,
+      access_token: `boundary-access-${crypto.randomUUID()}`,
+      refresh_token: `boundary-refresh-${crypto.randomUUID()}`,
+      access_expires_at: Math.floor(Date.now() / 1000) + 600,
+      consumed_refresh_sha256: await hexDigest(grant.refresh),
+    })).toBeNull();
+    expect(await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM oauth_tokens WHERE refresh_token = ?1',
+    ).bind(grant.refresh).first<number>('n')).toBe(1);
+    expect(await listOAuthGrants(env.DB, grant.userId, undefined)).toEqual([]);
+  });
+
+  it('slides inactivity on successful refresh but never past the absolute deadline', async () => {
+    await activateOAuthGrantLifecyclePolicy(env.DB, Date.now() - 1, 'sliding-policy');
+    const grant = await seedRefresh();
+    await listOAuthGrants(env.DB, grant.userId, undefined);
+    const absolute = Date.now() + 2 * 24 * 60 * 60 * 1000;
+    await env.DB.prepare(
+      `UPDATE oauth_grants
+          SET inactivity_expires_at = ?2, absolute_expires_at = ?3
+        WHERE user_id = ?1`,
+    ).bind(grant.userId, Date.now() + 60_000, absolute).run();
+    const response = await refreshRequest(grant);
+    expect(response.status).toBe(200);
+    const successor = await response.json<{ access_token: string }>();
+    const row = await env.DB.prepare(
+      `SELECT g.inactivity_expires_at, g.absolute_expires_at, t.expires_at
+         FROM oauth_grants g JOIN oauth_tokens t ON t.grant_id = g.id
+        WHERE t.access_token = ?1`,
+    ).bind(successor.access_token).first<any>();
+    expect(row.inactivity_expires_at).toBe(row.absolute_expires_at);
+    expect(row.absolute_expires_at).toBe(absolute);
+    expect(row.expires_at).toBeLessThanOrEqual(Math.floor(absolute / 1000));
+    expect(await validateBearer(env, successor.access_token)).toBe(grant.userId);
+  });
+
+  it('rejects partially initialized deadline state without mutating either grant', async () => {
+    await activateOAuthGrantLifecyclePolicy(env.DB, Date.now() - 1, 'partial-policy');
+    const inactivityMissing = await seedRefresh();
+    const absoluteMissing = await seedRefresh();
+    await listOAuthGrants(env.DB, inactivityMissing.userId, undefined);
+    await listOAuthGrants(env.DB, absoluteMissing.userId, undefined);
+    await env.DB.prepare(
+      `UPDATE oauth_grants SET inactivity_expires_at = NULL WHERE user_id = ?1`,
+    ).bind(inactivityMissing.userId).run();
+    await env.DB.prepare(
+      `UPDATE oauth_grants SET absolute_expires_at = NULL WHERE user_id = ?1`,
+    ).bind(absoluteMissing.userId).run();
+
+    for (const grant of [inactivityMissing, absoluteMissing]) {
+      const snapshot = await env.DB.prepare(
+        'SELECT * FROM oauth_tokens WHERE refresh_token = ?1',
+      ).bind(grant.refresh).first<any>();
+      expect(await validateBearer(env, grant.access)).toBeNull();
+      expect(await listOAuthGrants(env.DB, grant.userId, undefined)).toEqual([]);
+      expect(await rotateOAuthRefreshToken(env.DB, {
+        ...snapshot,
+        presented_refresh_token: grant.refresh,
+        presented_client_id: grant.clientId,
+        access_token: `partial-access-${crypto.randomUUID()}`,
+        refresh_token: `partial-refresh-${crypto.randomUUID()}`,
+        access_expires_at: Math.floor(Date.now() / 1000) + 600,
+        consumed_refresh_sha256: await hexDigest(grant.refresh),
+      })).toBeNull();
+      expect(await env.DB.prepare(
+        'SELECT COUNT(*) AS n FROM oauth_tokens WHERE refresh_token = ?1',
+      ).bind(grant.refresh).first<number>('n')).toBe(1);
+    }
+  });
+
+  it('protects policy state and fails closed if the singleton is missing', async () => {
+    const activatedAt = Date.now();
+    await activateOAuthGrantLifecyclePolicy(env.DB, activatedAt, 'protected-policy');
+    await expect(env.DB.prepare(
+      `UPDATE oauth_grant_lifecycle_policy
+          SET activated_at = ?1, activation_nonce = 'rewritten' WHERE id = 1`,
+    ).bind(activatedAt + 1).run()).rejects.toThrow('monotonic');
+    await expect(env.DB.prepare(
+      'DELETE FROM oauth_grant_lifecycle_policy WHERE id = 1',
+    ).run()).rejects.toThrow('cannot be deleted');
+
+    const refresh = await seedRefresh();
+    const code = await seedCode();
+    await listOAuthGrants(env.DB, refresh.userId, undefined);
+    await env.DB.prepare('DROP TRIGGER oauth_grant_lifecycle_no_delete').run();
+    await env.DB.prepare('DELETE FROM oauth_grant_lifecycle_policy WHERE id = 1').run();
+    expect(await validateBearer(env, refresh.access)).toBeNull();
+    expect((await refreshRequest(refresh)).status).toBe(400);
+    expect((await codeRequest(code)).status).toBe(400);
+    expect(await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM oauth_tokens WHERE refresh_token = ?1',
+    ).bind(refresh.refresh).first<number>('n')).toBe(1);
+    expect(await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM oauth_codes WHERE code = ?1',
+    ).bind(code.code).first<number>('n')).toBe(1);
   });
 });

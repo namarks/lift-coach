@@ -31,7 +31,7 @@ boundary uncovered in the [September app review](../../reviews/2026-09-app-revie
     response. Document the reauthorization outcome when the client cannot
     safely recover a consumed token; do not replay a credential to an unproven
     requester as an availability shortcut.
-- [ ] **P1 — Detect replay and revoke a coach grant**
+- [x] **P1 — Detect replay and revoke a coach grant**
   - Retain enough grant-family identity to detect reuse of a rotated refresh
     token and invalidate the affected grant's surviving successor. Align with
     RFC 9700 section 4.14; keep account and independent grants isolated.
@@ -43,28 +43,43 @@ boundary uncovered in the [September app review](../../reviews/2026-09-app-revie
     silently expire or revoke existing production grants in this workstream.
   - Cover replay after rotation, repeat revocation, cross-user attempts,
     independent grants, and clear reconnect UI without deleting workout data.
-  - [ ] **(a) Approve lifecycle and production transition**
-    - Record the owner's chosen lifetime/legacy transition and authorize any
-      production grant invalidation separately from repository implementation.
+  - [x] **(a) Approve lifetime and existing-connection transition**
+    - Nick approved 90 days without successful renewal and a one-year absolute
+      lifetime. Existing authorized connections start both clocks at activation;
+      later renewal slides only inactivity. Revoked connections stay revoked.
+- [x] **P2 — Implement the approved lifecycle and activation boundary**
+  - Enforce the approved deadlines on refresh and bearer validation. New grants
+    start from authorization; existing grants receive the approved activation
+    grace. Use 90 and 365 elapsed days, with epoch-ms grant timestamps.
+  - Keep policy activation disabled until an explicit production action. Make
+    activation atomic and idempotent, including repeated identical requests.
+  - Prove deadline equality, sliding inactivity, fixed absolute expiry, legacy
+    adoption, replay/deletion fences, and activation/expiry interleavings in D1.
+- [ ] **P3 — Owner-approved production release and activation**
+  - Approve the exact reviewed Worker, migration sequence, activation command,
+    verification and compatible rollback/forward-fix procedure before execution.
+  - Verify the deployed source/schema, activate the approved policy once, and
+    check that existing authorized connections remain usable. Do not reset
+    activation clocks on retry or revive revoked/expired grants.
 
 ## Execution frontier
 
-- P1(a)
+- P3
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P1 | coordinates_with | plan:member-activation-and-adherence#P0 | Both touch Coach Connect and first-use connection state. |
-| P1(a) | gated_by | external:owner-coach-grant-lifecycle | Refresh lifetime, legacy transition and production invalidation are explicit owner decisions. |
+| P3 | gated_by | external:owner-training-trust-production-release | The policy is approved; production migrations, deployment and clock activation still require release authority. |
 
 ## Next step
 
-**Now (@owner):** Resolve P1(a)'s refresh lifetime, legacy transition and exact
-production release authority. P0 and the P1 repository replay/revocation/UI
-implementation are complete with local regression proof and independent review;
-P1 remains open for its owner-gated child. No new lifetime enforcement or
-production invalidation occurred. See [decisions.md](decisions.md).
+**Now (@owner):** Approve P3's exact reviewed service source, migrations through
+`0042`, verification and one-time policy activation using the
+[release procedure](release.md). P0–P2 are complete for repository delivery;
+policy approval does not authorize production execution. TestFlight remains a
+separate release decision. See [decisions.md](decisions.md).
 
 ## Notes / open questions
 

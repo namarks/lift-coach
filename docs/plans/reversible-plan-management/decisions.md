@@ -67,7 +67,8 @@ Those actions need the owner authority recorded in the canonical member plans.
 
 An authorized release must inspect the deployed source and migration ledger,
 apply every pending migration in order through `0040_plan_snapshots.sql` and
-`0041_oauth_grant_families.sql`, then deploy the reviewed compatible Worker.
+`0041_oauth_grant_families.sql` and `0042_oauth_grant_lifecycle.sql`, then deploy
+the reviewed compatible Worker.
 Do not assume earlier storage migrations are already applied. These migrations
 are required before this Worker reads the new columns/tables. TestFlight is a
 separate release of the reviewed app after the service is available.
@@ -76,5 +77,7 @@ Keep a snapshot/lineage-aware rollback Worker or choose a forward fix. An older
 Worker may tolerate additive columns but cannot preserve the new atomic
 snapshot or refresh-lineage guarantees. Schema compatibility alone is not a
 safe rollback proof. Do not delete snapshots or invalidate grants as a rollback
-shortcut. Coach inactivity/absolute lifetimes, legacy transition and any
-production invalidation remain an explicit owner decision.
+shortcut. Nick approved coach inactivity/absolute lifetimes and the existing-
+connection transition; production deployment and one-time clock activation
+remain owner release actions. After activation, recovery must also enforce the
+approved deadlines. Follow the [shared service release procedure](../coach-access-integrity/release.md).

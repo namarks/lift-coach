@@ -340,9 +340,14 @@ models, lifecycles, and revocation paths → decoupled on purpose.
   Consumed refresh hashes retain grant-family lineage; bound-client replay
   revokes the surviving successor of that family. Profile lists and disconnects
   caller-owned grants without changing workout data. Changing a connect code
-  affects future authorization; it does not disconnect existing grants. New
-  refresh inactivity/absolute lifetime fields remain unset pending the owner's
-  lifecycle decision. A lost successful exchange response requires
+  affects future authorization; it does not disconnect existing grants.
+  Migration `0042` adds an initially disabled policy: 90 elapsed days without
+  successful refresh and a 365-day absolute maximum. Explicit atomic activation
+  starts both clocks for existing authorized grants. New authorizations start
+  their own clocks; renewal slides only inactivity and never revives an expired
+  or revoked grant. Access tokens remain capped at 30 days and must also satisfy
+  the grant deadlines. Static bearers and Apple/app sessions remain separate.
+  A lost successful exchange response requires
   reauthorization. See the [coach contract](plans/coach-access-integrity/decisions.md).
 - **No per-tool scopes.** Per connected user there is one principal → scopes would add complexity with little security gain at this scale. The trust substitute is the per-user `audit_log` + Claude-written notes (visible, reversible).
 - **Rate limit:** soft cap (~600 req/min) via a Cloudflare rate-limit rule on `/mcp` or a KV counter — a runaway-loop guard, not a security boundary. Optional-but-recommended for v1.

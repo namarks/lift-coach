@@ -178,7 +178,14 @@ rotation commit with one successor. Hashed consumed-refresh lineage detects
 bound-client replay and revokes only that grant family. Profile disconnect
 revokes caller-owned OAuth grants; changing a connect code does not. New grant
 timestamps are epoch-ms, while legacy OAuth token expiry remains epoch-seconds.
-Refresh inactivity/absolute lifetime fields remain unset pending owner policy.
+Migration `0042` adds the approved 90-day refresh inactivity and 365-day absolute
+lifetime policy, initially disabled. An explicit atomic activation starts both
+clocks for existing authorized grants; successful refresh moves only inactivity.
+Bearer validation and refresh enforce both deadlines. Activation retries cannot
+restart clocks, and revoked/expired grants require new authorization. Static MCP
+bearers and Apple/app sessions keep their separate lifecycles. See the
+[coach contract](docs/plans/coach-access-integrity/decisions.md) and
+[release procedure](docs/plans/coach-access-integrity/release.md).
 
 **MCP transport** (`src/mcp/server.ts`): stateless JSON-RPC 2.0 over
 Streamable HTTP, single `application/json` responses (no server-initiated
