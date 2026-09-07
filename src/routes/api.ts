@@ -95,6 +95,11 @@ const isNonNegativeInteger: FieldRule = (value) =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 const isPositiveInteger: FieldRule = (value) =>
   Number.isSafeInteger(value) && (value as number) > 0;
+const parsePositiveIntegerText = (value: string | undefined): number | undefined => {
+  if (value === undefined || !/^[1-9]\d*$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
 const isNullableString: FieldRule = (value) =>
   value === null || typeof value === 'string';
 const isNullableFiniteNumber: FieldRule = (value) =>
@@ -217,24 +222,34 @@ apiRoutes.get('/plan/active', async (c) => {
 });
 
 apiRoutes.get('/plan/history', async (c) => {
-  const limit = Number(c.req.query('limit') ?? 30);
-  const before = c.req.query('before_version');
+  const rawLimit = c.req.query('limit');
+  const rawBefore = c.req.query('before_version');
+  const limit = rawLimit === undefined ? 30 : parsePositiveIntegerText(rawLimit);
+  const before = parsePositiveIntegerText(rawBefore);
+  if (limit === undefined || limit > 100 ||
+      (rawBefore !== undefined && before === undefined)) {
+    return c.json({ error: 'invalid_fields', fields: [
+      ...(limit === undefined || limit > 100 ? ['limit'] : []),
+      ...(rawBefore !== undefined && before === undefined ? ['before_version'] : []),
+    ] }, 400);
+  }
   const result = await listPlanHistory(
     c.env.DB, c.get('userId'), limit,
-    before === undefined ? undefined : Number(before),
+    before,
   );
   return 'error' in result ? c.json(result, 404) : c.json(result);
 });
 
 apiRoutes.get('/plan/history/:version/compare', async (c) => {
-  const from = Number(c.req.param('version'));
+  const from = parsePositiveIntegerText(c.req.param('version'));
   const rawTo = c.req.query('to_version');
-  if (!isPositiveInteger(from) || (rawTo !== undefined && !isPositiveInteger(Number(rawTo)))) {
+  const to = rawTo === undefined || rawTo === 'current' ? undefined : parsePositiveIntegerText(rawTo);
+  if (from === undefined || (rawTo !== undefined && rawTo !== 'current' && to === undefined)) {
     return c.json({ error: 'invalid_version' }, 400);
   }
   const result = await comparePlanVersions(
     c.env.DB, c.get('userId'), from,
-    rawTo === undefined ? undefined : Number(rawTo),
+    to,
   );
   return 'error' in result ? c.json(result, 404) : c.json(result);
 });
@@ -243,21 +258,22 @@ apiRoutes.post('/plan/history/:version/restore', async (c) => {
   const parsed = await readMutationBody(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
   const b = parsed.body;
-  const version = Number(c.req.param('version'));
+  const version = parsePositiveIntegerText(c.req.param('version'));
   const invalid = invalidMutationFields(b, {
     expected_plan_id: isNonEmptyString,
     expected_version: isPositiveInteger,
   }, { reason: isNullableString });
-  if (!isPositiveInteger(version)) invalid.push('snapshot_version');
+  if (version === undefined) invalid.push('snapshot_version');
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const result = await restorePlanSnapshot(c.env.DB, c.get('userId'), {
-    plan_id: String(b.expected_plan_id), snapshot_version: version,
+    plan_id: String(b.expected_plan_id), snapshot_version: version!,
     expected_version: Number(b.expected_version), actor: 'ios',
     reason: typeof b.reason === 'string' ? b.reason : null,
   });
   if ('conflict' in result || ('error' in result && result.error === 'active_workout')) {
     return c.json(result, 409);
   }
+  if ('error' in result && result.error === 'invalid_fields') return c.json(result, 400);
   return 'error' in result ? c.json(result, 404) : c.json(result);
 });
 
@@ -277,9 +293,14 @@ apiRoutes.put('/plan/active', async (c) => {
 });
 
 apiRoutes.post('/plan', async (c) => {
-  const b = await c.req.json<{ name: string; meta?: unknown }>();
-  if (!b.name) return c.json({ error: 'missing_name' }, 400);
-  return c.json(await createPlan(c.env.DB, c.get('userId'), b.name, b.meta ?? null, {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(b, { name: isNonEmptyString }, {
+    meta: (value) => value === null || (typeof value === 'object' && !Array.isArray(value)),
+  });
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  return c.json(await createPlan(c.env.DB, c.get('userId'), String(b.name).trim(), b.meta ?? null, {
     actor: 'ios', operation: 'create_plan', args: b,
   }), 201);
 });

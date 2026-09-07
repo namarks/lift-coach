@@ -167,6 +167,25 @@ const obj = (props: Json, required: string[] = []): Json => ({
   additionalProperties: false,
 });
 
+type ToolFieldRule = (value: unknown) => boolean;
+const hasToolField = (args: Json, field: string) => Object.prototype.hasOwnProperty.call(args, field);
+const positiveSafeInteger: ToolFieldRule = (value) => Number.isSafeInteger(value) && (value as number) > 0;
+const nonEmptyToolString: ToolFieldRule = (value) =>
+  typeof value === 'string' && value.trim().length > 0;
+function invalidToolFields(
+  args: Json,
+  required: Record<string, ToolFieldRule>,
+  optional: Record<string, ToolFieldRule> = {},
+): string[] {
+  const fields = Object.entries(required)
+    .filter(([field, rule]) => !hasToolField(args, field) || !rule(args[field]))
+    .map(([field]) => field);
+  for (const [field, rule] of Object.entries(optional)) {
+    if (hasToolField(args, field) && !rule(args[field])) fields.push(field);
+  }
+  return fields;
+}
+
 const TOOLS: Record<string, Tool> = {
   get_current_plan: {
     description:
@@ -208,11 +227,18 @@ const TOOLS: Record<string, Tool> = {
       limit: { type: 'integer', minimum: 1, maximum: 100 },
       before_version: { type: 'integer', minimum: 1 },
     }),
-    handler: async (a, env, userId) => listPlanHistory(
-      env.DB, userId,
-      typeof a.limit === 'number' ? a.limit : 30,
-      typeof a.before_version === 'number' ? a.before_version : undefined,
-    ),
+    handler: async (a, env, userId) => {
+      const fields = invalidToolFields(a, {}, {
+        limit: (value) => positiveSafeInteger(value) && (value as number) <= 100,
+        before_version: positiveSafeInteger,
+      });
+      if (fields.length > 0) return { error: 'invalid_fields', fields };
+      return listPlanHistory(
+        env.DB, userId,
+        typeof a.limit === 'number' ? a.limit : 30,
+        typeof a.before_version === 'number' ? a.before_version : undefined,
+      );
+    },
   },
   compare_plan_versions: {
     description:
@@ -221,10 +247,16 @@ const TOOLS: Record<string, Tool> = {
       from_version: { type: 'integer', minimum: 1 },
       to_version: { type: 'integer', minimum: 1 },
     }, ['from_version']),
-    handler: async (a, env, userId) => comparePlanVersions(
-      env.DB, userId, Number(a.from_version),
-      typeof a.to_version === 'number' ? a.to_version : undefined,
-    ),
+    handler: async (a, env, userId) => {
+      const fields = invalidToolFields(a, { from_version: positiveSafeInteger }, {
+        to_version: positiveSafeInteger,
+      });
+      if (fields.length > 0) return { error: 'invalid_fields', fields };
+      return comparePlanVersions(
+        env.DB, userId, a.from_version as number,
+        typeof a.to_version === 'number' ? a.to_version : undefined,
+      );
+    },
   },
   restore_plan: {
     description:
@@ -235,11 +267,20 @@ const TOOLS: Record<string, Tool> = {
       expected_version: { type: 'integer', minimum: 1 },
       reason: { type: 'string' },
     }, ['snapshot_version', 'plan_id', 'expected_version']),
-    handler: async (a, env, userId) => restorePlanSnapshot(env.DB, userId, {
-      snapshot_version: Number(a.snapshot_version), plan_id: String(a.plan_id),
-      expected_version: Number(a.expected_version), actor: 'mcp',
-      reason: typeof a.reason === 'string' ? a.reason : null,
-    }),
+    handler: async (a, env, userId) => {
+      const fields = invalidToolFields(a, {
+        snapshot_version: positiveSafeInteger,
+        plan_id: nonEmptyToolString,
+        expected_version: positiveSafeInteger,
+      }, { reason: (value) => typeof value === 'string' });
+      if (fields.length > 0) return { error: 'invalid_fields', fields };
+      return restorePlanSnapshot(env.DB, userId, {
+        snapshot_version: a.snapshot_version as number,
+        plan_id: (a.plan_id as string).trim(),
+        expected_version: a.expected_version as number,
+        actor: 'mcp', reason: typeof a.reason === 'string' ? a.reason : null,
+      });
+    },
     write: true,
     atomicWrite: true,
     // restorePlanSnapshot persists its audit, note, and resulting snapshot in
