@@ -998,8 +998,10 @@ const TOOLS: Record<string, Tool> = {
         typeof a.day_label === 'string' ? a.day_label : undefined,
       ),
     note: (a, r) =>
-      `${a.intent}(${a.magnitude ?? 'moderate'})${a.day_label ? ` ${a.day_label}` : ''}: ` +
-      `${r?.changes?.length ?? 0} change(s).` +
+      `Recurring template adjustment ${a.intent}(${a.magnitude ?? 'moderate'}) for ` +
+      `${a.day_label ? String(a.day_label) : 'all workouts'}: ` +
+      `${r?.changes?.length ?? 0} change(s). ` +
+      `${r?.changes?.join('; ') || 'No representable reduction; no targets changed.'}` +
       (typeof a.reason === 'string' ? ` Reason: ${a.reason}` : ''),
   },
   set_schedule: {
