@@ -3198,7 +3198,17 @@ export async function addTemplateExercise(
   db: D1Database,
   planId: string,
   input: Omit<TemplateExerciseRow, 'id' | 'created_at' | 'updated_at'>,
-): Promise<TemplateExerciseRow> {
+): Promise<TemplateExerciseRow | PrescriptionValidationError> {
+  const exercise = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
+    .bind(input.exercise_id).first<{ modality: string }>();
+  const validationInput: Record<string, unknown> = {
+    ...input,
+    progression: input.progression === null
+      ? null
+      : (() => { try { return JSON.parse(input.progression); } catch { return input.progression; } })(),
+  };
+  const invalid = validateExercisePrescription(validationInput, { modality: exercise?.modality });
+  if (invalid) return invalid;
   const ts = now();
   const row: TemplateExerciseRow = { ...input, id: uuid(), created_at: ts, updated_at: ts };
   await db
@@ -5129,7 +5139,7 @@ export async function listActivitiesForUser(
 
 // ---- plan-tree mutations (MCP write tools) -------------------------------
 
-interface ExerciseInput {
+export interface ExerciseInput {
   exercise: string;
   order_index?: number;
   target_sets: number;
@@ -5147,6 +5157,47 @@ interface ExerciseInput {
    *  Preserved across a full-tree rebuild so update_plan never silently
    *  strips a warm-up flag set via the REST editor. */
   is_warmup?: number | boolean;
+}
+
+export type PrescriptionValidationError = {
+  error: 'invalid_fields';
+  fields: string[];
+};
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** Runtime prescription validation shared by every plan-slot writer.
+ * Null is intentionally distinct from omission for nullable targets. */
+export function validateExercisePrescription(
+  value: Record<string, unknown>,
+  options: { partial?: boolean; modality?: string | null } = {},
+): PrescriptionValidationError | null {
+  const bad = new Set<string>();
+  const has = (field: string) => Object.prototype.hasOwnProperty.call(value, field);
+  const required = (field: string) => !options.partial || has(field);
+  const integer = (field: string, min: number) => {
+    if (required(field) && (!Number.isSafeInteger(value[field]) || (value[field] as number) < min)) bad.add(field);
+  };
+  integer('target_sets', 1);
+  integer('target_reps', 1);
+  if (has('target_reps_max') && value.target_reps_max !== null &&
+      (!Number.isSafeInteger(value.target_reps_max) || (value.target_reps_max as number) < 1)) bad.add('target_reps_max');
+  if (has('target_rpe') && value.target_rpe !== null &&
+      (typeof value.target_rpe !== 'number' || !Number.isFinite(value.target_rpe) || value.target_rpe < 0 || value.target_rpe > 10)) bad.add('target_rpe');
+  if (has('rest_seconds') && (!Number.isSafeInteger(value.rest_seconds) || (value.rest_seconds as number) < 0)) bad.add('rest_seconds');
+  if (has('target_duration_s') && value.target_duration_s !== null &&
+      (!Number.isSafeInteger(value.target_duration_s) || (value.target_duration_s as number) <= 0)) bad.add('target_duration_s');
+  if (has('target_weight') && value.target_weight !== null &&
+      (typeof value.target_weight !== 'number' || !Number.isFinite(value.target_weight))) bad.add('target_weight');
+  if (typeof value.target_weight === 'number' && value.target_weight < 0 &&
+      options.modality !== 'bw' && options.modality !== 'timed') bad.add('target_weight');
+  if (has('order_index') && (!Number.isSafeInteger(value.order_index) || (value.order_index as number) < 0)) bad.add('order_index');
+  if (has('cues') && value.cues !== null && typeof value.cues !== 'string') bad.add('cues');
+  if (has('progression') && value.progression !== null && !isPlainRecord(value.progression)) bad.add('progression');
+  if (has('is_warmup') && typeof value.is_warmup !== 'boolean' && value.is_warmup !== 0 && value.is_warmup !== 1) bad.add('is_warmup');
+  if (typeof value.target_reps === 'number' && typeof value.target_reps_max === 'number' && value.target_reps_max < value.target_reps) bad.add('target_reps_max');
+  return bad.size === 0 ? null : { error: 'invalid_fields', fields: [...bad].sort() };
 }
 
 async function resolveOrThrow(db: D1Database, name: string): Promise<string> {
@@ -5179,16 +5230,28 @@ export async function updatePlanTree(
   | { conflict: true; current_version: number }
   | { conflict: false; plan: PlanTree }
   | { error: 'unknown_exercise'; queries: string[]; query: string }
+  | PrescriptionValidationError
 > {
-  let plan = await getActivePlan(db, userId);
-  if (!plan) {
-    // The no-plan coach path shares the same conflict-safe bootstrap as the
-    // app. If both callers observe "no active plan", the partial unique index
-    // elects one stable plan id and the coach rebuilds that winner instead of
-    // archiving the app's just-created row with createPlan().
-    plan = (await ensureActivePlan(db, userId, input.name ?? 'My Plan')).plan;
+  if (!input || !Array.isArray(input.days)) {
+    return { error: 'invalid_fields', fields: ['days'] };
   }
+  if (input.name !== undefined && typeof input.name !== 'string') {
+    return { error: 'invalid_fields', fields: ['name'] };
+  }
+  if (input.meta !== undefined && input.meta !== null && !isPlainRecord(input.meta)) {
+    return { error: 'invalid_fields', fields: ['meta'] };
+  }
+  if (input.expected_version !== undefined && input.expected_version !== null &&
+      (!Number.isInteger(input.expected_version) || input.expected_version < 1)) {
+    return { error: 'invalid_fields', fields: ['expected_version'] };
+  }
+  const malformedDays = input.days.flatMap((day, index) =>
+    !isPlainRecord(day) || !Array.isArray(day.exercises ?? []) ? [`days.${index}`] : [],
+  );
+  if (malformedDays.length > 0) return { error: 'invalid_fields', fields: malformedDays };
+  let plan = await getActivePlan(db, userId);
   if (
+    plan &&
     input.expected_version != null &&
     input.expected_version !== plan.version
   ) {
@@ -5203,6 +5266,7 @@ export async function updatePlanTree(
   // structured shape introduced in PR #12. Use list_exercises to
   // discover valid catalog names.
   const resolved = new Map<string, string>();
+  const resolvedModality = new Map<string, string>();
   const unknown: string[] = [];
   const seenUnknown = new Set<string>();
   for (const d of input.days) {
@@ -5222,10 +5286,30 @@ export async function updatePlanTree(
         continue;
       }
       resolved.set(e.exercise, (ex as { id: string }).id);
+      resolvedModality.set(e.exercise, (ex as { modality: string }).modality);
     }
   }
   if (unknown.length > 0) {
     return { error: 'unknown_exercise', queries: unknown, query: unknown[0]! };
+  }
+  const invalidFields = new Set<string>();
+  input.days.forEach((day, dayIndex) => {
+    if (typeof day.name !== 'string' || day.name.trim() === '') invalidFields.add(`days.${dayIndex}.name`);
+    if (day.order_index !== undefined && (!Number.isInteger(day.order_index) || day.order_index < 0)) invalidFields.add(`days.${dayIndex}.order_index`);
+    if (day.day_label !== undefined && day.day_label !== null && typeof day.day_label !== 'string') invalidFields.add(`days.${dayIndex}.day_label`);
+    if (day.notes !== undefined && day.notes !== null && typeof day.notes !== 'string') invalidFields.add(`days.${dayIndex}.notes`);
+    (day.exercises ?? []).forEach((exercise, exerciseIndex) => {
+      const invalid = validateExercisePrescription(exercise as unknown as Record<string, unknown>, {
+        modality: resolvedModality.get(exercise.exercise),
+      });
+      for (const field of invalid?.fields ?? []) invalidFields.add(`days.${dayIndex}.exercises.${exerciseIndex}.${field}`);
+    });
+  });
+  if (invalidFields.size > 0) return { error: 'invalid_fields', fields: [...invalidFields].sort() };
+  if (!plan) {
+    // Bootstrap only after the complete proposed tree has passed resolution
+    // and runtime validation. A rejected first write must not create state.
+    plan = (await ensureActivePlan(db, userId, input.name ?? 'My Plan')).plan;
   }
 
   // Capture the OLD day identity (id → name/label) before the rebuild so we
@@ -5689,7 +5773,7 @@ export async function updateExercise(
       | 'is_warmup'
     >
   > & { progression?: unknown },
-): Promise<TemplateExerciseRow | { error: 'unknown_fields'; fields: string[] } | null> {
+): Promise<TemplateExerciseRow | { error: 'unknown_fields'; fields: string[] } | PrescriptionValidationError | null> {
   // Slot lookup first so a wrong ref returns the more actionable
   // `slot_not_found` (via null) before unknown_fields. A double-mistake
   // call gets the higher-priority diagnostic.
@@ -5697,52 +5781,99 @@ export async function updateExercise(
   if (!slot) return null;
   const unknown = Object.keys(patch).filter((k) => !TEMPLATE_EXERCISE_PATCH_KEYS.has(k));
   if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
-  const m: TemplateExerciseRow = {
-    ...slot,
-    target_sets: patch.target_sets ?? slot.target_sets,
-    target_reps: patch.target_reps ?? slot.target_reps,
-    target_reps_max:
-      patch.target_reps_max === undefined ? slot.target_reps_max : patch.target_reps_max,
+  const modality = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
+    .bind(slot.exercise_id).first<{ modality: string }>();
+  const merged = {
+    target_sets: patch.target_sets === undefined ? slot.target_sets : patch.target_sets,
+    target_reps: patch.target_reps === undefined ? slot.target_reps : patch.target_reps,
+    target_reps_max: patch.target_reps_max === undefined ? slot.target_reps_max : patch.target_reps_max,
     target_rpe: patch.target_rpe === undefined ? slot.target_rpe : patch.target_rpe,
-    rest_seconds: patch.rest_seconds ?? slot.rest_seconds,
-    target_weight:
-      patch.target_weight === undefined ? slot.target_weight : patch.target_weight,
-    target_duration_s:
-      patch.target_duration_s === undefined ? slot.target_duration_s : patch.target_duration_s,
+    rest_seconds: patch.rest_seconds === undefined ? slot.rest_seconds : patch.rest_seconds,
+    target_weight: patch.target_weight === undefined ? slot.target_weight : patch.target_weight,
+    target_duration_s: patch.target_duration_s === undefined ? slot.target_duration_s : patch.target_duration_s,
     cues: patch.cues === undefined ? slot.cues : patch.cues,
     order_index: patch.order_index === undefined ? slot.order_index : patch.order_index,
-    is_warmup:
-      patch.is_warmup === undefined ? slot.is_warmup : patch.is_warmup ? 1 : 0,
-    progression:
-      patch.progression === undefined
-        ? slot.progression
-        : patch.progression == null
-          ? null
-          : JSON.stringify(patch.progression),
-    updated_at: now(),
+    is_warmup: patch.is_warmup === undefined ? slot.is_warmup : patch.is_warmup,
+    progression: patch.progression === undefined
+      ? (slot.progression === null ? null : JSON.parse(slot.progression) as unknown)
+      : patch.progression,
   };
-  await db
-    .prepare(
-      `UPDATE template_exercises SET target_sets=?2,target_reps=?3,target_reps_max=?4,
-       target_rpe=?5,rest_seconds=?6,target_weight=?7,target_duration_s=?8,cues=?9,progression=?10,order_index=?11,is_warmup=?12,updated_at=?13
-       WHERE id=?1`,
-    )
-    .bind(
-      slot.id, m.target_sets, m.target_reps, m.target_reps_max, m.target_rpe,
-      m.rest_seconds, m.target_weight, m.target_duration_s, m.cues, m.progression, m.order_index, m.is_warmup, m.updated_at,
-    )
-    .run();
-  // Patching order_index can collide with a sibling; densify the day so the
-  // result has unique 0..n-1 indices honoring the requested position.
-  if (patch.order_index !== undefined && (await dedupeDayOrderIndexes(db, slot.day_template_id, slot.id))) {
-    const fresh = await db
-      .prepare('SELECT order_index FROM template_exercises WHERE id = ?1')
-      .bind(slot.id)
-      .first<{ order_index: number }>();
-    if (fresh) m.order_index = fresh.order_index;
+  const invalid = validateExercisePrescription(merged as Record<string, unknown>, { modality: modality?.modality });
+  if (invalid) return invalid;
+  if (Object.keys(patch).length === 0) return slot;
+
+  // Update only fields supplied by the caller. This bounded legacy policy lets
+  // disjoint tokenless patches compose; concurrent same-field patches remain
+  // last-committer-wins until every released caller supplies expected_version.
+  const assignments: string[] = [];
+  const values: unknown[] = [slot.id];
+  const assign = (column: string, value: unknown) => {
+    values.push(value);
+    assignments.push(`${column}=?${values.length}`);
+  };
+  for (const key of TEMPLATE_EXERCISE_PATCH_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+    const value = key === 'progression'
+      ? (patch.progression == null ? null : JSON.stringify(patch.progression))
+      : key === 'is_warmup'
+        ? (patch.is_warmup ? 1 : 0)
+        : (patch as Record<string, unknown>)[key];
+    assign(key, value);
   }
-  await bumpPlanVersionByDay(db, slot.day_template_id);
-  return m;
+  const ts = now();
+  assign('updated_at', ts);
+  values.push(userId);
+  const userParam = values.length;
+  const rangePredicates: string[] = [];
+  if (patch.target_reps !== undefined) {
+    values.push(patch.target_reps);
+    rangePredicates.push(`(target_reps_max IS NULL OR target_reps_max>=?${values.length})`);
+  }
+  if (patch.target_reps_max !== undefined && patch.target_reps_max !== null) {
+    values.push(patch.target_reps_max);
+    rangePredicates.push(`target_reps<=?${values.length}`);
+  }
+  const statements: D1PreparedStatement[] = [
+    db.prepare(
+      `UPDATE template_exercises SET ${assignments.join(',')}
+        WHERE id=?1 AND EXISTS (
+          SELECT 1 FROM day_templates d JOIN plans p ON p.id=d.plan_id
+           WHERE d.id=template_exercises.day_template_id
+             AND p.user_id=?${userParam} AND p.status='active'
+        )${rangePredicates.length ? ` AND ${rangePredicates.join(' AND ')}` : ''}`,
+    ).bind(...values),
+  ];
+  if (patch.order_index !== undefined) {
+    const siblings = await db.prepare(
+      'SELECT id,order_index FROM template_exercises WHERE day_template_id=?1 ORDER BY order_index,created_at,id',
+    ).bind(slot.day_template_id).all<{ id: string; order_index: number }>();
+    const moved = siblings.results.map((row) => row.id === slot.id ? { ...row, order_index: patch.order_index! } : row);
+    const hasDuplicate = new Set(moved.map((row) => row.order_index)).size !== moved.length;
+    if (hasDuplicate) {
+      const ordered = orderDayRows(moved, slot.id);
+      ordered.forEach((row, index) => statements.push(
+        db.prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
+          AND EXISTS (SELECT 1 FROM template_exercises WHERE id=?4)`).bind(row.id, index, ts, slot.id),
+      ));
+    }
+  }
+  statements.push(db.prepare(
+    `UPDATE plans SET version=version+1,updated_at=?3
+      WHERE user_id=?1 AND status='active'
+        AND EXISTS (
+          SELECT 1 FROM day_templates d JOIN template_exercises te ON te.day_template_id=d.id
+           WHERE te.id=?2 AND d.plan_id=plans.id
+        ) RETURNING version`,
+  ).bind(userId, slot.id, ts));
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
+  if ((results[0]?.meta.changes ?? 0) !== 1 || !results.at(-1)?.results[0]) {
+    const current = await findSlot(db, userId, ref);
+    if (current && (patch.target_reps !== undefined || patch.target_reps_max !== undefined)) {
+      return { error: 'invalid_fields', fields: ['target_reps_max'] };
+    }
+    return null;
+  }
+  return db.prepare('SELECT * FROM template_exercises WHERE id=?1').bind(slot.id).first<TemplateExerciseRow>();
 }
 
 /**
@@ -5783,16 +5914,33 @@ export async function swapExercise(
   db: D1Database,
   userId: string,
   ref: { day: string; from_exercise: string; to_exercise: string; carry_targets?: boolean },
-): Promise<TemplateExerciseRow | null> {
+): Promise<TemplateExerciseRow | PrescriptionValidationError | null> {
   const slot = await findSlot(db, userId, { day: ref.day, exercise: ref.from_exercise });
   if (!slot) return null;
-  const toId = await resolveOrThrow(db, ref.to_exercise);
-  await db
-    .prepare('UPDATE template_exercises SET exercise_id=?2, updated_at=?3 WHERE id=?1')
-    .bind(slot.id, toId, now())
-    .run();
-  await bumpPlanVersionByDay(db, slot.day_template_id);
-  return { ...slot, exercise_id: toId, updated_at: now() };
+  const destination = await resolveExercise(db, ref.to_exercise) as { id: string; modality: string } | null;
+  if (!destination) throw new Error(`unknown_exercise:${ref.to_exercise}`);
+  const progression = slot.progression === null ? null : JSON.parse(slot.progression) as unknown;
+  const invalid = validateExercisePrescription({ ...slot, progression }, { modality: destination.modality });
+  if (invalid) return invalid;
+  const ts = now();
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, [
+    db.prepare(
+      `UPDATE template_exercises SET exercise_id=?2,updated_at=?3 WHERE id=?1
+        AND EXISTS (
+          SELECT 1 FROM day_templates d JOIN plans p ON p.id=d.plan_id
+           WHERE d.id=template_exercises.day_template_id AND p.user_id=?4 AND p.status='active'
+        )`,
+    ).bind(slot.id, destination.id, ts, userId),
+    db.prepare(
+      `UPDATE plans SET version=version+1,updated_at=?3
+        WHERE user_id=?1 AND status='active' AND EXISTS (
+          SELECT 1 FROM day_templates d JOIN template_exercises te ON te.day_template_id=d.id
+           WHERE te.id=?2 AND d.plan_id=plans.id
+        ) RETURNING version`,
+    ).bind(userId, slot.id, ts),
+  ]);
+  if ((results[0]?.meta.changes ?? 0) !== 1 || !results[1]?.results[0]) return null;
+  return { ...slot, exercise_id: destination.id, updated_at: ts };
 }
 
 async function bumpPlanVersionByDay(db: D1Database, dayTemplateId: string): Promise<void> {

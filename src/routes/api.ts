@@ -486,6 +486,7 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
     cues: b.cues ?? null,
     is_warmup: b.is_warmup ? 1 : 0,
   });
+  if ('error' in row) return c.json(row, 400);
   // Audit the in-app plan edit (actor='ios') so the trust/undo trail covers
   // app-side mutations the same as MCP ones (DESIGN §5).
   await writeAudit(
