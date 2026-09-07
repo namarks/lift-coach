@@ -10276,3 +10276,172 @@ export async function getGroupActivitySeries(
   }
   return out;
 }
+
+// ---- OAuth grant transitions --------------------------------------------
+
+export interface OAuthCodeRedemption {
+  code: string;
+  client_id: string;
+  redirect_uri: string;
+  code_challenge: string;
+  code_challenge_method: string;
+  scope: string | null;
+  expires_at: number;
+  user_id: string | null;
+  access_token: string;
+  refresh_token: string;
+  access_expires_at: number;
+  owner_apple_sub?: string;
+}
+
+export interface OAuthRefreshRotation {
+  presented_refresh_token: string;
+  presented_client_id: string;
+  client_id: string;
+  scope: string | null;
+  expires_at: number;
+  user_id: string | null;
+  access_token: string;
+  refresh_token: string;
+  access_expires_at: number;
+  owner_apple_sub?: string;
+}
+
+export interface OAuthTokenPair {
+  access_token: string;
+  refresh_token: string;
+  scope: string;
+}
+
+/**
+ * Consume one already-validated authorization-code snapshot and insert its
+ * sole successor in one D1 transaction. Every immutable validation input is
+ * repeated at the write boundary. If insertion fails, D1 rolls the batch back
+ * and leaves the code available for a corrected retry.
+ */
+export async function redeemOAuthAuthorizationCode(
+  db: D1Database,
+  redemption: OAuthCodeRedemption,
+): Promise<OAuthTokenPair | null> {
+  // Legacy unscoped grants belong only to an existing distinguished owner.
+  // Do not bootstrap a replacement identity while redeeming old credentials.
+  const principal = redemption.user_id
+    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(redemption.user_id).first<{ id: string }>()
+    : await findOwnerRow(db, redemption.owner_apple_sub);
+  if (!principal) return null;
+
+  const nowMs = now();
+  const createdAt = Math.floor(nowMs / 1000);
+  const legacy = redemption.user_id === null;
+  const [inserted, consumed] = await db.batch([
+    db.prepare(
+      `INSERT INTO oauth_tokens
+         (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id)
+       SELECT ?1, ?2, client_id, COALESCE(scope, 'mcp'), ?3, ?4, ?5
+         FROM oauth_codes
+        WHERE code = ?6
+          AND client_id = ?7
+          AND redirect_uri = ?8
+          AND code_challenge = ?9
+          AND code_challenge_method = ?10
+          AND expires_at = ?11
+          AND expires_at >= ?12
+          AND (user_id = ?13 OR (?14 = 1 AND user_id IS NULL))
+          AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)`,
+    ).bind(
+      redemption.access_token,
+      redemption.refresh_token,
+      redemption.access_expires_at,
+      createdAt,
+      principal.id,
+      redemption.code,
+      redemption.client_id,
+      redemption.redirect_uri,
+      redemption.code_challenge,
+      redemption.code_challenge_method,
+      redemption.expires_at,
+      nowMs,
+      redemption.user_id,
+      legacy ? 1 : 0,
+    ),
+    db.prepare(
+      `DELETE FROM oauth_codes
+        WHERE code = ?1
+          AND client_id = ?2
+          AND redirect_uri = ?3
+          AND code_challenge = ?4
+          AND code_challenge_method = ?5
+          AND expires_at = ?6
+          AND expires_at >= ?7
+          AND (user_id = ?8 OR (?9 = 1 AND user_id IS NULL))
+          AND changes() = 1`,
+    ).bind(
+      redemption.code,
+      redemption.client_id,
+      redemption.redirect_uri,
+      redemption.code_challenge,
+      redemption.code_challenge_method,
+      redemption.expires_at,
+      nowMs,
+      redemption.user_id,
+      legacy ? 1 : 0,
+    ),
+  ]);
+  if (inserted?.meta.changes !== 1 || consumed?.meta.changes !== 1) return null;
+  return {
+    access_token: redemption.access_token,
+    refresh_token: redemption.refresh_token,
+    scope: redemption.scope ?? 'mcp',
+  };
+}
+
+/** Rotate a refresh credential with one conditional write. */
+export async function rotateOAuthRefreshToken(
+  db: D1Database,
+  rotation: OAuthRefreshRotation,
+): Promise<OAuthTokenPair | null> {
+  if (!rotation.presented_client_id || rotation.presented_client_id !== rotation.client_id) {
+    return null;
+  }
+  const principal = rotation.user_id
+    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(rotation.user_id).first<{ id: string }>()
+    : await findOwnerRow(db, rotation.owner_apple_sub);
+  if (!principal) return null;
+
+  const createdAt = Math.floor(now() / 1000);
+  const legacy = rotation.user_id === null;
+  const result = await db.prepare(
+    `UPDATE oauth_tokens
+        SET access_token = ?1,
+            refresh_token = ?2,
+            expires_at = ?3,
+            created_at = ?4,
+            user_id = ?5
+      WHERE refresh_token = ?6
+        AND client_id = ?7
+        AND expires_at = ?8
+        AND (user_id = ?9 OR (?10 = 1 AND user_id IS NULL))
+        AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)`,
+  ).bind(
+    rotation.access_token,
+    rotation.refresh_token,
+    rotation.access_expires_at,
+    createdAt,
+    principal.id,
+    rotation.presented_refresh_token,
+    rotation.client_id,
+    rotation.expires_at,
+    rotation.user_id,
+    legacy ? 1 : 0,
+  ).run();
+  if (result.meta.changes !== 1) return null;
+  return {
+    access_token: rotation.access_token,
+    refresh_token: rotation.refresh_token,
+    scope: rotation.scope ?? 'mcp',
+  };
+}

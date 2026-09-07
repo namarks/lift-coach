@@ -191,6 +191,7 @@ describe('oauth full PKCE flow', () => {
     const rf = new FormData();
     rf.set('grant_type', 'refresh_token');
     rf.set('refresh_token', t.refresh_token);
+    rf.set('client_id', client_id);
     const refreshed = await SELF.fetch(`${BASE}/oauth/token`, { method: 'POST', body: rf });
     expect(refreshed.status).toBe(200);
     const t2 = await refreshed.json<{ access_token: string }>();
