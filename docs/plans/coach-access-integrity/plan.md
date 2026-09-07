@@ -56,30 +56,34 @@ boundary uncovered in the [September app review](../../reviews/2026-09-app-revie
   - Prove deadline equality, sliding inactivity, fixed absolute expiry, legacy
     adoption, replay/deletion fences, and activation/expiry interleavings in D1.
 - [ ] **P3 — Owner-approved production release and activation**
-  - Approve the exact reviewed Worker, migration sequence, activation command,
-    verification and compatible rollback/forward-fix procedure before execution.
-  - Verify the deployed source/schema, activate the approved policy once, and
-    check that existing authorized connections remain usable. Do not reset
-    activation clocks on retry or revive revoked/expired grants.
+  - [x] **(a) Release the approved service source and schema**
+    - Nick approved source `2e67f93`, migrations `0040`–`0042`, the client check
+      and one-time activation with compatible forward recovery. The exact
+      reviewed Worker is deployed and its source/schema independently verified.
+  - [ ] **(b) Verify an existing client and activate the approved policy**
+    - Complete a real authenticated read through an existing client, then
+      activate once and repeat the read. Activation is already authorized.
+      Do not reset clocks on retry or revive revoked/expired grants.
 
 ## Execution frontier
 
-- P3
+- P3(b)
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P1 | coordinates_with | plan:member-activation-and-adherence#P0 | Both touch Coach Connect and first-use connection state. |
-| P3 | gated_by | external:owner-training-trust-production-release | The policy is approved; production migrations, deployment and clock activation still require release authority. |
+| P3(b) | gated_by | external:existing-authorized-coach-client | Activation is approved, but the required authenticated client check is unexercised: the Mac was locked and the normal CLI client was logged out. |
 
 ## Next step
 
-**Now (@owner):** Approve P3's exact reviewed service source, migrations through
-`0042`, verification and one-time policy activation using the
-[release procedure](release.md). P0–P2 are complete for repository delivery;
-policy approval does not authorize production execution. TestFlight remains a
-separate release decision. See [decisions.md](decisions.md).
+**Now (@owner):** Make an existing authorized client available for P3(b)'s
+read-only check, for example by unlocking the Mac. The agent can then finish
+the already-approved activation and postactivation read using the
+[release procedure](release.md), without another release approval. The service
+and migrations are live; the policy remains disabled. TestFlight is separate.
+See [decisions.md](decisions.md).
 
 ## Notes / open questions
 

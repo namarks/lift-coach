@@ -92,11 +92,11 @@ Make every workout and plan mutation authorized, validated, durable, and
 recoverable before adding product depth.
 
 - [Reversible plan management](reversible-plan-management/plan.md) —
-  **gated**; authorize the service/app release for shared snapshots and restore.
+  **gated**; service live, with TestFlight and the edit/restore canary awaiting approval.
 - [Coach access integrity](coach-access-integrity/plan.md) — **gated**;
-  authorize the reviewed service release and activation of the approved lifetime policy.
+  verify an existing client, then finish the already-approved policy activation.
 - [Prescription integrity](prescription-integrity/plan.md) — **gated**;
-  authorize production validation/atomic-writer release and any legacy correction.
+  service live; bounded aggregate checks passed, with the validation/attribution canary pending.
 
 ### Coaching (`coaching`)
 

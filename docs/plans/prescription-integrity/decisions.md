@@ -44,3 +44,32 @@ reviewed complete replacement containing valid values and the observed current
 replacement. Verify typed values and atomic attribution after acceptance.
 The local regression proves this recovery path; it does not establish the
 health of production rows or authorize modifying them.
+
+## 2026-09-07: reviewed service released
+
+Nick approved exact source `2e67f93` and migrations through `0042`. Production
+now serves that source at 100%, with independent source/schema verification
+recorded in the [shared release evidence](../coach-access-integrity/decisions.md).
+No production prescription was edited or corrected, and no validation or
+attribution canary was executed. A concrete production canary and any legacy
+repair remain separate owner decisions.
+
+A subsequent aggregate SELECT found zero violations in the assessed count and
+numeric domains, rep-range ordering, signed-load modality, warm-up flag,
+progression JSON object/null shape and catalog references. The successful direct
+query returned counts only and reported `changed_db=false`, `changes=0` and
+`rows_written=0`. This is bounded evidence: cues storage, nonfinite REAL edge
+encoding, complete plan/day structure, order density, snapshots, client decoding
+and production mutation behavior were not established by that query. No legacy
+repair is proposed from these results.
+
+One diagnostic transport attempt needs a distinct caveat. The agent submitted
+the single aggregate SELECT through Wrangler `--file`, which uses D1's import
+endpoint. The service reported one query, zero rows written, `last_row_id=0`
+and unchanged observed database size, but also `changed_db=true`, `changes=1`
+and an advanced bookmark. The file contained no DDL, DML or additional statement;
+Wrangler's inspected client implementation appended no SQL. This supports zero
+reported application-row writes, not a claim of zero internal/control-plane
+state change. The cause of the import metadata was not established. That path
+was stopped; the authoritative aggregate result came from a later direct
+`--command` SELECT. Use direct commands for future read-only diagnostics.

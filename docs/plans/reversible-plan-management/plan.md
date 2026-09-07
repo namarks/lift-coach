@@ -34,30 +34,33 @@ audit trail rather than rewriting them.
     restore; measure snapshot growth before adding pruning policy.
   - Verify both AI and manual app edits appear in the same history.
 - [ ] **P3 — Owner-approved service and app release**
-  - Authorize and apply the pending migration sequence through the snapshot and
-    coach-grant migrations before deploying the reviewed Worker. Retain a
-    snapshot/lineage-aware rollback or forward-fix plan.
-  - Release the reviewed iOS build through a separately authorized TestFlight
-    upload, then verify shared app/coach history and conflict-safe restore with
-    an approved canary. Do not infer release from repository checks.
+  - [x] **(a) Release the reviewed service and migrations**
+    - Migrations through `0042` and exact reviewed Worker source `2e67f93` are
+      live. The source/schema were independently verified. Recovery must retain
+      snapshot, lineage and active-fence guarantees.
+  - [ ] **(b) Release and verify the app with an approved canary**
+    - Authorize TestFlight and a production edit/restore canary, then verify
+      shared app/coach history and conflict-safe restore. Do not infer app
+      release or production restore behavior from repository checks.
 
 ## Execution frontier
 
-- P3
+- P3(b)
 
 ## Next step
 
-**Now (@owner):** Authorize P3's reviewed migration/Worker release and separate
-TestFlight upload with a compatible rollback. P0–P2 are complete for repository
-delivery. The [snapshot contract, growth measurement and release boundary](decisions.md)
-record local proof; deployed history and restore remain unexercised here.
+**Now (@owner):** Authorize P3(b)'s reviewed TestFlight upload and a concrete
+production edit/restore canary after the pending existing-client read check.
+The service release is complete; app release and production restore behavior
+remain unexercised. The [snapshot contract and release evidence](decisions.md)
+distinguish these boundaries.
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | blocked_by | plan:prescription-integrity#P1 | A snapshot cannot repair partial or lost edits; mutation/version/audit must share a proven boundary first. |
-| P3 | gated_by | external:owner-training-trust-production-release | Production migrations, Worker deployment and TestFlight are explicit owner release actions. |
+| P3(b) | gated_by | external:owner-training-trust-app-canary-release | The service is deployed; TestFlight and a production edit/restore canary still need explicit owner authority. |
 
 ## Notes / open questions
 
