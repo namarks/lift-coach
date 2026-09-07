@@ -189,6 +189,18 @@ function matchSlots(before: PlanSnapshotExercise[], after: PlanSnapshotExercise[
   return { pairs, removed: before.filter((slot) => !usedBefore.has(slot)), added: after.filter((slot) => !usedAfter.has(slot)) };
 }
 
+function slotPath(
+  day: PlanSnapshotDay,
+  slot: PlanSnapshotExercise,
+  options: PlanSnapshotComparisonOptions,
+): string {
+  const matching = day.exercises.filter((candidate) =>
+    candidate.exercise_id === slot.exercise_id && candidate.is_warmup === slot.is_warmup);
+  const occurrence = matching.findIndex((candidate) => candidate === slot) + 1;
+  const suffix = matching.length > 1 ? ` · occurrence ${occurrence}` : '';
+  return `${day.name} · ${exerciseName(slot.exercise_id, options) ?? 'Exercise'}${suffix}`;
+}
+
 export function comparePlanSnapshots(
   before: PlanSnapshotDocument,
   after: PlanSnapshotDocument,
@@ -242,21 +254,18 @@ export function comparePlanSnapshots(
     }
     const slots = matchSlots(prior.exercises, day.exercises);
     for (const slot of slots.removed) {
-      const name = exerciseName(slot.exercise_id, options) ?? 'Exercise';
-      changes.push({ kind: 'exercise', path: `${day.name} · ${name}`, before: readableSlot(slot, options), after: null });
+      changes.push({ kind: 'exercise', path: slotPath(prior, slot, options), before: readableSlot(slot, options), after: null });
       summary.exercises_removed++;
     }
     for (const slot of slots.added) {
-      const name = exerciseName(slot.exercise_id, options) ?? 'Exercise';
-      changes.push({ kind: 'exercise', path: `${day.name} · ${name}`, before: null, after: readableSlot(slot, options) });
+      changes.push({ kind: 'exercise', path: slotPath(day, slot, options), before: null, after: readableSlot(slot, options) });
       summary.exercises_added++;
     }
     for (const [old, slot] of slots.pairs) {
       const oldComparable = { ...old, id: undefined };
       const newComparable = { ...slot, id: undefined };
       if (stable(oldComparable) !== stable(newComparable)) {
-        const name = exerciseName(slot.exercise_id, options) ?? 'Exercise';
-        changes.push({ kind: 'exercise', path: `${day.name} · ${name}`, before: readableSlot(old, options), after: readableSlot(slot, options) });
+        changes.push({ kind: 'exercise', path: slotPath(day, slot, options), before: readableSlot(old, options), after: readableSlot(slot, options) });
         summary.exercises_changed++;
       }
     }

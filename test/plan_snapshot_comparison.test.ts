@@ -36,7 +36,7 @@ describe('plan snapshot comparison', () => {
     ], { mon: 'old-day' });
     const after = document([
       day('new-day', 'Strength', 'A', [
-        slot('new-bench-1', 'bench'),
+        slot('new-bench-1', 'bench', { target_weight: 105 }),
         slot('new-bench-2', 'bench', { order_index: 1, target_weight: 85 }),
       ]),
     ], { mon: 'new-day' });
@@ -45,14 +45,17 @@ describe('plan snapshot comparison', () => {
 
     expect(result.summary).toMatchObject({
       schedule_days: 0, days_added: 0, days_removed: 0,
-      exercises_added: 0, exercises_removed: 0, exercises_changed: 1,
+      exercises_added: 0, exercises_removed: 0, exercises_changed: 2,
     });
-    expect(result.changes).toHaveLength(1);
-    expect(result.changes[0]).toMatchObject({
-      kind: 'exercise', path: 'Strength · Bench Press',
-      before: { id: 'old-bench-2', exercise_id: 'bench', exercise_name: 'Bench Press', target_weight: 80 },
-      after: { id: 'new-bench-2', exercise_id: 'bench', exercise_name: 'Bench Press', target_weight: 85 },
-    });
+    expect(result.changes.map((change) => change.path)).toEqual([
+      'Strength · Bench Press · occurrence 1',
+      'Strength · Bench Press · occurrence 2',
+    ]);
+    expect(result.changes[1]).toMatchObject({
+        kind: 'exercise',
+        before: { id: 'old-bench-2', exercise_id: 'bench', exercise_name: 'Bench Press', target_weight: 80 },
+        after: { id: 'new-bench-2', exercise_id: 'bench', exercise_name: 'Bench Press', target_weight: 85 },
+      });
   });
 
   it('shows full prescriptions for added and removed workouts', () => {
