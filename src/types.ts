@@ -117,6 +117,10 @@ export interface User {
   intervals_events_synced_at: number | null;
   /** Last successful completed-activities reconcile for the current credential identity. */
   intervals_activities_synced_at: number | null;
+  /** Latest planned-events sync attempt claimed in the current credential generation. */
+  intervals_events_sync_attempt: number;
+  /** Latest completed-activities sync attempt claimed in the current credential generation. */
+  intervals_activities_sync_attempt: number;
   /**
    * Per-user MCP passphrase (M3 multi-tenant, 0025). PBKDF2-SHA256 hash +
    * per-user salt; never plaintext. NULL → no passphrase set, so this user
