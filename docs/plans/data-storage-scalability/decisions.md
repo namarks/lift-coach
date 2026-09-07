@@ -116,6 +116,100 @@ is active, rolling code back to P4 would remain schema-compatible but would
 reopen the same-generation race, so release preparation must retain an exact
 P4.5-aware rollback artifact or use a forward-fix.
 
+PR #134 exact head `e4c9a855b7010a0e05e87e5f9683e09442caa10c`
+had reviewed tree `82c8899d94ede0548e20f83909accd69fad09f31`, passed
+required CI run `34085532370`, and received two local independent exact-head
+reviews plus a completed GitHub Codex review with no findings or review threads.
+Squash merge `2d106fab89891a4085461116d0cffc1f91206c48` has the
+identical tree, and post-merge main CI run `34085846883` passed.
+
+This is repository-only delivery. It does not authorize or establish remote
+migration `0038`, a production Worker deployment, old-version quiescence, the
+connected-user generation epoch, repair reconciliation, a manual production
+sync, or natural-tick evidence. P3, P4, and P4.5 remain production-gated, and
+the owner has not made the separate P5 retention decision.
+
+## 2026-09-06 — Read-only production preflight and source-bound cutover decision
+
+The read-only production preflight used current Wrangler 4.129 after the
+repository-installed 4.92 client returned Cloudflare error 7403 for migration
+listing while other authenticated D1 reads succeeded. The authoritative remote
+ledger reports migrations `0036_member_first_hot_path_indexes.sql`,
+`0037_intervals_sync_freshness.sql`, and
+`0038_intervals_sync_attempts.sql` pending. The active 100% Worker deployment is
+`73dbf38c-d517-435a-a57d-11e41d256a7f`, version
+`1cc13fec-3eab-4f95-a0fb-e9d6a1303f52`, whose source annotation is
+`079f0359c898935c68513db74bba384bce260c0c` with tree
+`fec23bff1cb94a83d55eb297a64dac458b2a16f9`. Production therefore remains on
+the earlier P1/P2 source; no migration, deployment, credential mutation,
+manual sync, or provider write occurred during this preflight.
+
+Cloudflare documents that HTTP Worker requests have no hard wall-time limit
+while their clients remain connected. A 100% deployment controls routing of
+new work but is not documented as terminating admitted requests. Deployment
+metadata exposes traffic percentages, and version-attributed traces describe
+observed invocations, but no documented API or CLI provides an exact
+active-invocation count or kill primitive. Log absence is also not proof because
+real-time events can be sampled or dropped. Consequently, the plan rejects
+deployment-plus-wait, gradual deployment, log absence, connector
+disconnect/reconnect, and secret/token rotation as substitutes for a hard P4
+writer barrier. Relevant platform contracts are the
+[Workers limits](https://developers.cloudflare.com/workers/platform/limits/),
+[versions and deployments](https://developers.cloudflare.com/workers/versions-and-deployments/),
+[gradual deployment](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/),
+and [trace attributes](https://developers.cloudflare.com/workers/observability/traces/spans-and-attributes/)
+documentation.
+
+The selected repository follow-up is P4.6, an inert-until-enabled source-bound
+transition. An additive shadow athlete identity is unreadable to exact P4, and
+a monotonic protocol-write sequence plus irreversible D1 fence rejects legacy
+protected user-row writes after activation. Activation atomically copies the
+legacy identity into the shadow field, clears the legacy field, bumps credential
+generations, resets attempts and freshness, advances the protocol sequence, and
+enables the guard. A P4 invocation that read before activation then loses its
+generation CAS; one that reads afterward cannot form a provider identity;
+delayed P4 credential or OAuth writers cannot advance the new sequence and are
+rejected. Every replacement-Worker protected write must derive both its
+legacy/shadow target and sequence increment from the fence within the same SQL
+statement; a separately read mode bit would introduce an activation TOCTOU.
+The existing generation-zero owner environment-seed gate remains mandatory:
+without it, a delayed P4 disconnect could commit empty credentials, activation
+could occur before the route's separate audit insert, and the replacement
+Worker could silently reseed the supposedly disconnected owner. Any legitimate
+environment-only owner connection must be persisted and verified before
+activation; the activation generation bump then closes fallback permanently.
+This boundary prevents usable identity discovery and post-activation D1
+sync/credential mutation; it does not prevent old code from selecting the
+unchanged credential columns or completing provider I/O with an identity
+captured before activation. In particular, an old OAuth refresh can rotate a
+provider credential before its guarded D1 update is rejected. Production
+preflight must therefore count OAuth-connected rows without retaining values,
+and activation needs explicit acceptance that reconnect may be required. A
+previously authorized account deletion is a deliberate terminal carve-out: its
+post-provider transaction deletes that account and its caches rather than
+updating a protected Intervals user field. The guarantee is intentionally tied
+to the reviewed historical P4 implementation and surviving accounts, not
+represented as a general SQL capability boundary against arbitrary future
+code.
+
+P4.6 implementation and repository publication remain safe autonomous work.
+Migration `0039`, the dual-mode Worker deployment, atomic fence activation,
+credential-state mutation, provider reconciliation, and natural-tick evidence
+remain a separate owner-authorized production release. Plain P4 is not a valid
+post-activation rollback; a P4.6-aware artifact or forward fix must be retained.
+
+The local implementation is exact commit
+`3ea535607ebaa1be6d002ae004dc0d1aef3b57fb`, tree
+`ad54aefd47fc92cadb4288b1e880610d5220f085`, based directly on merged main
+`2d106fab89891a4085461116d0cffc1f91206c48`. It adds migration `0039`, the
+dual-mode database logic and types, status-only and activation commands, and a
+31-test P4.6 regression suite. All 672 backend tests, 5 uploader checks, the
+query-plan guard, TypeScript, Wrangler 4.129 dry-run, the offline production
+dependency audit, and diff hygiene passed. A fresh independent review bound to
+that exact SHA and tree also passed after tracing every historical P4 writer and
+rerunning the focused suite and TypeScript. This is local repository evidence
+only, awaiting publication; no production or provider mutation accompanies it.
+
 ## 2026-09-06 — Owner acceptance of replacement evidence
 
 The owner accepted the privacy-safe post-release production samples as the
