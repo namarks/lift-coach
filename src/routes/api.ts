@@ -562,6 +562,7 @@ apiRoutes.patch('/days/:id/exercises/:teId', async (c) => {
     actor: 'ios', operation: 'update_exercise', args: b,
   });
   if (!row) return c.json({ error: 'not_found' }, 404);
+  if ('conflict' in row) return c.json(row, 409);
   if ('error' in row) return c.json(row, 400);
   return c.json(row);
 });

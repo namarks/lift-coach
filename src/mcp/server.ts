@@ -888,7 +888,7 @@ const TOOLS: Record<string, Tool> = {
       );
       return r ?? { error: 'slot_not_found' };
     },
-    note: (_a, r) => (r?.error ? null : `Updated slot ${r.id}.`),
+    note: (_a, r) => (r?.conflict || r?.error ? null : `Updated slot ${r.id}.`),
   },
   swap_exercise: {
     description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday). Both names must match the closed catalog — use list_exercises to discover valid names.',
