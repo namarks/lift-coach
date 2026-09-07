@@ -9,6 +9,9 @@ import {
   ensureOwnerUser,
   findUserByMcpPassphrase,
   isAccountDeletionInProgress,
+  redeemOAuthAuthorizationCode,
+  refreshOAuthGrant,
+  revokeOAuthGrantOnRefreshReplay,
 } from './db';
 
 const ACCESS_TTL = 60 * 60 * 24 * 30; // 30 days
@@ -26,6 +29,13 @@ async function s256(verifier: string): Promise<string> {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 /**
@@ -279,53 +289,6 @@ oauthRoutes.post('/oauth/authorize', async (c) => {
 
 // ---- token ---------------------------------------------------------------
 
-async function issueTokens(
-  env: Env,
-  clientId: string,
-  scope: string,
-  userId: string | null,
-) {
-  // Pre-M3 codes/tokens carried no principal. Resolve those to the current
-  // owner before issuing the replacement so the same intent/receipt guards
-  // apply and the newly minted row is no longer legacy-unscoped.
-  const effectiveUserId =
-    userId ?? (await ensureOwnerUser(env.DB, env.OWNER_APPLE_SUB))?.id ?? null;
-  if (!effectiveUserId) return null;
-  const access = rand();
-  const refresh = rand();
-  const nowSec = Math.floor(Date.now() / 1000);
-  const inserted = await env.DB.prepare(
-    `INSERT INTO oauth_tokens
-       (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id)
-     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
-      WHERE EXISTS (SELECT 1 FROM users WHERE id = ?7)
-        AND NOT EXISTS (
-              SELECT 1 FROM account_deletion_intents WHERE user_id = ?7
-            )
-        AND NOT EXISTS (
-              SELECT 1 FROM account_deletion_receipts WHERE user_id = ?7
-            )`,
-  )
-    .bind(
-      access,
-      refresh,
-      clientId,
-      scope,
-      nowSec + ACCESS_TTL,
-      nowSec,
-      effectiveUserId,
-    )
-    .run();
-  if (inserted.meta.changes !== 1) return null;
-  return {
-    access_token: access,
-    token_type: 'Bearer',
-    expires_in: ACCESS_TTL,
-    refresh_token: refresh,
-    scope,
-  };
-}
-
 oauthRoutes.post('/oauth/token', async (c) => {
   const form = await c.req.formData();
   const f = (k: string) => String(form.get(k) ?? '');
@@ -336,8 +299,6 @@ oauthRoutes.post('/oauth/token', async (c) => {
       .bind(f('code'))
       .first<any>();
     if (!code) return c.json({ error: 'invalid_grant' }, 400);
-    // single-use
-    await c.env.DB.prepare('DELETE FROM oauth_codes WHERE code = ?1').bind(f('code')).run();
     if (code.expires_at < Date.now()) return c.json({ error: 'invalid_grant' }, 400);
     if (code.client_id !== f('client_id') || code.redirect_uri !== f('redirect_uri')) {
       return c.json({ error: 'invalid_grant' }, 400);
@@ -345,14 +306,23 @@ oauthRoutes.post('/oauth/token', async (c) => {
     if ((await s256(f('code_verifier'))) !== code.code_challenge) {
       return c.json({ error: 'invalid_grant', detail: 'pkce' }, 400);
     }
-    const tokens = await issueTokens(
-      c.env,
-      code.client_id,
-      code.scope ?? 'mcp',
-      code.user_id ?? null,
-    );
+    const tokens = await redeemOAuthAuthorizationCode(c.env.DB, {
+      ...code,
+      access_token: rand(),
+      refresh_token: rand(),
+      access_expires_at: Math.floor(Date.now() / 1000) + ACCESS_TTL,
+      grant_id: crypto.randomUUID(),
+      owner_apple_sub: c.env.OWNER_APPLE_SUB,
+    }).catch(() => undefined);
+    if (tokens === undefined) return c.json({ error: 'server_error' }, 500);
     if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
-    return c.json(tokens);
+    return c.json({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      scope: tokens.scope,
+      token_type: 'Bearer',
+      expires_in: ACCESS_TTL,
+    });
   }
 
   if (grant === 'refresh_token') {
@@ -361,18 +331,40 @@ oauthRoutes.post('/oauth/token', async (c) => {
     )
       .bind(f('refresh_token'))
       .first<any>();
-    if (!row) return c.json({ error: 'invalid_grant' }, 400);
-    await c.env.DB.prepare('DELETE FROM oauth_tokens WHERE refresh_token = ?1')
-      .bind(f('refresh_token'))
-      .run();
-    const tokens = await issueTokens(
-      c.env,
-      row.client_id,
-      row.scope ?? 'mcp',
-      row.user_id ?? null,
-    );
+    if (!row) {
+      if (f('client_id')) {
+        await revokeOAuthGrantOnRefreshReplay(
+          c.env.DB,
+          await sha256Hex(f('refresh_token')),
+          f('client_id'),
+          c.env.OWNER_APPLE_SUB,
+        );
+      }
+      return c.json({ error: 'invalid_grant' }, 400);
+    }
+    if (!f('client_id') || row.client_id !== f('client_id')) {
+      return c.json({ error: 'invalid_grant' }, 400);
+    }
+    const tokens = await refreshOAuthGrant(c.env.DB, {
+      ...row,
+      presented_refresh_token: f('refresh_token'),
+      presented_client_id: f('client_id'),
+      access_token: rand(),
+      refresh_token: rand(),
+      access_expires_at: Math.floor(Date.now() / 1000) + ACCESS_TTL,
+      grant_id: row.grant_id ?? null,
+      consumed_refresh_sha256: await sha256Hex(f('refresh_token')),
+      owner_apple_sub: c.env.OWNER_APPLE_SUB,
+    }).catch(() => undefined);
+    if (tokens === undefined) return c.json({ error: 'server_error' }, 500);
     if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
-    return c.json(tokens);
+    return c.json({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      scope: tokens.scope,
+      token_type: 'Bearer',
+      expires_in: ACCESS_TTL,
+    });
   }
 
   return c.json({ error: 'unsupported_grant_type' }, 400);

@@ -127,7 +127,7 @@ describe('manual routine authoring over REST', () => {
     const audits = await env.DB.prepare(
       "SELECT COUNT(*) AS n FROM audit_log WHERE tool='ensure_active_plan' AND actor='ios'",
     ).first<{ n: number }>();
-    expect(audits?.n).toBeGreaterThanOrEqual(2);
+    expect(audits?.n).toBe(1);
   });
 
   it('rejects a schedule draft bound to a replaced plan with the same version', async () => {

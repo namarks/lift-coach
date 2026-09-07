@@ -311,7 +311,7 @@ describe('mcp write tools', () => {
     const audit = await env.DB.prepare(
       "SELECT COUNT(*) AS c FROM audit_log WHERE tool='set_schedule'",
     ).first<{ c: number }>();
-    expect(audit!.c).toBeGreaterThanOrEqual(4); // 2 ok + stale + foreign
+    expect(audit!.c).toBe(2); // successful writes only; conflicts leave no audit/history
     const note = await env.DB.prepare(
       "SELECT COUNT(*) AS c FROM notes WHERE author='claude' AND body LIKE 'Set recurring weekly schedule%'",
     ).first<{ c: number }>();

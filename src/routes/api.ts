@@ -35,7 +35,9 @@ import {
   isGroupMember,
   isAccountDeletionKey,
   leaveGroup,
+  listPlanHistory,
   listGroupsForUser,
+  listOAuthGrants,
   logActivity,
   logSet,
   nextDayOrderIndex,
@@ -44,7 +46,11 @@ import {
   patchSession,
   patchSet,
   redeemInvite,
+  revokeAllOAuthGrants,
+  revokeOAuthGrant,
   resolveExercise,
+  restorePlanSnapshot,
+  comparePlanVersions,
   setPlanSchedule,
   setPlannedSession,
   skipPlannedSession,
@@ -89,6 +95,11 @@ const isNonNegativeInteger: FieldRule = (value) =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 const isPositiveInteger: FieldRule = (value) =>
   Number.isSafeInteger(value) && (value as number) > 0;
+const parsePositiveIntegerText = (value: string | undefined): number | undefined => {
+  if (value === undefined || !/^[1-9]\d*$/.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
 const isNullableString: FieldRule = (value) =>
   value === null || typeof value === 'string';
 const isNullableFiniteNumber: FieldRule = (value) =>
@@ -210,6 +221,62 @@ apiRoutes.get('/plan/active', async (c) => {
   return tree ? c.json(tree) : c.json({ error: 'no_active_plan' }, 404);
 });
 
+apiRoutes.get('/plan/history', async (c) => {
+  const rawLimit = c.req.query('limit');
+  const rawBefore = c.req.query('before_version');
+  const limit = rawLimit === undefined ? 30 : parsePositiveIntegerText(rawLimit);
+  const before = parsePositiveIntegerText(rawBefore);
+  if (limit === undefined || limit > 100 ||
+      (rawBefore !== undefined && before === undefined)) {
+    return c.json({ error: 'invalid_fields', fields: [
+      ...(limit === undefined || limit > 100 ? ['limit'] : []),
+      ...(rawBefore !== undefined && before === undefined ? ['before_version'] : []),
+    ] }, 400);
+  }
+  const result = await listPlanHistory(
+    c.env.DB, c.get('userId'), limit,
+    before,
+  );
+  return 'error' in result ? c.json(result, 404) : c.json(result);
+});
+
+apiRoutes.get('/plan/history/:version/compare', async (c) => {
+  const from = parsePositiveIntegerText(c.req.param('version'));
+  const rawTo = c.req.query('to_version');
+  const to = rawTo === undefined || rawTo === 'current' ? undefined : parsePositiveIntegerText(rawTo);
+  if (from === undefined || (rawTo !== undefined && rawTo !== 'current' && to === undefined)) {
+    return c.json({ error: 'invalid_version' }, 400);
+  }
+  const result = await comparePlanVersions(
+    c.env.DB, c.get('userId'), from,
+    to,
+  );
+  return 'error' in result ? c.json(result, 404) : c.json(result);
+});
+
+apiRoutes.post('/plan/history/:version/restore', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const version = parsePositiveIntegerText(c.req.param('version'));
+  const invalid = invalidMutationFields(b, {
+    expected_plan_id: isNonEmptyString,
+    expected_version: isPositiveInteger,
+  }, { reason: isNullableString });
+  if (version === undefined) invalid.push('snapshot_version');
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const result = await restorePlanSnapshot(c.env.DB, c.get('userId'), {
+    plan_id: String(b.expected_plan_id), snapshot_version: version!,
+    expected_version: Number(b.expected_version), actor: 'ios',
+    reason: typeof b.reason === 'string' ? b.reason : null,
+  });
+  if ('conflict' in result || ('error' in result && result.error === 'active_workout')) {
+    return c.json(result, 409);
+  }
+  if ('error' in result && result.error === 'invalid_fields') return c.json(result, 400);
+  return 'error' in result ? c.json(result, 404) : c.json(result);
+});
+
 // Idempotent manual-authoring bootstrap. This route deliberately does not use
 // createPlan: a retry or concurrent coach write must return the active winner,
 // never archive it.
@@ -219,22 +286,23 @@ apiRoutes.put('/plan/active', async (c) => {
   const invalid = invalidMutationFields(parsed.body, { name: isNonEmptyString });
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   const userId = c.get('userId');
-  const result = await ensureActivePlan(c.env.DB, userId, String(parsed.body.name).trim());
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'ensure_active_plan',
-    { name: parsed.body.name },
-    JSON.stringify({ id: result.plan.id, created: result.created }),
-    'ios',
-  );
+  const result = await ensureActivePlan(c.env.DB, userId, String(parsed.body.name).trim(), {
+    actor: 'ios', operation: 'ensure_active_plan', args: parsed.body,
+  });
   return c.json(result, result.created ? 201 : 200);
 });
 
 apiRoutes.post('/plan', async (c) => {
-  const b = await c.req.json<{ name: string; meta?: unknown }>();
-  if (!b.name) return c.json({ error: 'missing_name' }, 400);
-  return c.json(await createPlan(c.env.DB, c.get('userId'), b.name, b.meta ?? null), 201);
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(b, { name: isNonEmptyString }, {
+    meta: (value) => value === null || (typeof value === 'object' && !Array.isArray(value)),
+  });
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  return c.json(await createPlan(c.env.DB, c.get('userId'), String(b.name).trim(), b.meta ?? null, {
+    actor: 'ios', operation: 'create_plan', args: b,
+  }), 201);
 });
 
 apiRoutes.post('/days', async (c) => {
@@ -271,21 +339,9 @@ apiRoutes.post('/days', async (c) => {
     String(b.name).trim(),
     typeof b.day_label === 'string' ? b.day_label : null,
     orderIndex,
+    { actor: 'ios', operation: 'add_day', args: b },
   );
   if ('conflict' in row) return c.json(row, 409);
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'add_day',
-    {
-      name: b.name,
-      day_label: b.day_label ?? null,
-      order_index: orderIndex,
-      expected_plan_id: b.expected_plan_id ?? null,
-    },
-    row.id,
-    'ios',
-  );
   return c.json(row, 201);
 });
 
@@ -314,18 +370,11 @@ apiRoutes.patch('/days/:id', async (c) => {
   const { expected_version: _expectedVersion, ...patch } = b;
   const row = await patchDayTemplateAtVersion(
     c.env.DB, userId, plan, c.req.param('id'), patch,
+    { actor: 'ios', operation: 'update_day', args: b },
   );
   if (!row) return c.json({ error: 'not_found' }, 404);
   if ('conflict' in row) return c.json(row, 409);
   if ('error' in row) return c.json(row, 400);
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'update_day',
-    { day_template_id: c.req.param('id'), patch },
-    row.id,
-    'ios',
-  );
   return c.json(row);
 });
 
@@ -344,20 +393,14 @@ apiRoutes.delete('/days/:id', async (c) => {
     }
   }
   const dayId = c.req.param('id');
-  const result = await deleteDayTemplate(c.env.DB, userId, dayId, plan.version);
+  const result = await deleteDayTemplate(c.env.DB, userId, dayId, plan.version, {
+    actor: 'ios', operation: 'delete_day', args: { day_template_id: dayId },
+  });
   if ('conflict' in result) return c.json(result, 409);
   if ('error' in result && result.error === 'day_in_progress') {
     return c.json(result, 409);
   }
   if ('error' in result) return c.json({ error: 'not_found' }, 404);
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'delete_day',
-    { day_template_id: dayId },
-    JSON.stringify(result),
-    'ios',
-  );
   return c.json(result);
 });
 
@@ -391,10 +434,10 @@ apiRoutes.put('/plan/schedule', async (c) => {
     week as Partial<Record<Weekday, string | null>>,
     typeof b.expected_version === 'number' ? b.expected_version : null,
     typeof b.expected_plan_id === 'string' ? b.expected_plan_id : null,
+    { actor: 'ios', operation: 'set_schedule', args: b },
   );
   if ('conflict' in result) return c.json(result, 409);
   if ('error' in result) return c.json(result, 400);
-  await writeAudit(c.env.DB, userId, 'set_schedule', { week }, JSON.stringify(result), 'ios');
   return c.json(result);
 });
 
@@ -468,7 +511,7 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
   const ex = await resolveExercise(c.env.DB, b.exercise);
   if (!ex) return c.json({ error: 'unknown_exercise', query: b.exercise }, 400);
   const orderIndex =
-    typeof b.order_index === 'number'
+    b.order_index !== undefined
       ? b.order_index
       : await nextExerciseOrderIndex(c.env.DB, dayId);
   const row = await addTemplateExercise(c.env.DB, plan.id, {
@@ -479,23 +522,14 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
     target_reps: b.target_reps,
     target_reps_max: b.target_reps_max ?? null,
     target_rpe: b.target_rpe ?? null,
-    rest_seconds: b.rest_seconds ?? 120,
+    rest_seconds: b.rest_seconds === undefined ? 120 : b.rest_seconds,
     target_weight: b.target_weight ?? null,
     target_duration_s: b.target_duration_s ?? null,
     progression: b.progression == null ? null : JSON.stringify(b.progression),
     cues: b.cues ?? null,
-    is_warmup: b.is_warmup ? 1 : 0,
-  });
-  // Audit the in-app plan edit (actor='ios') so the trust/undo trail covers
-  // app-side mutations the same as MCP ones (DESIGN §5).
-  await writeAudit(
-    c.env.DB,
-    userId,
-    'add_exercise',
-    { day_template_id: dayId, exercise: b.exercise, is_warmup: !!b.is_warmup },
-    row.id,
-    'ios',
-  );
+    is_warmup: b.is_warmup === undefined ? 0 : b.is_warmup as unknown as number | boolean,
+  }, { actor: 'ios', operation: 'add_exercise', args: b });
+  if ('error' in row) return c.json(row, 400);
   return c.json(row, 201);
 });
 
@@ -524,10 +558,12 @@ apiRoutes.patch('/days/:id/exercises/:teId', async (c) => {
   }>();
   const patch: Record<string, unknown> = { ...b };
   if (typeof b.is_warmup === 'boolean') patch.is_warmup = b.is_warmup ? 1 : 0;
-  const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId }, patch);
+  const row = await updateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId }, patch, {
+    actor: 'ios', operation: 'update_exercise', args: b,
+  });
   if (!row) return c.json({ error: 'not_found' }, 404);
+  if ('conflict' in row) return c.json(row, 409);
   if ('error' in row) return c.json(row, 400);
-  await writeAudit(c.env.DB, userId, 'update_exercise', { template_exercise_id: teId, patch: b }, row.id, 'ios');
   return c.json(row);
 });
 
@@ -539,9 +575,10 @@ apiRoutes.delete('/days/:id/exercises/:teId', async (c) => {
   const userId = c.get('userId');
   const dayId = c.req.param('id');
   const teId = c.req.param('teId');
-  const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId });
+  const row = await deleteTemplateExercise(c.env.DB, userId, { template_exercise_id: teId, day_template_id: dayId }, {
+    actor: 'ios', operation: 'delete_exercise', args: { template_exercise_id: teId },
+  });
   if (!row) return c.json({ error: 'not_found' }, 404);
-  await writeAudit(c.env.DB, userId, 'delete_exercise', { template_exercise_id: teId }, row.id, 'ios');
   return c.json(row);
 });
 
@@ -1283,6 +1320,40 @@ apiRoutes.post('/me/mcp-passphrase', async (c) => {
   }
   await writeAudit(c.env.DB, c.get('userId'), 'set_mcp_passphrase', {}, 'ok', 'ios');
   return c.json({ ok: true });
+});
+
+// Caller-scoped coach grants. Listing exposes only opaque family and client
+// metadata; credentials never cross this REST boundary.
+apiRoutes.get('/me/coach-grants', async (c) => {
+  const grants = await listOAuthGrants(
+    c.env.DB,
+    c.get('userId'),
+    c.env.OWNER_APPLE_SUB,
+  );
+  return c.json({ grants });
+});
+
+apiRoutes.delete('/me/coach-grants/:grantId', async (c) => {
+  const grantId = c.req.param('grantId');
+  const revoked = await revokeOAuthGrant(
+    c.env.DB,
+    c.get('userId'),
+    grantId,
+    c.env.OWNER_APPLE_SUB,
+  ).catch(() => undefined);
+  if (revoked === undefined) return c.json({ error: 'server_error' }, 500);
+  if (!revoked) return c.json({ error: 'not_found' }, 404);
+  return c.json({ ok: true });
+});
+
+apiRoutes.delete('/me/coach-grants', async (c) => {
+  const revoked = await revokeAllOAuthGrants(
+    c.env.DB,
+    c.get('userId'),
+    c.env.OWNER_APPLE_SUB,
+  ).catch(() => undefined);
+  if (revoked === undefined) return c.json({ error: 'server_error' }, 500);
+  return c.json({ ok: true, revoked });
 });
 
 // ---- groups (M2 — friends/family invite-gated containers) ----------------

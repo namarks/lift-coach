@@ -28,7 +28,7 @@ describe('account export projection', () => {
       async batch(statements: unknown[]) {
         batchCalls += 1;
         batchSize = statements.length;
-        return Array.from({ length: 15 }, (_, index) => ({
+        return Array.from({ length: 16 }, (_, index) => ({
           results: index === 0 ? [{ id: userId }] : [],
         }));
       },
@@ -37,8 +37,8 @@ describe('account export projection', () => {
     const exported = await exportUserData(fakeDb, userId);
 
     expect(batchCalls).toBe(1);
-    expect(batchSize).toBe(15);
-    expect(preparedSql).toHaveLength(15);
+    expect(batchSize).toBe(16);
+    expect(preparedSql).toHaveLength(16);
     expect(exported).toMatchObject({
       account: { id: userId },
       training: { plans: [], sessions: [], set_logs: [] },
@@ -179,7 +179,7 @@ describe('account export projection', () => {
       audit_log: Array<{ id: string; tool: string; args: string }>;
     };
 
-    expect(exported.schema_version).toBe(1);
+    expect(exported.schema_version).toBe(2);
     expect((exported.account as { id: string }).id).toBe(caller.id);
     expect(training.plans.map((row) => row.id)).toEqual([planId]);
     expect(training.day_templates.map((row) => row.id)).toEqual([dayId]);
@@ -262,7 +262,7 @@ describe('GET /api/me/export', () => {
       schema_version: number;
       account: { id: string; email: string };
     }>();
-    expect(exported.schema_version).toBe(1);
+    expect(exported.schema_version).toBe(2);
     expect(exported.account.id).toBe(caller.id);
     expect(exported.account.email).toBe(caller.email);
     expect(JSON.stringify(exported)).not.toContain(other.id);

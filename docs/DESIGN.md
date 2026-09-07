@@ -255,6 +255,27 @@ are thin wrappers over the shared service layer and audit as `actor='ios'`.
 Every recurring plan-tree write bumps `plans.version`; one-date exceptions do
 not.
 
+Plan writes share runtime prescription validation and a D1 transaction that
+commits the mutation, order normalization, version, audit and full-document
+snapshot together, plus the coaching note for MCP plan writes. Legacy slot
+patches retain their existing input shape: they retry a bounded version
+conflict against fresh state and validate the merged prescription. Explicitly versioned edits return
+a conflict for the caller to review. See the
+[prescription contract](plans/prescription-integrity/decisions.md).
+
+Migration `0040` adds `plan_snapshots`. A legacy plan's first accepted edit
+captures its actual previous version and the resulting version; earlier history
+is not reconstructed. Snapshots contain writable plan fields, schedule and
+metadata, without catalog enrichment. History and comparison resolve exercise
+names from the catalog when read. `GET /api/plan/history` lists versions;
+`GET /api/plan/history/:version/compare?to_version=current` compares a selected
+version with a pinned target. `POST /api/plan/history/:version/restore` requires
+`expected_plan_id` and `expected_version`, restores as a new version, and rejects
+stale/foreign history or an active workout. Logged set values remain history;
+restore does not resurrect detached historical references. Account export schema
+version 2 includes snapshots, and account deletion removes them. See the
+[snapshot contract and release boundary](plans/reversible-plan-management/decisions.md).
+
 ---
 
 ## 5. MCP server — the product
@@ -276,6 +297,8 @@ Claude context-aware with zero tool calls.
 - `get_session_log({date?, recent_n?})`
 - `get_history({exercise, range?:"30d|90d|all", limit?})`
 - `get_volume_trend({muscle_group, range?:"8w|12w|6mo", bucket?:"week"})`
+- `get_plan_history({limit?, before_version?})` and
+  `compare_plan_versions({from_version, to_version?})` expose shared app/coach history.
 
 **Write tools**
 - `log_set({exercise, weight, reps, rpe?, is_warmup?, session_date?, notes?})` → auto-creates session, appends, returns running summary.
@@ -286,9 +309,13 @@ Claude context-aware with zero tool calls.
 - `swap_exercise({day, from_exercise, to_exercise, carry_targets?})`
 - `add_exercise({day, exercise, target_sets, target_reps, target_reps_max?, rest_seconds?, target_rpe?, progression?, order_index?})`
 - `add_day({name, day_label, order_index?, exercises?})`  ← "add a deadlift day"
-- `adjust_today({intent:"deload|reduce_volume|reduce_intensity", magnitude?})` ← one-shot for "I'm beat, adjust"; sugar over update + auto-note.
+- `adjust_today({intent:"deload|reduce_volume|reduce_intensity", magnitude?, day_label?})`
+  changes recurring workout targets persistently; omitting a day affects the
+  whole plan. Results name affected workouts, before/after changes and no-ops.
+- `restore_plan({plan_id, snapshot_version, expected_version, reason?})` restores
+  a reviewed snapshot as a new version with an atomic audit and coaching note.
 
-Every write tool writes `audit_log` and (for plan changes) a `notes` row, so
+Every accepted mutation writes `audit_log` and (for plan changes) a `notes` row, so
 you can always see and undo what Claude did.
 
 ---
@@ -308,6 +335,15 @@ models, lifecycles, and revocation paths → decoupled on purpose.
 - (a) **OAuth 2.1** for claude.ai/desktop custom connectors — a minimal in-Worker provider (`src/oauth.ts`). The `/oauth/authorize` step is gated by a passphrase: the **owner** uses `OWNER_AUTH_PASSPHRASE`, any other user a personal MCP passphrase (PBKDF2-SHA256, per-user salt) set via `POST /api/me/mcp-passphrase`. On match it binds that `user_id` into the auth code and issues short-lived access tokens (also carrying the `user_id`) the Worker validates.
 - (b) **Static bearer** for Claude Code / curl / milestone-b testing — `Authorization: Bearer <MCP_STATIC_TOKEN>` (Worker secret).
 - **Resolution (M3, migration `0025`).** Static bearer → the owner. OAuth token → the user it was bound to at `/oauth/authorize`. Tokens issued before M3 carry no `user_id` and resolve to the owner (back-compat), so already-connected claude.ai sessions keep working as the owner without re-auth.
+- **Atomic coach grants (migration `0041`).** Validated authorization-code
+  consumption and refresh rotation each commit with their sole successor.
+  Consumed refresh hashes retain grant-family lineage; bound-client replay
+  revokes the surviving successor of that family. Profile lists and disconnects
+  caller-owned grants without changing workout data. Changing a connect code
+  affects future authorization; it does not disconnect existing grants. New
+  refresh inactivity/absolute lifetime fields remain unset pending the owner's
+  lifecycle decision. A lost successful exchange response requires
+  reauthorization. See the [coach contract](plans/coach-access-integrity/decisions.md).
 - **No per-tool scopes.** Per connected user there is one principal → scopes would add complexity with little security gain at this scale. The trust substitute is the per-user `audit_log` + Claude-written notes (visible, reversible).
 - **Rate limit:** soft cap (~600 req/min) via a Cloudflare rate-limit rule on `/mcp` or a KV counter — a runaway-loop guard, not a security boundary. Optional-but-recommended for v1.
 

@@ -202,6 +202,129 @@ struct PlanTree: Codable {
     }
 }
 
+struct PlanChangeSummary: Codable, Equatable {
+    let plan_fields: Int
+    let schedule_days: Int
+    let days_added: Int
+    let days_removed: Int
+    let days_changed: Int
+    let exercises_added: Int
+    let exercises_removed: Int
+    let exercises_changed: Int
+
+    var total: Int {
+        plan_fields + schedule_days + days_added + days_removed + days_changed
+            + exercises_added + exercises_removed + exercises_changed
+    }
+}
+
+struct PlanHistoryItem: Codable, Identifiable, Equatable {
+    var id: Int { version }
+    let version: Int
+    let actor: String
+    let operation: String
+    let reason: String?
+    let created_at: Int
+    let summary: PlanChangeSummary?
+}
+
+struct PlanHistoryResponse: Codable, Equatable {
+    let plan_id: String
+    let current_version: Int
+    let items: [PlanHistoryItem]
+    let next_before_version: Int?
+}
+
+struct PlanVersionChange: Codable, Equatable {
+    let kind: String
+    let path: String
+    let before: JSONValue?
+    let after: JSONValue?
+}
+
+enum JSONValue: Codable, Equatable {
+    case string(String), number(Double), bool(Bool), object([String: JSONValue])
+    case array([JSONValue]), null
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let v = try? value.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? value.decode(Double.self) { self = .number(v) }
+        else if let v = try? value.decode(String.self) { self = .string(v) }
+        else if let v = try? value.decode([String: JSONValue].self) { self = .object(v) }
+        else { self = .array(try value.decode([JSONValue].self)) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case let .string(v): try value.encode(v)
+        case let .number(v): try value.encode(v)
+        case let .bool(v): try value.encode(v)
+        case let .object(v): try value.encode(v)
+        case let .array(v): try value.encode(v)
+        case .null: try value.encodeNil()
+        }
+    }
+}
+
+extension JSONValue {
+    var displayText: String {
+        switch self {
+        case let .string(value): return value
+        case let .number(value):
+            // JSON numbers decode as Double. Only bridge to Int inside the
+            // exactly representable integer range; Int(1e100) traps.
+            let largestExactInteger = 9_007_199_254_740_991.0
+            if value.isFinite, value.rounded() == value,
+               abs(value) <= largestExactInteger {
+                return String(Int(value))
+            }
+            return String(value)
+        case let .bool(value): return value ? "Yes" : "No"
+        case .null: return "None"
+        case let .array(values): return values.map(\.displayText).joined(separator: ", ")
+        case let .object(value):
+            return value
+                .filter { !Self.isInternalIdentifier($0.key) && $0.value != .null }
+                .sorted { Self.displayOrder($0.key) < Self.displayOrder($1.key) }
+                .map { "\(Self.fieldLabel($0.key)): \($0.value.displayText)" }
+                .joined(separator: ", ")
+        }
+    }
+
+    private static func isInternalIdentifier(_ key: String) -> Bool {
+        key == "id" || key.hasSuffix("_id")
+    }
+
+    private static func fieldLabel(_ key: String) -> String {
+        let labels = [
+            "day_name": "Workout", "day_label": "Label", "exercise_name": "Exercise",
+            "target_sets": "Sets", "target_reps": "Reps", "target_reps_max": "Maximum reps",
+            "target_rpe": "Effort", "target_weight": "Load", "target_duration_s": "Duration",
+            "rest_seconds": "Rest", "is_warmup": "Warm-up", "order_index": "Order",
+            "progression": "Progression", "cues": "Cues", "exercises": "Exercises",
+        ]
+        return labels[key] ?? key.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private static func displayOrder(_ key: String) -> Int {
+        let keys = ["day_name", "day_label", "exercise_name", "target_sets", "target_reps",
+                    "target_reps_max", "target_weight", "target_duration_s", "target_rpe",
+                    "rest_seconds", "is_warmup", "progression", "cues", "exercises", "order_index"]
+        return keys.firstIndex(of: key) ?? keys.count
+    }
+}
+
+struct PlanComparisonResponse: Codable, Equatable {
+    let plan_id: String
+    let from_version: Int
+    let to_version: Int
+    let changes: [PlanVersionChange]
+    let summary: PlanChangeSummary
+}
+
 struct SessionRow: Codable, Identifiable {
     let id: String
     let date: String

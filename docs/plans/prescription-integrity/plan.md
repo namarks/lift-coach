@@ -1,6 +1,6 @@
 # Prescription Integrity
 
-Slug: prescription-integrity · Status: planned · Updated: 2026-09-07 · Theme: training-trust
+Slug: prescription-integrity · Status: gated · Updated: 2026-09-07 · Theme: training-trust
 
 ## Goal
 
@@ -11,7 +11,7 @@ Snapshots and undo complement these guarantees; they do not replace them.
 
 ## Phases
 
-- [ ] **P0 — Validate prescription values at the shared boundary**
+- [x] **P0 — Validate prescription values at the shared boundary**
   - Define runtime validation for complete and partial exercise prescriptions:
     integer counts/order, finite numeric load, RPE domain, nonnegative rest,
     positive timed duration when present, ordered rep ranges, string/JSON
@@ -30,7 +30,7 @@ Snapshots and undo complement these guarantees; they do not replace them.
     inverted ranges and invalid durations, while accepting legitimate holds,
     fractional load and negative assistance. Round-trip accepted values through
     the Swift models. Use real Workers/D1 tests beyond the review reproducer.
-- [ ] **P1 — Commit patches, version and audit consistently**
+- [x] **P1 — Commit patches, version and audit consistently**
   - Remove read-merge-write lost updates in `updateExercise`: disjoint patches
     must compose, or a stale writer must receive an explicit conflict. Never
     report two successful edits while restoring a stale value from one caller's
@@ -47,7 +47,7 @@ Snapshots and undo complement these guarantees; they do not replace them.
     failures, duplicate retries where idempotency is promised, and deletion or
     plan replacement racing an edit. Acknowledged data must remain visible at
     the corresponding plan version.
-- [ ] **P2 — Honest adjustment scope and monotonic reductions**
+- [x] **P2 — Honest adjustment scope and monotonic reductions**
   - Make `adjust_today` state in its description and result that it changes
     recurring template targets, and name the affected workouts. Preserve the
     current omitted-day whole-plan behavior only with explicit wording; do not
@@ -61,6 +61,12 @@ Snapshots and undo complement these guarantees; they do not replace them.
     which dimension changed, the before/after values and persistent scope in
     audit/notes and the returned result. Do not characterize a fixed scalar as
     an individualized physiological deload prescription.
+- [ ] **P3 — Owner-approved production release and legacy assessment**
+  - Authorize the exact reviewed Worker, migration order and compatible rollback
+    before deployment. Read production prescription diagnostics only with the
+    appropriate data authority; approve any legacy correction separately.
+  - Verify deployed validation and atomic attribution with an approved canary.
+    Local fixtures and merged source do not establish production row health.
 
 ## Dependencies
 
@@ -68,12 +74,15 @@ Snapshots and undo complement these guarantees; they do not replace them.
 |---|---|---|---|
 | P1 | coordinates_with | plan:reversible-plan-management#P0 | Establish one commit boundary for field edits and snapshots. |
 | P1 | coordinates_with | plan:bodyweight-training-support#P2 | Swap exposure must reuse the repaired writer and destination validation. |
+| P3 | gated_by | external:owner-training-trust-production-release | Production migration, deployment, canary and legacy data correction need explicit owner authority. |
 
 ## Next step
 
-**Now (@owner):** Activate P0 and the focused P1/P2 repairs ahead of new
-authoring complexity. This review updates the plan; it does not activate code
-delivery or authorize changes to stored production prescriptions.
+**Now (@owner):** Authorize P3's exact production release and any separate
+legacy data assessment/correction. P0–P2 are complete for repository delivery,
+including Nick's approved monotonic arithmetic fix. The
+[contract and legacy recovery proof](decisions.md) preserve compatibility and
+the production boundary; local tests do not establish production row health.
 
 ## Notes / open questions
 

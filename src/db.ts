@@ -30,6 +30,12 @@ import type {
 } from './types';
 import { WEEKDAYS, parsePlanMeta, serializePlanMeta } from './types';
 import {
+  comparePlanSnapshots,
+  parsePlanSnapshot,
+  serializePlanSnapshot,
+  type PlanSnapshotDocument,
+} from './planSnapshots';
+import {
   fetchCompletedActivities,
   fetchPlannedEvents,
   type ActivityFetchDeps,
@@ -1191,6 +1197,7 @@ export async function deleteUserAccount(
       )
       .bind(userId),
     db.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM plan_snapshots WHERE user_id = ?1').bind(userId),
     db
       .prepare(
         `DELETE FROM template_exercises
@@ -1217,6 +1224,7 @@ export async function deleteUserAccount(
     db.prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_grants WHERE user_id = ?1').bind(userId),
   );
 
   // Tokens issued before multi-user MCP have a NULL principal and resolve to
@@ -1225,6 +1233,7 @@ export async function deleteUserAccount(
     statements.push(
       db.prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
       db.prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_grants WHERE user_id IS NULL'),
     );
   }
 
@@ -2164,6 +2173,12 @@ export async function exportUserData(
       .bind(userId),
     db
       .prepare(
+        `SELECT id,user_id,plan_id,version,document,actor,operation,reason,created_at
+           FROM plan_snapshots WHERE user_id=?1 ORDER BY plan_id,version`,
+      )
+      .bind(userId),
+    db
+      .prepare(
         `SELECT gm.group_id, g.name AS group_name, gm.display_name, gm.joined_at
            FROM group_members gm
            JOIN groups g ON g.id = gm.group_id
@@ -2189,7 +2204,8 @@ export async function exportUserData(
   const events = rowsAt(11);
   const externalActivities = rowsAt(12);
   const activities = rowsAt(13);
-  const memberships = rowsAt(14);
+  const planSnapshots = rowsAt(14);
+  const memberships = rowsAt(15);
 
   const auditRows = audit.map((row) => {
     if (row.tool !== 'create_invite' && row.tool !== 'redeem_invite') {
@@ -2210,7 +2226,7 @@ export async function exportUserData(
     }
   });
   return {
-    schema_version: 1,
+    schema_version: 2,
     exported_at: now(),
     account,
     training: {
@@ -2227,6 +2243,7 @@ export async function exportUserData(
       external_events: events,
       external_activities: externalActivities,
       activities,
+      plan_snapshots: planSnapshots,
     },
     group_memberships: memberships,
   };
@@ -2715,11 +2732,479 @@ export async function getPlanTree(
   };
 }
 
+export interface PlanSnapshotRow {
+  id: string;
+  user_id: string;
+  plan_id: string;
+  version: number;
+  document: string;
+  actor: string;
+  operation: string;
+  reason: string | null;
+  created_at: number;
+}
+
+export interface PlanWriteAttribution {
+  actor: 'mcp' | 'ios' | 'system';
+  operation: string;
+  args?: unknown;
+  reason?: string | null;
+  note?: string | null;
+  noteAuthor?: 'claude' | 'nick';
+  result?: unknown;
+}
+
+/**
+ * SQL serializer for the writable plan document. Keeping this as an INSERT
+ * statement lets a plan writer append it to the same D1 batch as its CAS,
+ * so a snapshot can never describe a later post-commit read.
+ */
+export function preparePlanSnapshotInsert(
+  db: D1Database,
+  input: {
+    userId: string;
+    planId: string;
+    version?: number;
+    actor: string;
+    operation: string;
+    reason?: string | null;
+    createdAt: number;
+    ignoreExisting?: boolean;
+    writeNonce?: string;
+    databaseVersion?: number;
+  },
+): D1PreparedStatement {
+  const insert = input.ignoreExisting ? 'INSERT OR IGNORE' : 'INSERT';
+  return db.prepare(
+    `${insert} INTO plan_snapshots
+       (id,user_id,plan_id,version,document,actor,operation,reason,created_at)
+     SELECT ?1,p.user_id,p.id,COALESCE(?4,p.version),
+       json_object(
+         'schema_version',1,
+         'plan',json_object('name',p.name,'meta',p.meta),
+         'days',json(COALESCE((
+           SELECT json_group_array(json(day_document)) FROM (
+             SELECT json_object(
+               'id',d.id,'name',d.name,'day_label',d.day_label,
+               'order_index',d.order_index,'notes',d.notes,
+               'exercises',json(COALESCE((
+                 SELECT json_group_array(json(slot_document)) FROM (
+                   SELECT json_object(
+                     'id',te.id,'exercise_id',te.exercise_id,
+                     'order_index',te.order_index,'target_sets',te.target_sets,
+                     'target_reps',te.target_reps,'target_reps_max',te.target_reps_max,
+                     'target_rpe',te.target_rpe,'rest_seconds',te.rest_seconds,
+                     'target_weight',te.target_weight,'target_duration_s',te.target_duration_s,
+                     'progression',te.progression,'cues',te.cues,'is_warmup',te.is_warmup
+                   ) AS slot_document
+                   FROM template_exercises te
+                   WHERE te.day_template_id=d.id
+                   ORDER BY te.order_index,te.created_at,te.id
+                 )), '[]'))
+             ) AS day_document
+             FROM day_templates d
+             WHERE d.plan_id=p.id
+             ORDER BY d.order_index,d.created_at,d.id
+           )
+         ), '[]'))
+       ),?5,?6,?7,?8
+     FROM plans p
+     WHERE p.id=?2 AND p.user_id=?3 AND (?4 IS NULL OR p.version=?10)
+       AND (?9 IS NULL OR p.plan_write_nonce=?9)`,
+  ).bind(
+    uuid(), input.planId, input.userId, input.version ?? null, input.actor,
+    input.operation, input.reason ?? null, input.createdAt, input.writeNonce ?? null,
+    input.databaseVersion ?? input.version ?? null,
+  );
+}
+
+export function preparePlanWriteStart(
+  db: D1Database,
+  plan: PlanRow,
+  attribution: PlanWriteAttribution,
+  ts: number,
+  nonce: string,
+  rejectActiveWorkout = false,
+): D1PreparedStatement[] {
+  return [
+    db.prepare(
+      `UPDATE plans SET plan_write_nonce=?4,version=-version
+        WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3
+          AND plan_write_nonce IS NULL
+          AND EXISTS (SELECT 1 FROM users u WHERE u.id=?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents i WHERE i.user_id=?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts r WHERE r.user_id=?2)
+          AND (?5=0 OR NOT EXISTS (
+            SELECT 1 FROM sessions s WHERE s.user_id=?2 AND s.plan_id=?1 AND s.status='in_progress'
+          ))`,
+    ).bind(plan.id, plan.user_id, plan.version, nonce, rejectActiveWorkout ? 1 : 0),
+    preparePlanSnapshotInsert(db, {
+      userId: plan.user_id, planId: plan.id, version: plan.version,
+      actor: 'system', operation: 'baseline', reason: 'First captured version',
+      createdAt: ts, ignoreExisting: true, writeNonce: nonce,
+      databaseVersion: -plan.version,
+    }),
+  ];
+}
+
+export function preparePlanWriteFinish(
+  db: D1Database,
+  plan: PlanRow,
+  attribution: PlanWriteAttribution,
+  ts: number,
+  nonce: string,
+): D1PreparedStatement[] {
+  const nextVersion = plan.version + 1;
+  const statements: D1PreparedStatement[] = [
+    db.prepare(
+      `UPDATE plans SET version=?6,updated_at=?5
+        WHERE id=?1 AND user_id=?2 AND version=-?3 AND plan_write_nonce=?4
+        RETURNING version`,
+    ).bind(plan.id, plan.user_id, plan.version, nonce, ts, nextVersion),
+    db.prepare(
+      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+       SELECT ?5,p.user_id,?6,?7,?8,?9,?10 FROM plans p
+        WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
+    ).bind(plan.id, plan.user_id, nextVersion, nonce, uuid(), attribution.actor,
+      attribution.operation, JSON.stringify(attribution.args ?? {}),
+      typeof attribution.result === 'string'
+        ? attribution.result
+        : JSON.stringify(attribution.result ?? { plan_id: plan.id, version: nextVersion }), ts),
+  ];
+  if (attribution.note) {
+    statements.push(db.prepare(
+      `INSERT INTO notes (id,user_id,scope,ref_id,author,body,created_at)
+       SELECT ?5,p.user_id,'plan',p.id,?6,?7,?8 FROM plans p
+        WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
+    ).bind(plan.id, plan.user_id, nextVersion, nonce, uuid(),
+      attribution.noteAuthor ?? (attribution.actor === 'mcp' ? 'claude' : 'nick'),
+      attribution.note, ts));
+  }
+  statements.push(
+    preparePlanSnapshotInsert(db, {
+      userId: plan.user_id, planId: plan.id, version: nextVersion,
+      actor: attribution.actor, operation: attribution.operation,
+      reason: attribution.reason ?? attribution.note ?? null, createdAt: ts,
+      writeNonce: nonce,
+    }),
+    db.prepare(
+      `UPDATE plans SET plan_write_nonce=NULL
+        WHERE id=?1 AND user_id=?2 AND version=?3 AND plan_write_nonce=?4`,
+    ).bind(plan.id, plan.user_id, nextVersion, nonce),
+  );
+  return statements;
+}
+
+export async function getPlanSnapshot(
+  db: D1Database,
+  userId: string,
+  planId: string,
+  version: number,
+): Promise<(PlanSnapshotRow & { parsed: PlanSnapshotDocument }) | null> {
+  const row = await db.prepare(
+    'SELECT * FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3',
+  ).bind(userId, planId, version).first<PlanSnapshotRow>();
+  return row ? { ...row, parsed: parsePlanSnapshot(row.document) } : null;
+}
+
+async function materializeSnapshotPlan(
+  db: D1Database,
+  base: PlanRow,
+  version: number,
+  updatedAt: number,
+  document: PlanSnapshotDocument,
+): Promise<PlanTree> {
+  const catalog = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise]));
+  return {
+    ...base, name: document.plan.name, meta: document.plan.meta, version, updated_at: updatedAt,
+    days: document.days.map((day) => ({
+      ...day, plan_id: base.id, created_at: updatedAt, updated_at: updatedAt,
+      exercises: day.exercises.map((slot) => {
+        const exercise = catalog.get(slot.exercise_id);
+        if (!exercise) throw new Error('snapshot_exercise_missing');
+        return {
+          ...slot, day_template_id: day.id, created_at: updatedAt, updated_at: updatedAt,
+          exercise_name: exercise.name, exercise_unit: exercise.unit,
+          exercise_muscle: exercise.primary_muscle, exercise_modality: exercise.modality,
+          exercise_laterality: exercise.laterality, exercise_load_mode: exercise.load_mode,
+          exercise_demo_slug: exercise.demo_slug,
+        };
+      }),
+    })),
+  };
+}
+
+async function readCommittedSnapshotPlan(
+  db: D1Database,
+  base: PlanRow,
+  version: number,
+  updatedAt: number,
+): Promise<PlanTree | null> {
+  try {
+    const snapshot = await getPlanSnapshot(db, base.user_id, base.id, version);
+    return snapshot
+      ? await materializeSnapshotPlan(db, base, version, updatedAt, snapshot.parsed)
+      : null;
+  } catch {
+    // The mutation is already committed. A refresh failure must preserve its
+    // acknowledgement so callers do not retry and create another version.
+    return null;
+  }
+}
+
+export async function listPlanHistory(
+  db: D1Database,
+  userId: string,
+  limit = 30,
+  beforeVersion?: number,
+) {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' as const };
+  const capped = Math.max(1, Math.min(100, Math.floor(limit)));
+  const rows = await db.prepare(
+    `SELECT * FROM plan_snapshots
+      WHERE user_id=?1 AND plan_id=?2 AND (?3 IS NULL OR version < ?3)
+      ORDER BY version DESC LIMIT ?4`,
+  ).bind(userId, plan.id, beforeVersion ?? null, capped + 1).all<PlanSnapshotRow>();
+  const visible = rows.results.slice(0, capped);
+  const exerciseNames = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.name]));
+  const items = await Promise.all(visible.map(async (row) => {
+    const prior = await db.prepare(
+      `SELECT document FROM plan_snapshots
+        WHERE user_id=?1 AND plan_id=?2 AND version < ?3
+        ORDER BY version DESC LIMIT 1`,
+    ).bind(userId, plan.id, row.version).first<{ document: string }>();
+    const summary = prior
+      ? comparePlanSnapshots(parsePlanSnapshot(prior.document), parsePlanSnapshot(row.document), { exerciseNames }).summary
+      : null;
+    return {
+      version: row.version, actor: row.actor, operation: row.operation,
+      reason: row.reason, created_at: row.created_at, summary,
+    };
+  }));
+  return {
+    plan_id: plan.id,
+    current_version: plan.version,
+    items,
+    next_before_version: rows.results.length > capped ? visible.at(-1)?.version ?? null : null,
+  };
+}
+
+export async function comparePlanVersions(
+  db: D1Database,
+  userId: string,
+  fromVersion: number,
+  toVersion?: number,
+) {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' as const };
+  const from = await getPlanSnapshot(db, userId, plan.id, fromVersion);
+  if (!from) return { error: 'snapshot_not_found' as const };
+  let toDocument: PlanSnapshotDocument | undefined;
+  let resolvedTo = toVersion ?? plan.version;
+  if (toVersion == null || toVersion === plan.version) {
+    const captured = await getPlanSnapshot(db, userId, plan.id, plan.version);
+    if (captured) {
+      toDocument = captured.parsed;
+    } else {
+      // A pre-0040 plan has no captured current snapshot. Bound the legacy
+      // fallback by the version before and after the multi-query tree read so
+      // comparison content is never labeled with a different version.
+      let stableTree: PlanTree | null = null;
+      for (let attempt = 0; attempt < 3 && !stableTree; attempt++) {
+        const before = await getActivePlan(db, userId);
+        const tree = await getPlanTree(db, userId);
+        const after = await getActivePlan(db, userId);
+        if (before && tree && after && before.id === after.id &&
+            before.version === tree.version && tree.version === after.version) {
+          stableTree = tree;
+          resolvedTo = tree.version;
+        } else if (after) {
+          const afterSnapshot = await getPlanSnapshot(db, userId, after.id, after.version);
+          if (afterSnapshot) {
+            toDocument = afterSnapshot.parsed;
+            resolvedTo = after.version;
+            break;
+          }
+        }
+      }
+      if (!toDocument && !stableTree) return { error: 'plan_changed' as const };
+      if (stableTree) toDocument = serializePlanSnapshot(stableTree);
+    }
+  } else {
+    const to = await getPlanSnapshot(db, userId, plan.id, toVersion);
+    if (!to) return { error: 'snapshot_not_found' as const };
+    toDocument = to.parsed;
+  }
+  if (!toDocument) return { error: 'plan_changed' as const };
+  const exerciseNames = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.name]));
+  return {
+    plan_id: plan.id, from_version: fromVersion, to_version: resolvedTo,
+    ...comparePlanSnapshots(from.parsed, toDocument, { exerciseNames }),
+  };
+}
+
+export async function restorePlanSnapshot(
+  db: D1Database,
+  userId: string,
+  input: {
+    plan_id: string;
+    snapshot_version: number;
+    expected_version: number;
+    actor: 'mcp' | 'ios';
+    reason?: string | null;
+  },
+): Promise<
+  | { ok: true; plan_id: string; restored_from_version: number; version: number; plan: PlanTree }
+  | { ok: true; acknowledged: true; refresh_required: true; plan_id: string; restored_from_version: number; version: number }
+  | { conflict: true; current_plan_id: string; current_version: number }
+  | { error: 'snapshot_not_found' | 'active_workout' | 'no_active_plan' }
+  | PrescriptionValidationError
+> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' };
+  if (plan.id !== input.plan_id || plan.version !== input.expected_version) {
+    return { conflict: true, current_plan_id: plan.id, current_version: plan.version };
+  }
+  const snapshot = await getPlanSnapshot(db, userId, plan.id, input.snapshot_version);
+  if (!snapshot) return { error: 'snapshot_not_found' };
+  const modalities = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.modality]));
+  const invalidFields = new Set<string>();
+  for (const day of snapshot.parsed.days) for (const slot of day.exercises) {
+    let progression: unknown = null;
+    try { progression = slot.progression == null ? null : JSON.parse(slot.progression); }
+    catch { invalidFields.add(`${day.day_label ?? day.name}/${slot.exercise_id}.progression`); }
+    const invalid = validateExercisePrescription({ ...slot, progression }, {
+      modality: modalities.get(slot.exercise_id),
+    });
+    for (const field of invalid?.fields ?? []) {
+      invalidFields.add(`${day.day_label ?? day.name}/${slot.exercise_id}.${field}`);
+    }
+  }
+  if (invalidFields.size > 0) {
+    return { error: 'invalid_fields', fields: [...invalidFields].sort() };
+  }
+  const active = await db.prepare(
+    `SELECT 1 FROM sessions
+      WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
+  ).bind(userId, plan.id).first();
+  if (active) return { error: 'active_workout' };
+
+  const current = await getPlanTree(db, userId);
+  if (!current) return { error: 'no_active_plan' };
+  const target = snapshot.parsed;
+  const targetDayIds = new Set(target.days.map((day) => day.id));
+  const targetSlots = target.days.flatMap((day) =>
+    day.exercises.map((slot) => ({ ...slot, day_template_id: day.id })),
+  );
+  const targetSlotIds = new Set(targetSlots.map((slot) => slot.id));
+  const ts = now();
+  const nonce = uuid();
+  const guarded = `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce='${nonce}')`;
+  const statements: D1PreparedStatement[] = [
+    ...preparePlanWriteStart(db, plan, {
+      actor: input.actor, operation: 'restore_plan', args: input,
+      reason: input.reason,
+      note: input.reason ?? `Restored plan version ${input.snapshot_version}.`,
+    }, ts, nonce, true),
+  ];
+  for (const day of target.days) {
+    statements.push(db.prepare(
+      `INSERT OR IGNORE INTO day_templates
+       (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+       SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded}`,
+    ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
+      day.order_index, day.notes, ts));
+    statements.push(db.prepare(
+      `UPDATE day_templates SET name=?5,day_label=?6,order_index=?7,notes=?8,updated_at=?9
+       WHERE id=?4 AND plan_id=?1 AND ${guarded}`,
+    ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
+      day.order_index, day.notes, ts));
+  }
+  for (const slot of targetSlots) {
+    statements.push(db.prepare(
+      `INSERT OR IGNORE INTO template_exercises
+       (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,
+        target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
+        created_at,updated_at)
+       SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18
+       WHERE ${guarded}`,
+    ).bind(plan.id, userId, -plan.version, slot.id, slot.day_template_id,
+      slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
+      slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
+      slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts));
+    statements.push(db.prepare(
+      `UPDATE template_exercises SET day_template_id=?5,exercise_id=?6,order_index=?7,
+       target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
+       rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
+       cues=?16,is_warmup=?17,updated_at=?18 WHERE id=?4 AND ${guarded}`,
+    ).bind(plan.id, userId, -plan.version, slot.id, slot.day_template_id,
+      slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
+      slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
+      slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts));
+  }
+  for (const day of current.days) {
+    for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
+      statements.push(
+        db.prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded}`)
+          .bind(plan.id, userId, -plan.version, ts, slot.id),
+        db.prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded}`)
+          .bind(plan.id, userId, -plan.version, slot.id),
+      );
+    }
+    if (!targetDayIds.has(day.id)) {
+      statements.push(
+        db.prepare(`UPDATE sessions SET day_template_id=NULL,updated_at=?4 WHERE day_template_id=?5 AND user_id=?2 AND ${guarded}`)
+          .bind(plan.id, userId, -plan.version, ts, day.id),
+        db.prepare(`DELETE FROM day_templates WHERE id=?4 AND plan_id=?1 AND ${guarded}`)
+          .bind(plan.id, userId, -plan.version, day.id),
+      );
+    }
+  }
+  statements.push(db.prepare(
+    `UPDATE plans SET name=?4,meta=?5,updated_at=?6
+     WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce=?7`,
+  ).bind(plan.id, userId, -plan.version, target.plan.name, target.plan.meta, ts, nonce));
+  const documentUpdateIndex = statements.length - 1;
+  const versionResultIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, {
+    actor: input.actor, operation: 'restore_plan', args: input,
+    reason: input.reason,
+    note: input.reason ?? `Restored plan version ${input.snapshot_version}.`,
+  }, ts, nonce));
+  const results = await runWorkoutWriteBatch(db, statements);
+  if ((results[0]?.meta.changes ?? 0) !== 1 || (results[documentUpdateIndex]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
+    const nowActive = await db.prepare(
+      `SELECT 1 FROM sessions WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
+    ).bind(userId, plan.id).first();
+    if (nowActive) return { error: 'active_workout' };
+    const latest = await getActivePlan(db, userId);
+    return {
+      conflict: true,
+      current_plan_id: latest?.id ?? plan.id,
+      current_version: latest?.version ?? plan.version,
+    };
+  }
+  const restoredVersion = plan.version + 1;
+  const committedPlan = await readCommittedSnapshotPlan(db, plan, restoredVersion, ts);
+  if (!committedPlan) {
+    return {
+      ok: true, acknowledged: true, refresh_required: true, plan_id: plan.id,
+      restored_from_version: input.snapshot_version, version: restoredVersion,
+    };
+  }
+  return {
+    ok: true, plan_id: plan.id, restored_from_version: input.snapshot_version,
+    version: restoredVersion, plan: committedPlan,
+  };
+}
+
 export async function createPlan(
   db: D1Database,
   userId: string,
   name: string,
   meta: unknown = null,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'create_plan' },
 ): Promise<PlanRow> {
   const ts = now();
   const planId = uuid();
@@ -2745,6 +3230,16 @@ export async function createPlan(
          RETURNING *`,
       )
       .bind(planId, userId, name, serializedMeta, ts),
+    preparePlanSnapshotInsert(db, {
+      userId, planId, actor: attribution.actor, operation: attribution.operation,
+      reason: attribution.reason ?? attribution.note ?? null, createdAt: ts,
+    }),
+    db.prepare(
+      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+       SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS
+       (SELECT 1 FROM plans WHERE id=?8 AND user_id=?2)`,
+    ).bind(uuid(), userId, attribution.actor, attribution.operation,
+      JSON.stringify(attribution.args ?? {}), JSON.stringify({ plan_id: planId }), ts, planId),
   ]);
   const plan = results[1]?.results[0];
   if (!plan) throw new Error('active_plan_replace_missing_result');
@@ -2761,14 +3256,14 @@ export async function ensureActivePlan(
   db: D1Database,
   userId: string,
   name: string,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'ensure_active_plan' },
 ): Promise<{ plan: PlanRow; created: boolean }> {
   const existing = await getActivePlan(db, userId);
   if (existing) return { plan: existing, created: false };
 
   const ts = now();
   const candidateId = uuid();
-  const created = await db
-    .prepare(
+  const candidateInsert = db.prepare(
       `INSERT INTO plans
          (id,user_id,name,status,version,meta,created_at,updated_at)
        SELECT ?1,?2,?3,'active',COALESCE(MAX(version),0)+1,NULL,?4,?4
@@ -2777,8 +3272,21 @@ export async function ensureActivePlan(
        ON CONFLICT DO NOTHING
        RETURNING *`,
     )
-    .bind(candidateId, userId, name, ts)
-    .first<PlanRow>();
+    .bind(candidateId, userId, name, ts);
+  const results = await db.batch<PlanRow>([
+    candidateInsert,
+    preparePlanSnapshotInsert(db, {
+      userId, planId: candidateId, actor: attribution.actor,
+      operation: attribution.operation, reason: attribution.reason ?? null, createdAt: ts,
+    }),
+    db.prepare(
+      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+       SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS
+       (SELECT 1 FROM plans WHERE id=?8 AND user_id=?2)`,
+    ).bind(uuid(), userId, attribution.actor, attribution.operation,
+      JSON.stringify(attribution.args ?? {}), JSON.stringify({ plan_id: candidateId }), ts, candidateId),
+  ]);
+  const created = results[0]?.results[0];
   if (created) {
     return { plan: created, created: true };
   }
@@ -2930,6 +3438,7 @@ export async function addDayTemplateAtVersion(
   name: string,
   dayLabel: string | null,
   orderIndex: number,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_day' },
 ): Promise<DayTemplateRow | PlanVersionConflict> {
   const ts = now();
   const row: DayTemplateRow = {
@@ -2949,7 +3458,9 @@ export async function addDayTemplateAtVersion(
     .bind(plan.id)
     .all<{ id: string; order_index: number }>();
   const ordered = orderDayRows([...currentDays.results, row], row.id);
+  const nonce = uuid();
   const statements: D1PreparedStatement[] = [
+    ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     db
       .prepare(
         `INSERT INTO day_templates
@@ -2962,7 +3473,7 @@ export async function addDayTemplateAtVersion(
       )
       .bind(
         row.id, row.plan_id, row.name, row.day_label, row.order_index, row.notes,
-        row.created_at, row.updated_at, userId, plan.version,
+        row.created_at, row.updated_at, userId, -plan.version,
       ),
     ...ordered.map((day, index) =>
       db
@@ -2974,20 +3485,15 @@ export async function addDayTemplateAtVersion(
                  WHERE id = ?4 AND user_id = ?5 AND status = 'active' AND version = ?6
               )`,
         )
-        .bind(day.id, index, ts, plan.id, userId, plan.version),
+        .bind(day.id, index, ts, plan.id, userId, -plan.version),
     ),
-    db
-      .prepare(
-        `UPDATE plans SET version = version + 1, updated_at = ?3
-          WHERE id = ?1 AND user_id = ?2 AND status = 'active' AND version = ?4
-          RETURNING version`,
-      )
-      .bind(plan.id, userId, ts, plan.version),
   ];
-  const results = await db.batch<{ version: number }>(statements);
-  const inserted = results[0];
-  const updatedPlan = results.at(-1)?.results[0];
-  if ((inserted?.meta.changes ?? 0) !== 1 || !updatedPlan) {
+  const versionResultIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, { ...attribution, result: row.id }, ts, nonce));
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
+  const inserted = results[2];
+  const updatedPlan = results[versionResultIndex]?.results[0];
+  if ((results[0]?.meta.changes ?? 0) !== 1 || (inserted?.meta.changes ?? 0) !== 1 || !updatedPlan) {
     return currentPlanVersion(db, userId, plan.version);
   }
   row.order_index = ordered.findIndex((day) => day.id === row.id);
@@ -3006,6 +3512,7 @@ export async function patchDayTemplateAtVersion(
     order_index?: number;
     notes?: string | null;
   },
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_day' },
 ): Promise<DayTemplateRow | { error: 'unknown_fields'; fields: string[] } | PlanVersionConflict | null> {
   const existing = await getDayTemplateInPlan(db, plan.id, dayId);
   if (!existing) return null;
@@ -3031,7 +3538,9 @@ export async function patchDayTemplateAtVersion(
   const ordered = patch.order_index === undefined
     ? withMove
     : orderDayRows(withMove, dayId);
+  const nonce = uuid();
   const statements: D1PreparedStatement[] = [
+    ...preparePlanWriteStart(db, plan, attribution, merged.updated_at, nonce),
     db
       .prepare(
         `UPDATE day_templates
@@ -3044,7 +3553,7 @@ export async function patchDayTemplateAtVersion(
       )
       .bind(
         dayId, merged.name, merged.day_label, merged.order_index, merged.notes,
-        merged.updated_at, plan.id, userId, plan.version,
+        merged.updated_at, plan.id, userId, -plan.version,
       ),
     ...(patch.order_index === undefined
       ? []
@@ -3058,20 +3567,15 @@ export async function patchDayTemplateAtVersion(
                      WHERE id=?4 AND user_id=?5 AND status='active' AND version=?6
                   )`,
             )
-            .bind(day.id, index, merged.updated_at, plan.id, userId, plan.version),
+            .bind(day.id, index, merged.updated_at, plan.id, userId, -plan.version),
         )),
-    db
-      .prepare(
-        `UPDATE plans SET version=version+1, updated_at=?3
-          WHERE id=?1 AND user_id=?2 AND status='active' AND version=?4
-          RETURNING version`,
-      )
-      .bind(plan.id, userId, merged.updated_at, plan.version),
   ];
-  const results = await db.batch<{ version: number }>(statements);
-  const patched = results[0];
-  const updatedPlan = results.at(-1)?.results[0];
-  if ((patched?.meta.changes ?? 0) !== 1 || !updatedPlan) {
+  const versionResultIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, attribution, merged.updated_at, nonce));
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
+  const patched = results[2];
+  const updatedPlan = results[versionResultIndex]?.results[0];
+  if ((results[0]?.meta.changes ?? 0) !== 1 || (patched?.meta.changes ?? 0) !== 1 || !updatedPlan) {
     return currentPlanVersion(db, userId, plan.version);
   }
   if (patch.order_index !== undefined) {
@@ -3197,33 +3701,64 @@ export async function nextDayOrderIndex(
 export async function addTemplateExercise(
   db: D1Database,
   planId: string,
-  input: Omit<TemplateExerciseRow, 'id' | 'created_at' | 'updated_at'>,
-): Promise<TemplateExerciseRow> {
+  input: Omit<TemplateExerciseRow, 'id' | 'created_at' | 'updated_at' | 'is_warmup'> & {
+    is_warmup: number | boolean;
+  },
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_exercise' },
+): Promise<TemplateExerciseRow | PrescriptionValidationError> {
+  const plan = await db.prepare("SELECT * FROM plans WHERE id=?1 AND status='active'")
+    .bind(planId).first<PlanRow>();
+  if (!plan) throw new Error('no_active_plan');
+  const exercise = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
+    .bind(input.exercise_id).first<{ modality: string }>();
+  const validationInput: Record<string, unknown> = {
+    ...input,
+    progression: input.progression === null
+      ? null
+      : (() => { try { return JSON.parse(input.progression); } catch { return input.progression; } })(),
+  };
+  const invalid = validateExercisePrescription(validationInput, { modality: exercise?.modality });
+  if (invalid) return invalid;
   const ts = now();
-  const row: TemplateExerciseRow = { ...input, id: uuid(), created_at: ts, updated_at: ts };
-  await db
-    .prepare(
+  const row: TemplateExerciseRow = {
+    ...input,
+    is_warmup: input.is_warmup ? 1 : 0,
+    id: uuid(),
+    created_at: ts,
+    updated_at: ts,
+  };
+  const siblings = await db.prepare(
+    'SELECT id,order_index FROM template_exercises WHERE day_template_id=?1 ORDER BY order_index,created_at,id',
+  ).bind(row.day_template_id).all<{ id: string; order_index: number }>();
+  const collides = siblings.results.some((slot) => slot.order_index === row.order_index);
+  const ordered = collides ? orderDayRows([...siblings.results, row], row.id) : [...siblings.results, row];
+  const nonce = uuid();
+  const statements: D1PreparedStatement[] = [
+    ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
+    db.prepare(
       `INSERT INTO template_exercises
        (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
-       VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)`,
+       SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
+       WHERE EXISTS (SELECT 1 FROM plans WHERE id=?17 AND user_id=?18 AND version=-?19 AND plan_write_nonce=?20)`,
     )
     .bind(
       row.id, row.day_template_id, row.exercise_id, row.order_index, row.target_sets,
       row.target_reps, row.target_reps_max, row.target_rpe, row.rest_seconds,
       row.target_weight, row.target_duration_s, row.progression, row.cues, row.is_warmup ? 1 : 0,
-      row.created_at, row.updated_at,
-    )
-    .run();
-  // An explicit order_index can collide with a sibling; densify so the day
-  // never holds duplicate indices (non-deterministic display otherwise).
-  if (await dedupeDayOrderIndexes(db, row.day_template_id, row.id)) {
-    const fresh = await db
-      .prepare('SELECT order_index FROM template_exercises WHERE id = ?1')
-      .bind(row.id)
-      .first<{ order_index: number }>();
-    if (fresh) row.order_index = fresh.order_index;
+      row.created_at, row.updated_at, plan.id, plan.user_id, plan.version, nonce,
+    ),
+    ...(collides ? ordered.map((slot, index) => db.prepare(
+      `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
+       AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`,
+    ).bind(slot.id, index, ts, plan.id, plan.user_id, plan.version, nonce)) : []),
+  ];
+  const versionResultIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, { ...attribution, result: row.id }, ts, nonce));
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
+  if ((results[0]?.meta.changes ?? 0) !== 1 || (results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
+    throw new Error('plan_write_conflict');
   }
-  await bumpPlanVersion(db, planId);
+  if (collides) row.order_index = ordered.findIndex((slot) => slot.id === row.id);
   return row;
 }
 
@@ -5129,7 +5664,7 @@ export async function listActivitiesForUser(
 
 // ---- plan-tree mutations (MCP write tools) -------------------------------
 
-interface ExerciseInput {
+export interface ExerciseInput {
   exercise: string;
   order_index?: number;
   target_sets: number;
@@ -5147,6 +5682,47 @@ interface ExerciseInput {
    *  Preserved across a full-tree rebuild so update_plan never silently
    *  strips a warm-up flag set via the REST editor. */
   is_warmup?: number | boolean;
+}
+
+export type PrescriptionValidationError = {
+  error: 'invalid_fields';
+  fields: string[];
+};
+
+const isPlainRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** Runtime prescription validation shared by every plan-slot writer.
+ * Null is intentionally distinct from omission for nullable targets. */
+export function validateExercisePrescription(
+  value: Record<string, unknown>,
+  options: { partial?: boolean; modality?: string | null } = {},
+): PrescriptionValidationError | null {
+  const bad = new Set<string>();
+  const has = (field: string) => Object.prototype.hasOwnProperty.call(value, field);
+  const required = (field: string) => !options.partial || has(field);
+  const integer = (field: string, min: number) => {
+    if (required(field) && (!Number.isSafeInteger(value[field]) || (value[field] as number) < min)) bad.add(field);
+  };
+  integer('target_sets', 1);
+  integer('target_reps', 1);
+  if (has('target_reps_max') && value.target_reps_max !== null &&
+      (!Number.isSafeInteger(value.target_reps_max) || (value.target_reps_max as number) < 1)) bad.add('target_reps_max');
+  if (has('target_rpe') && value.target_rpe !== null &&
+      (typeof value.target_rpe !== 'number' || !Number.isFinite(value.target_rpe) || value.target_rpe < 0 || value.target_rpe > 10)) bad.add('target_rpe');
+  if (has('rest_seconds') && (!Number.isSafeInteger(value.rest_seconds) || (value.rest_seconds as number) < 0)) bad.add('rest_seconds');
+  if (has('target_duration_s') && value.target_duration_s !== null &&
+      (!Number.isSafeInteger(value.target_duration_s) || (value.target_duration_s as number) <= 0)) bad.add('target_duration_s');
+  if (has('target_weight') && value.target_weight !== null &&
+      (typeof value.target_weight !== 'number' || !Number.isFinite(value.target_weight))) bad.add('target_weight');
+  if (typeof value.target_weight === 'number' && value.target_weight < 0 &&
+      options.modality !== 'bw' && options.modality !== 'timed') bad.add('target_weight');
+  if (has('order_index') && (!Number.isSafeInteger(value.order_index) || (value.order_index as number) < 0)) bad.add('order_index');
+  if (has('cues') && value.cues !== null && typeof value.cues !== 'string') bad.add('cues');
+  if (has('progression') && value.progression !== null && !isPlainRecord(value.progression)) bad.add('progression');
+  if (has('is_warmup') && typeof value.is_warmup !== 'boolean' && value.is_warmup !== 0 && value.is_warmup !== 1) bad.add('is_warmup');
+  if (typeof value.target_reps === 'number' && typeof value.target_reps_max === 'number' && value.target_reps_max < value.target_reps) bad.add('target_reps_max');
+  return bad.size === 0 ? null : { error: 'invalid_fields', fields: [...bad].sort() };
 }
 
 async function resolveOrThrow(db: D1Database, name: string): Promise<string> {
@@ -5175,20 +5751,43 @@ export async function updatePlanTree(
       exercises?: ExerciseInput[];
     }[];
   },
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_plan' },
+  retryConcurrentBootstrap = true,
 ): Promise<
   | { conflict: true; current_version: number }
   | { conflict: false; plan: PlanTree }
+  | { conflict: false; acknowledged: true; refresh_required: true; plan_id: string; version: number }
   | { error: 'unknown_exercise'; queries: string[]; query: string }
+  | PrescriptionValidationError
 > {
-  let plan = await getActivePlan(db, userId);
-  if (!plan) {
-    // The no-plan coach path shares the same conflict-safe bootstrap as the
-    // app. If both callers observe "no active plan", the partial unique index
-    // elects one stable plan id and the coach rebuilds that winner instead of
-    // archiving the app's just-created row with createPlan().
-    plan = (await ensureActivePlan(db, userId, input.name ?? 'My Plan')).plan;
+  if (!input || !Array.isArray(input.days)) {
+    return { error: 'invalid_fields', fields: ['days'] };
   }
+  if (input.name !== undefined && typeof input.name !== 'string') {
+    return { error: 'invalid_fields', fields: ['name'] };
+  }
+  if (input.meta !== undefined && input.meta !== null && !isPlainRecord(input.meta)) {
+    return { error: 'invalid_fields', fields: ['meta'] };
+  }
+  if (input.expected_version !== undefined && input.expected_version !== null &&
+      (!Number.isInteger(input.expected_version) || input.expected_version < 1)) {
+    return { error: 'invalid_fields', fields: ['expected_version'] };
+  }
+  const malformedDays: string[] = [];
+  input.days.forEach((day, dayIndex) => {
+    if (!isPlainRecord(day) || !Array.isArray(day.exercises ?? [])) {
+      malformedDays.push(`days.${dayIndex}`);
+      return;
+    }
+    (day.exercises ?? []).forEach((exercise, exerciseIndex) => {
+      if (!isPlainRecord(exercise)) malformedDays.push(`days.${dayIndex}.exercises.${exerciseIndex}`);
+    });
+  });
+  if (malformedDays.length > 0) return { error: 'invalid_fields', fields: malformedDays.sort() };
+  let plan = await getActivePlan(db, userId);
+  let createsPlan = false;
   if (
+    plan &&
     input.expected_version != null &&
     input.expected_version !== plan.version
   ) {
@@ -5203,6 +5802,7 @@ export async function updatePlanTree(
   // structured shape introduced in PR #12. Use list_exercises to
   // discover valid catalog names.
   const resolved = new Map<string, string>();
+  const resolvedModality = new Map<string, string>();
   const unknown: string[] = [];
   const seenUnknown = new Set<string>();
   for (const d of input.days) {
@@ -5222,10 +5822,39 @@ export async function updatePlanTree(
         continue;
       }
       resolved.set(e.exercise, (ex as { id: string }).id);
+      resolvedModality.set(e.exercise, (ex as { modality: string }).modality);
     }
   }
   if (unknown.length > 0) {
     return { error: 'unknown_exercise', queries: unknown, query: unknown[0]! };
+  }
+  const invalidFields = new Set<string>();
+  input.days.forEach((day, dayIndex) => {
+    if (typeof day.name !== 'string' || day.name.trim() === '') invalidFields.add(`days.${dayIndex}.name`);
+    if (day.order_index !== undefined && (!Number.isInteger(day.order_index) || day.order_index < 0)) invalidFields.add(`days.${dayIndex}.order_index`);
+    if (day.day_label !== undefined && day.day_label !== null && typeof day.day_label !== 'string') invalidFields.add(`days.${dayIndex}.day_label`);
+    if (day.notes !== undefined && day.notes !== null && typeof day.notes !== 'string') invalidFields.add(`days.${dayIndex}.notes`);
+    (day.exercises ?? []).forEach((exercise, exerciseIndex) => {
+      const invalid = validateExercisePrescription(exercise as unknown as Record<string, unknown>, {
+        modality: resolvedModality.get(exercise.exercise),
+      });
+      for (const field of invalid?.fields ?? []) invalidFields.add(`days.${dayIndex}.exercises.${exerciseIndex}.${field}`);
+    });
+  });
+  if (invalidFields.size > 0) return { error: 'invalid_fields', fields: [...invalidFields].sort() };
+  if (!plan) {
+    // Build the candidate only after the complete proposed tree has passed
+    // resolution and runtime validation. Its INSERT joins the tree rebuild's
+    // transaction below, so a downstream failure cannot leave an empty plan.
+    const prior = await db.prepare(
+      'SELECT COALESCE(MAX(version),0) AS version FROM plans WHERE user_id=?1',
+    ).bind(userId).first<{ version: number }>();
+    const ts = now();
+    plan = {
+      id: uuid(), user_id: userId, name: input.name ?? 'My Plan', status: 'active',
+      version: (prior?.version ?? 0) + 1, meta: null, created_at: ts, updated_at: ts,
+    };
+    createsPlan = true;
   }
 
   // Capture the OLD day identity (id → name/label) before the rebuild so we
@@ -5377,7 +6006,19 @@ export async function updatePlanTree(
   // that'd catch the freshly-inserted new rows too). The original DELETE-
   // before-INSERT order failed FK the moment any real session or set_log
   // referenced a row being deleted.
-  const stmts: D1PreparedStatement[] = [];
+  const nonce = uuid();
+  const stmts: D1PreparedStatement[] = createsPlan
+    ? [db.prepare(
+        `INSERT INTO plans
+           (id,user_id,name,status,version,meta,created_at,updated_at,plan_write_nonce)
+         SELECT ?1,?2,?3,'active',?4,NULL,?5,?5,?6
+          WHERE EXISTS (SELECT 1 FROM users u WHERE u.id=?2)
+            AND NOT EXISTS (SELECT 1 FROM account_deletion_intents i WHERE i.user_id=?2)
+            AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts r WHERE r.user_id=?2)
+         ON CONFLICT DO NOTHING
+         RETURNING id`,
+      ).bind(plan.id, userId, plan.name, -plan.version, ts, nonce)]
+    : [...preparePlanWriteStart(db, plan, attribution, ts, nonce)];
   // 1) INSERT new day_templates (parents) — coexist with old by id.
   input.days.forEach((d, di) => {
     const dayId = newDayIds[di]!;
@@ -5403,7 +6044,7 @@ export async function updatePlanTree(
           ts,
           plan!.id,
           userId,
-          plan!.version,
+          -plan!.version,
         ),
     );
   });
@@ -5432,7 +6073,7 @@ export async function updatePlanTree(
             e.target_reps, e.target_reps_max ?? null, e.target_rpe ?? null, e.rest_seconds ?? 120,
             e.target_weight ?? null, e.target_duration_s ?? null,
             e.progression == null ? null : JSON.stringify(e.progression),
-            e.cues ?? null, isWarmup, ts, ts, plan!.id, userId, plan!.version,
+            e.cues ?? null, isWarmup, ts, ts, plan!.id, userId, -plan!.version,
           ),
       );
     });
@@ -5450,7 +6091,7 @@ export async function updatePlanTree(
                    WHERE id = ?3 AND user_id = ?4 AND status = 'active' AND version = ?5
                 )`,
           )
-          .bind(oldDayId, newDayId, plan.id, userId, plan.version, ts),
+          .bind(oldDayId, newDayId, plan.id, userId, -plan.version, ts),
       );
     } else {
       stmts.push(
@@ -5463,7 +6104,7 @@ export async function updatePlanTree(
                    WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
                 )`,
           )
-          .bind(oldDayId, plan.id, userId, plan.version, ts),
+          .bind(oldDayId, plan.id, userId, -plan.version, ts),
       );
     }
   }
@@ -5482,7 +6123,7 @@ export async function updatePlanTree(
                    WHERE id = ?3 AND user_id = ?4 AND status = 'active' AND version = ?5
                 )`,
           )
-          .bind(oldTeId, newTeId, plan.id, userId, plan.version, ts),
+          .bind(oldTeId, newTeId, plan.id, userId, -plan.version, ts),
       );
     } else {
       stmts.push(
@@ -5497,7 +6138,7 @@ export async function updatePlanTree(
                    WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
                 )`,
           )
-          .bind(oldTeId, plan.id, userId, plan.version, ts),
+          .bind(oldTeId, plan.id, userId, -plan.version, ts),
       );
     }
   }
@@ -5514,7 +6155,7 @@ export async function updatePlanTree(
                  WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
               )`,
         )
-        .bind(ot.id, plan.id, userId, plan.version),
+        .bind(ot.id, plan.id, userId, -plan.version),
     );
   }
   // 6) DELETE old day_templates by EXPLICIT id. Parents last.
@@ -5529,7 +6170,7 @@ export async function updatePlanTree(
                  WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
               )`,
         )
-        .bind(od.id, plan.id, userId, plan.version),
+        .bind(od.id, plan.id, userId, -plan.version),
     );
   }
   // The full tree is rebuilt with fresh day UUIDs. Re-point each schedule
@@ -5587,8 +6228,9 @@ export async function updatePlanTree(
     db
       .prepare(
         `UPDATE plans
-            SET name = ?2, meta = ?3, version = version + 1, updated_at = ?4
-          WHERE id = ?1 AND user_id = ?5 AND status = 'active' AND version = ?6`,
+            SET name = ?2, meta = ?3, updated_at = ?4
+          WHERE id = ?1 AND user_id = ?5 AND status = 'active' AND version = ?6
+            AND plan_write_nonce=?7`,
       )
       .bind(
         plan.id,
@@ -5596,9 +6238,13 @@ export async function updatePlanTree(
         serializePlanMeta(baseMeta, remappedSchedule),
         ts,
         userId,
-        plan.version,
+        -plan.version,
+        nonce,
       ),
   );
+  const documentUpdateIndex = stmts.length - 1;
+  const versionResultIndex = stmts.length;
+  stmts.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
   // D1 executes a batch atomically and sequentially. Every statement above
   // carries the SAME active-plan/version predicate, so after one contender
   // bumps the version a stale contender's entire batch becomes a no-op: no
@@ -5606,12 +6252,28 @@ export async function updatePlanTree(
   // compare-and-swap. This applies even when the caller omitted
   // expected_version; the version we actually read is always the CAS token.
   const results = await runWorkoutWriteBatch(db, stmts);
-  const finalUpdate = results[results.length - 1];
-  if (!finalUpdate || finalUpdate.meta.changes === 0) {
+  const claimed = results[0];
+  const documentUpdate = results[documentUpdateIndex];
+  const versionUpdate = results[versionResultIndex];
+  if ((claimed?.meta.changes ?? 0) !== 1 || (documentUpdate?.meta.changes ?? 0) !== 1 || !versionUpdate?.results[0]) {
+    if (createsPlan && retryConcurrentBootstrap) {
+      return updatePlanTree(db, userId, input, attribution, false);
+    }
     const current = await getActivePlan(db, userId);
     return { conflict: true, current_version: current?.version ?? plan.version };
   }
-  return { conflict: false, plan: (await getPlanTree(db, userId))! };
+  const acknowledgedVersion = plan.version + 1;
+  const committedPlan = await readCommittedSnapshotPlan(db, plan, acknowledgedVersion, ts);
+  if (!committedPlan) {
+    return {
+      conflict: false, acknowledged: true, refresh_required: true,
+      plan_id: plan.id, version: acknowledgedVersion,
+    };
+  }
+  return {
+    conflict: false,
+    plan: committedPlan,
+  };
 }
 
 /** Find a template_exercise slot by id, or by (day + exercise name/id).
@@ -5689,7 +6351,11 @@ export async function updateExercise(
       | 'is_warmup'
     >
   > & { progression?: unknown },
-): Promise<TemplateExerciseRow | { error: 'unknown_fields'; fields: string[] } | null> {
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_exercise' },
+  retryLegacyConflict = true,
+): Promise<TemplateExerciseRow | PlanVersionConflict | { error: 'unknown_fields'; fields: string[] } | PrescriptionValidationError | null> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return null;
   // Slot lookup first so a wrong ref returns the more actionable
   // `slot_not_found` (via null) before unknown_fields. A double-mistake
   // call gets the higher-priority diagnostic.
@@ -5697,52 +6363,115 @@ export async function updateExercise(
   if (!slot) return null;
   const unknown = Object.keys(patch).filter((k) => !TEMPLATE_EXERCISE_PATCH_KEYS.has(k));
   if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
-  const m: TemplateExerciseRow = {
-    ...slot,
-    target_sets: patch.target_sets ?? slot.target_sets,
-    target_reps: patch.target_reps ?? slot.target_reps,
-    target_reps_max:
-      patch.target_reps_max === undefined ? slot.target_reps_max : patch.target_reps_max,
+  const modality = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
+    .bind(slot.exercise_id).first<{ modality: string }>();
+  const merged = {
+    target_sets: patch.target_sets === undefined ? slot.target_sets : patch.target_sets,
+    target_reps: patch.target_reps === undefined ? slot.target_reps : patch.target_reps,
+    target_reps_max: patch.target_reps_max === undefined ? slot.target_reps_max : patch.target_reps_max,
     target_rpe: patch.target_rpe === undefined ? slot.target_rpe : patch.target_rpe,
-    rest_seconds: patch.rest_seconds ?? slot.rest_seconds,
-    target_weight:
-      patch.target_weight === undefined ? slot.target_weight : patch.target_weight,
-    target_duration_s:
-      patch.target_duration_s === undefined ? slot.target_duration_s : patch.target_duration_s,
+    rest_seconds: patch.rest_seconds === undefined ? slot.rest_seconds : patch.rest_seconds,
+    target_weight: patch.target_weight === undefined ? slot.target_weight : patch.target_weight,
+    target_duration_s: patch.target_duration_s === undefined ? slot.target_duration_s : patch.target_duration_s,
     cues: patch.cues === undefined ? slot.cues : patch.cues,
     order_index: patch.order_index === undefined ? slot.order_index : patch.order_index,
-    is_warmup:
-      patch.is_warmup === undefined ? slot.is_warmup : patch.is_warmup ? 1 : 0,
-    progression:
-      patch.progression === undefined
-        ? slot.progression
-        : patch.progression == null
-          ? null
-          : JSON.stringify(patch.progression),
-    updated_at: now(),
+    is_warmup: patch.is_warmup === undefined ? slot.is_warmup : patch.is_warmup,
+    progression: patch.progression === undefined
+      ? (slot.progression === null ? null : JSON.parse(slot.progression) as unknown)
+      : patch.progression,
   };
-  await db
-    .prepare(
-      `UPDATE template_exercises SET target_sets=?2,target_reps=?3,target_reps_max=?4,
-       target_rpe=?5,rest_seconds=?6,target_weight=?7,target_duration_s=?8,cues=?9,progression=?10,order_index=?11,is_warmup=?12,updated_at=?13
-       WHERE id=?1`,
-    )
-    .bind(
-      slot.id, m.target_sets, m.target_reps, m.target_reps_max, m.target_rpe,
-      m.rest_seconds, m.target_weight, m.target_duration_s, m.cues, m.progression, m.order_index, m.is_warmup, m.updated_at,
-    )
-    .run();
-  // Patching order_index can collide with a sibling; densify the day so the
-  // result has unique 0..n-1 indices honoring the requested position.
-  if (patch.order_index !== undefined && (await dedupeDayOrderIndexes(db, slot.day_template_id, slot.id))) {
-    const fresh = await db
-      .prepare('SELECT order_index FROM template_exercises WHERE id = ?1')
-      .bind(slot.id)
-      .first<{ order_index: number }>();
-    if (fresh) m.order_index = fresh.order_index;
+  const invalid = validateExercisePrescription(merged as Record<string, unknown>, { modality: modality?.modality });
+  if (invalid) return invalid;
+  if (Object.keys(patch).length === 0) return slot;
+
+  // Update only fields supplied by the caller. This bounded legacy policy lets
+  // disjoint tokenless patches compose; concurrent same-field patches remain
+  // last-committer-wins until every released caller supplies expected_version.
+  const assignments: string[] = [];
+  const values: unknown[] = [slot.id];
+  const assign = (column: string, value: unknown) => {
+    values.push(value);
+    assignments.push(`${column}=?${values.length}`);
+  };
+  for (const key of TEMPLATE_EXERCISE_PATCH_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key)) continue;
+    const value = key === 'progression'
+      ? (patch.progression == null ? null : JSON.stringify(patch.progression))
+      : key === 'is_warmup'
+        ? (patch.is_warmup ? 1 : 0)
+        : (patch as Record<string, unknown>)[key];
+    assign(key, value);
   }
-  await bumpPlanVersionByDay(db, slot.day_template_id);
-  return m;
+  const ts = now();
+  assign('updated_at', ts);
+  values.push(userId);
+  const userParam = values.length;
+  const rangePredicates: string[] = [];
+  if (patch.target_reps !== undefined && patch.target_reps_max === undefined) {
+    values.push(patch.target_reps);
+    rangePredicates.push(`(target_reps_max IS NULL OR target_reps_max>=?${values.length})`);
+  }
+  if (patch.target_reps_max !== undefined && patch.target_reps_max !== null && patch.target_reps === undefined) {
+    values.push(patch.target_reps_max);
+    rangePredicates.push(`target_reps<=?${values.length}`);
+  }
+  const nonce = uuid();
+  const statements: D1PreparedStatement[] = [
+    ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
+    db.prepare(
+      `UPDATE template_exercises SET ${assignments.join(',')}
+        WHERE id=?1 AND EXISTS (
+          SELECT 1 FROM day_templates d JOIN plans p ON p.id=d.plan_id
+           WHERE d.id=template_exercises.day_template_id
+             AND p.user_id=?${userParam} AND p.status='active'
+             AND p.id='${plan.id}' AND p.version=-${plan.version}
+             AND p.plan_write_nonce='${nonce}'
+        )${rangePredicates.length ? ` AND ${rangePredicates.join(' AND ')}` : ''}`,
+    ).bind(...values),
+  ];
+  let acknowledgedOrder = patch.order_index ?? slot.order_index;
+  if (patch.order_index !== undefined) {
+    const siblings = await db.prepare(
+      'SELECT id,order_index FROM template_exercises WHERE day_template_id=?1 ORDER BY order_index,created_at,id',
+    ).bind(slot.day_template_id).all<{ id: string; order_index: number }>();
+    const moved = siblings.results.map((row) => row.id === slot.id ? { ...row, order_index: patch.order_index! } : row);
+    const hasDuplicate = new Set(moved.map((row) => row.order_index)).size !== moved.length;
+    if (hasDuplicate) {
+      const ordered = orderDayRows(moved, slot.id);
+      acknowledgedOrder = ordered.findIndex((row) => row.id === slot.id);
+      ordered.forEach((row, index) => statements.push(
+        db.prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
+          AND EXISTS (SELECT 1 FROM day_templates d JOIN plans p ON p.id=d.plan_id
+            JOIN template_exercises te ON te.day_template_id=d.id
+            WHERE te.id=?4 AND p.id='${plan.id}' AND p.version=-${plan.version}
+              AND p.plan_write_nonce='${nonce}')`).bind(row.id, index, ts, slot.id),
+      ));
+    }
+  }
+  const versionResultIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
+  if ((results[0]?.meta.changes ?? 0) !== 1) {
+    if (retryLegacyConflict) {
+      return updateExercise(db, userId, ref, patch, attribution, false);
+    }
+    return currentPlanVersion(db, userId, plan.version);
+  }
+  if ((results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
+    const current = await findSlot(db, userId, ref);
+    if (current && (patch.target_reps !== undefined || patch.target_reps_max !== undefined)) {
+      return { error: 'invalid_fields', fields: ['target_reps_max'] };
+    }
+    return null;
+  }
+  return {
+    ...slot,
+    ...merged,
+    progression: merged.progression == null ? null : JSON.stringify(merged.progression),
+    is_warmup: merged.is_warmup ? 1 : 0,
+    order_index: acknowledgedOrder,
+    updated_at: ts,
+  };
 }
 
 /**
@@ -5757,25 +6486,40 @@ export async function deleteTemplateExercise(
   db: D1Database,
   userId: string,
   ref: { template_exercise_id?: string; day_template_id?: string; day?: string; exercise?: string },
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'delete_exercise' },
+  retryLegacyConflict = true,
 ): Promise<TemplateExerciseRow | null> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return null;
   const slot = await findSlot(db, userId, ref);
   if (!slot) return null;
   const ts = now();
-  await runWorkoutWriteBatch(
-    db,
-    [
+  const nonce = uuid();
+  const statements: D1PreparedStatement[] = [
+      ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
       db
         .prepare(
           `UPDATE set_logs
               SET template_exercise_id = NULL,
                   updated_at = MAX(updated_at + 1, ?2)
-            WHERE template_exercise_id = ?1`,
+            WHERE template_exercise_id = ?1
+              AND EXISTS (SELECT 1 FROM plans WHERE id=?3 AND user_id=?4 AND version=-?5 AND plan_write_nonce=?6)`,
         )
-        .bind(slot.id, ts),
-      db.prepare('DELETE FROM template_exercises WHERE id = ?1').bind(slot.id),
-    ],
-  );
-  await bumpPlanVersionByDay(db, slot.day_template_id);
+        .bind(slot.id, ts, plan.id, userId, plan.version, nonce),
+      db.prepare(
+        `DELETE FROM template_exercises WHERE id=?1 AND EXISTS
+         (SELECT 1 FROM plans WHERE id=?2 AND user_id=?3 AND version=-?4 AND plan_write_nonce=?5)`,
+      ).bind(slot.id, plan.id, userId, plan.version, nonce),
+  ];
+  const versionResultIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
+  if ((results[0]?.meta.changes ?? 0) !== 1) {
+    return retryLegacyConflict
+      ? deleteTemplateExercise(db, userId, ref, attribution, false)
+      : null;
+  }
+  if ((results[3]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) return null;
   return slot;
 }
 
@@ -5783,16 +6527,41 @@ export async function swapExercise(
   db: D1Database,
   userId: string,
   ref: { day: string; from_exercise: string; to_exercise: string; carry_targets?: boolean },
-): Promise<TemplateExerciseRow | null> {
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'swap_exercise' },
+  retryLegacyConflict = true,
+): Promise<TemplateExerciseRow | PrescriptionValidationError | null> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return null;
   const slot = await findSlot(db, userId, { day: ref.day, exercise: ref.from_exercise });
   if (!slot) return null;
-  const toId = await resolveOrThrow(db, ref.to_exercise);
-  await db
-    .prepare('UPDATE template_exercises SET exercise_id=?2, updated_at=?3 WHERE id=?1')
-    .bind(slot.id, toId, now())
-    .run();
-  await bumpPlanVersionByDay(db, slot.day_template_id);
-  return { ...slot, exercise_id: toId, updated_at: now() };
+  const destination = await resolveExercise(db, ref.to_exercise) as { id: string; modality: string } | null;
+  if (!destination) throw new Error(`unknown_exercise:${ref.to_exercise}`);
+  const progression = slot.progression === null ? null : JSON.parse(slot.progression) as unknown;
+  const invalid = validateExercisePrescription({ ...slot, progression }, { modality: destination.modality });
+  if (invalid) return invalid;
+  const ts = now();
+  const nonce = uuid();
+  const statements: D1PreparedStatement[] = [
+    ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
+    db.prepare(
+      `UPDATE template_exercises SET exercise_id=?2,updated_at=?3 WHERE id=?1
+        AND EXISTS (
+          SELECT 1 FROM day_templates d JOIN plans p ON p.id=d.plan_id
+           WHERE d.id=template_exercises.day_template_id AND p.user_id=?4 AND p.status='active'
+             AND p.id=?5 AND p.version=-?6 AND p.plan_write_nonce=?7
+        )`,
+    ).bind(slot.id, destination.id, ts, userId, plan.id, plan.version, nonce),
+  ];
+  const versionResultIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
+  if ((results[0]?.meta.changes ?? 0) !== 1) {
+    return retryLegacyConflict
+      ? swapExercise(db, userId, ref, attribution, false)
+      : null;
+  }
+  if ((results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) return null;
+  return { ...slot, exercise_id: destination.id, updated_at: ts };
 }
 
 async function bumpPlanVersionByDay(db: D1Database, dayTemplateId: string): Promise<void> {
@@ -5849,17 +6618,58 @@ export async function adjustToday(
   intent: 'deload' | 'reduce_volume' | 'reduce_intensity',
   magnitude: 'light' | 'moderate' | 'heavy' = 'moderate',
   dayLabel?: string,
-): Promise<{ plan: PlanTree | null; changes: string[] }> {
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'adjust_today' },
+): Promise<{
+  plan: PlanTree | null;
+  changes: string[];
+  recurring: true;
+  affected_workouts: string[];
+  no_op: boolean;
+  acknowledged?: true;
+  refresh_required?: true;
+  version?: number;
+  conflict?: true;
+  current_version?: number;
+  error?: 'invalid_fields';
+  fields?: string[];
+}> {
+  if (!['deload', 'reduce_volume', 'reduce_intensity'].includes(intent)
+      || !['light', 'moderate', 'heavy'].includes(magnitude)) {
+    throw new Error('invalid_adjustment');
+  }
   const tree = await getPlanTree(db, userId);
-  if (!tree) return { plan: null, changes: [] };
+  if (!tree) return { plan: null, changes: [], recurring: true, affected_workouts: [], no_op: true };
   const setF = { light: 0.8, moderate: 0.65, heavy: 0.5 }[magnitude];
   const wtF = { light: 0.95, moderate: 0.9, heavy: 0.85 }[magnitude];
   const days = dayLabel
     ? tree.days.filter((d) => d.day_label === dayLabel || d.name === dayLabel)
     : tree.days;
+  const invalidFields = new Set<string>();
+  for (const day of days) for (const slot of day.exercises) {
+    let progression: unknown = null;
+    try { progression = slot.progression == null ? null : JSON.parse(slot.progression); }
+    catch { invalidFields.add(`${day.day_label ?? day.name}/${slot.exercise_name}.progression`); }
+    const invalid = validateExercisePrescription({ ...slot, progression }, {
+      modality: slot.exercise_modality,
+    });
+    for (const field of invalid?.fields ?? []) {
+      invalidFields.add(`${day.day_label ?? day.name}/${slot.exercise_name}.${field}`);
+    }
+  }
+  if (invalidFields.size > 0) {
+    return {
+      error: 'invalid_fields', fields: [...invalidFields].sort(), plan: tree,
+      changes: [], recurring: true,
+      affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: true,
+    };
+  }
   const changes: string[] = [];
-  const stmts: D1PreparedStatement[] = [];
+  const computedInvalid = new Set<string>();
   const ts = now();
+  const nonce = uuid();
+  const stmts: D1PreparedStatement[] = [
+    ...preparePlanWriteStart(db, tree, attribution, ts, nonce),
+  ];
   for (const d of days) {
     for (const te of d.exercises) {
       if (intent === 'reduce_intensity') {
@@ -5872,33 +6682,94 @@ export async function adjustToday(
         const rounded = Math.round(scaled / 5) * 5;
         // Keep the existing five-pound convention when it increases
         // assistance, but never let a small negative value round to zero.
-        const w = assisted ? Math.min(te.target_weight, rounded) : rounded;
+        const w = Math.min(te.target_weight, rounded);
+        if (w === te.target_weight) continue;
+        const invalid = validateExercisePrescription({
+          ...te, target_weight: w,
+          progression: te.progression == null ? null : JSON.parse(te.progression),
+        }, { modality: te.exercise_modality });
+        if (invalid) {
+          for (const field of invalid.fields) {
+            computedInvalid.add(`${d.day_label ?? d.name}/${te.exercise_name}.${field}`);
+          }
+          continue;
+        }
         stmts.push(
           db
-            .prepare('UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1')
-            .bind(te.id, w, ts),
+            .prepare(`UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1
+              AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
+            .bind(te.id, w, ts, tree.id, userId, tree.version, nonce),
         );
-        changes.push(`${d.day_label ?? d.name}/${te.exercise_id}: weight ${te.target_weight}→${w}`);
+        changes.push(`${d.day_label ?? d.name}/${te.exercise_name}: weight ${te.target_weight}→${w}`);
       } else {
         const s = Math.max(1, Math.round(te.target_sets * setF));
+        if (s === te.target_sets) continue;
+        const invalid = validateExercisePrescription({
+          ...te, target_sets: s,
+          progression: te.progression == null ? null : JSON.parse(te.progression),
+        }, { modality: te.exercise_modality });
+        if (invalid) {
+          for (const field of invalid.fields) {
+            computedInvalid.add(`${d.day_label ?? d.name}/${te.exercise_name}.${field}`);
+          }
+          continue;
+        }
         stmts.push(
           db
-            .prepare('UPDATE template_exercises SET target_sets=?2, updated_at=?3 WHERE id=?1')
-            .bind(te.id, s, ts),
+            .prepare(`UPDATE template_exercises SET target_sets=?2, updated_at=?3 WHERE id=?1
+              AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
+            .bind(te.id, s, ts, tree.id, userId, tree.version, nonce),
         );
-        changes.push(`${d.day_label ?? d.name}/${te.exercise_id}: sets ${te.target_sets}→${s}`);
+        changes.push(`${d.day_label ?? d.name}/${te.exercise_name}: sets ${te.target_sets}→${s}`);
       }
     }
   }
-  if (stmts.length) {
-    stmts.push(
-      db
-        .prepare('UPDATE plans SET version = version + 1, updated_at = ?2 WHERE id = ?1')
-        .bind(tree.id, ts),
-    );
-    await db.batch(stmts);
+  if (computedInvalid.size > 0) {
+    return {
+      error: 'invalid_fields', fields: [...computedInvalid].sort(), plan: tree,
+      changes: [], recurring: true,
+      affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: true,
+    };
   }
-  return { plan: await getPlanTree(db, userId), changes };
+  if (changes.length) {
+    const versionResultIndex = stmts.length;
+    const workouts = days.map((day) => day.day_label ?? day.name).join(', ');
+    const detail = `Recurring templates (${workouts}): ${changes.length} change(s): ${changes.join('; ')}`;
+    stmts.push(...preparePlanWriteFinish(db, tree, {
+      ...attribution,
+      note: attribution.note ? `${attribution.note} ${detail}` : detail,
+    }, ts, nonce));
+    const results = await runWorkoutWriteBatch<{ version: number }>(db, stmts);
+    if ((results[0]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
+      const current = await getActivePlan(db, userId);
+      return {
+        conflict: true, current_version: current?.version ?? tree.version,
+        plan: null, changes: [], recurring: true,
+        affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: false,
+      };
+    }
+    const committedVersion = tree.version + 1;
+    const committedPlan = await readCommittedSnapshotPlan(db, tree, committedVersion, ts);
+    if (!committedPlan) {
+      return {
+        plan: null, changes, recurring: true,
+        affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: false,
+        acknowledged: true, refresh_required: true, version: committedVersion,
+      };
+    }
+    return {
+      plan: committedPlan,
+      changes, recurring: true,
+      affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: false,
+    };
+  }
+  return {
+    plan: tree,
+    changes,
+    recurring: true,
+    affected_workouts: days.map((day) => day.day_label ?? day.name),
+    no_op: changes.length === 0,
+  };
 }
 
 const epley = (w: number, r: number) => Math.round(w * (1 + r / 30) * 10) / 10;
@@ -6172,6 +7043,7 @@ export async function setPlanSchedule(
   weekInput: Partial<Record<Weekday, string | null>>,
   expectedVersion?: number | null,
   expectedPlanId?: string | null,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'set_schedule' },
 ): Promise<
   | { conflict: true; current_plan_id: string; current_version: number }
   | { error: 'no_active_plan' }
@@ -6231,15 +7103,17 @@ export async function setPlanSchedule(
   const ts = now();
   // Gate on the read version (write-time optimistic concurrency) — same as
   // writePlanMeta; a concurrent plan write → no row updated → 409.
-  const row = await db
-    .prepare(
-      `UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3
-        WHERE id = ?1 AND version = ?4 AND user_id = ?5 AND status = 'active'
-        RETURNING version`,
-    )
-    .bind(plan.id, serializePlanMeta(meta, schedule), ts, plan.version, userId)
-    .first<{ version: number }>();
-  if (!row) {
+  const nonce = uuid();
+  const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
+  statements.push(db.prepare(
+    `UPDATE plans SET meta=?2,updated_at=?3
+      WHERE id=?1 AND version=-?4 AND user_id=?5 AND status='active' AND plan_write_nonce=?6`,
+  ).bind(plan.id, serializePlanMeta(meta, schedule), ts, plan.version, userId, nonce));
+  const versionResultIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
+  const row = results[versionResultIndex]?.results[0];
+  if ((results[0]?.meta.changes ?? 0) !== 1 || (results[2]?.meta.changes ?? 0) !== 1 || !row) {
     const cur = await getActivePlan(db, userId);
     return {
       conflict: true,
@@ -6280,6 +7154,7 @@ async function writePlanMeta(
   userId: string,
   expectedVersion: number | null | undefined,
   mutate: (meta: PlanMeta) => string | void,
+  attribution: PlanWriteAttribution,
 ): Promise<PlanMetaWrite> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
@@ -6295,13 +7170,17 @@ async function writePlanMeta(
   // same get_current_plan (e.g. set_race + add_trip) can't both pass and let
   // the later one serialize a stale copy, silently dropping the other's
   // changes. No row updated → another writer won → 409 (caller refetches).
-  const row = await db
-    .prepare(
-      'UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3 WHERE id = ?1 AND version = ?4 RETURNING version',
-    )
-    .bind(plan.id, serializePlanMeta(meta, meta.schedule), ts, plan.version)
-    .first<{ version: number }>();
-  if (!row) {
+  const nonce = uuid();
+  const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
+  statements.push(db.prepare(
+    `UPDATE plans SET meta=?2,updated_at=?3
+      WHERE id=?1 AND version=-?4 AND user_id=?5 AND plan_write_nonce=?6`,
+  ).bind(plan.id, serializePlanMeta(meta, meta.schedule), ts, plan.version, userId, nonce));
+  const versionResultIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
+  const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
+  const row = results[versionResultIndex]?.results[0];
+  if ((results[0]?.meta.changes ?? 0) !== 1 || (results[2]?.meta.changes ?? 0) !== 1 || !row) {
     const cur = await getActivePlan(db, userId);
     return { conflict: true, current_version: cur?.version ?? plan.version };
   }
@@ -6314,11 +7193,12 @@ export async function setRace(
   userId: string,
   race: RaceGoal,
   expectedVersion?: number | null,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'set_race' },
 ) {
   if (!YMD.test(race.date)) return { error: 'invalid_date' as const };
   const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
     meta.race = race;
-  });
+  }, attribution);
   return 'ok' in res
     ? { ok: true as const, version: res.version, race: res.meta.race ?? null }
     : res;
@@ -6330,6 +7210,7 @@ export async function setPeriodization(
   userId: string,
   phases: PeriodizationPhase[],
   expectedVersion?: number | null,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'set_periodization' },
 ) {
   for (const p of phases) {
     if (!YMD.test(p.start) || !YMD.test(p.end)) return { error: 'invalid_date' as const };
@@ -6340,7 +7221,7 @@ export async function setPeriodization(
   }
   const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
     meta.periodization = phases;
-  });
+  }, attribution);
   return 'ok' in res
     ? { ok: true as const, version: res.version, periodization: res.meta.periodization ?? [] }
     : res;
@@ -6352,6 +7233,7 @@ export async function addTrip(
   userId: string,
   trip: Omit<Trip, 'id'>,
   expectedVersion?: number | null,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_trip' },
 ) {
   if (!YMD.test(trip.start) || !YMD.test(trip.end)) return { error: 'invalid_date' as const };
   // YYYY-MM-DD sorts chronologically, so an inverted range (start > end) would
@@ -6363,7 +7245,7 @@ export async function addTrip(
     const trips = meta.trips ?? [];
     trips.push({ ...trip, id });
     meta.trips = trips;
-  });
+  }, attribution);
   return 'ok' in res
     ? { ok: true as const, version: res.version, id, trips: res.meta.trips ?? [] }
     : res;
@@ -6376,6 +7258,7 @@ export async function updateTrip(
   tripId: string,
   patch: Partial<Omit<Trip, 'id'>>,
   expectedVersion?: number | null,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_trip' },
 ) {
   if (patch.start && !YMD.test(patch.start)) return { error: 'invalid_date' as const };
   if (patch.end && !YMD.test(patch.end)) return { error: 'invalid_date' as const };
@@ -6396,7 +7279,7 @@ export async function updateTrip(
     if (merged.start > merged.end) return 'invalid_range';
     trips[i] = merged;
     meta.trips = trips;
-  });
+  }, attribution);
   return 'ok' in res
     ? { ok: true as const, version: res.version, trips: res.meta.trips ?? [] }
     : res;
@@ -6408,12 +7291,13 @@ export async function removeTrip(
   userId: string,
   tripId: string,
   expectedVersion?: number | null,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'remove_trip' },
 ) {
   const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
     const trips = meta.trips ?? [];
     if (!trips.some((t) => t.id === tripId)) return 'trip_not_found';
     meta.trips = trips.filter((t) => t.id !== tripId);
-  });
+  }, attribution);
   return 'ok' in res
     ? { ok: true as const, version: res.version, trips: res.meta.trips ?? [] }
     : res;
@@ -6425,10 +7309,11 @@ export async function setStressModel(
   userId: string,
   model: StressModel,
   expectedVersion?: number | null,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'set_stress_model' },
 ) {
   const res = await writePlanMeta(db, userId, expectedVersion, (meta) => {
     meta.stress_model = model;
-  });
+  }, attribution);
   return 'ok' in res
     ? { ok: true as const, version: res.version, stress_model: res.meta.stress_model ?? null }
     : res;
@@ -6465,6 +7350,7 @@ export async function deleteDayTemplate(
   userId: string,
   dayId: string,
   expectedVersion?: number,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'delete_day' },
 ): Promise<
   { ok: true; version: number }
   | { error: 'day_not_found' }
@@ -6530,7 +7416,9 @@ export async function deleteDayTemplate(
     )
   )`;
   const ts = now();
+  const nonce = uuid();
   const stmts: D1PreparedStatement[] = [
+    ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     // Preserve historical rows; only detach their pointers into the plan
     // document before deleting that document node.
     db
@@ -6556,7 +7444,7 @@ export async function deleteDayTemplate(
                  AND active_session.status = 'in_progress'
             )`,
       )
-      .bind(userId, dayId, plan.id, writeVersion, ts),
+      .bind(userId, dayId, plan.id, -writeVersion, ts),
     db
       .prepare(
         `UPDATE set_logs
@@ -6576,7 +7464,7 @@ export async function deleteDayTemplate(
                  AND active_session.status = 'in_progress'
             )`,
       )
-      .bind(dayId, plan.id, userId, writeVersion, ts),
+      .bind(dayId, plan.id, userId, -writeVersion, ts),
     db
       .prepare(
         `DELETE FROM template_exercises WHERE day_template_id = ?1
@@ -6591,7 +7479,7 @@ export async function deleteDayTemplate(
                AND active_session.status = 'in_progress'
           )`,
       )
-      .bind(dayId, plan.id, userId, writeVersion),
+      .bind(dayId, plan.id, userId, -writeVersion),
     db
       .prepare(
         `DELETE FROM day_templates WHERE id = ?1 AND plan_id = ?2
@@ -6606,7 +7494,7 @@ export async function deleteDayTemplate(
                AND active_session.status = 'in_progress'
           )`,
       )
-      .bind(dayId, plan.id, userId, writeVersion),
+      .bind(dayId, plan.id, userId, -writeVersion),
     ...remaining.results.map((row, index) =>
       db
         .prepare(
@@ -6623,32 +7511,37 @@ export async function deleteDayTemplate(
                    AND active_session.status = 'in_progress'
               )`,
         )
-        .bind(row.id, index, ts, plan.id, userId, writeVersion, dayId),
+        .bind(row.id, index, ts, plan.id, userId, -writeVersion, dayId),
     ),
     db
       .prepare(
-        `UPDATE plans SET meta = ?2, version = version + 1, updated_at = ?3
+        `UPDATE plans SET meta = ?2, updated_at = ?3
           WHERE id = ?1 AND user_id = ?4 AND status = 'active' AND version = ?5
+            AND plan_write_nonce = ?7
             AND NOT EXISTS (
               SELECT 1 FROM sessions AS active_session
                WHERE active_session.user_id = ?4
                  AND ${activeSessionReferencesDeletedDay('active_session', '?6', '?1')}
                  AND active_session.status = 'in_progress'
             )
-          RETURNING version`,
+          `,
       )
       .bind(
         plan.id,
         serializePlanMeta(meta, scrubbed ?? meta.schedule),
         ts,
         userId,
-        writeVersion,
+        -writeVersion,
         dayId,
+        nonce,
       ),
   ];
+  const documentUpdateIndex = stmts.length - 1;
+  const versionResultIndex = stmts.length;
+  stmts.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, stmts);
-  const updatedPlan = results.at(-1)?.results[0];
-  if (!updatedPlan) {
+  const updatedPlan = results[versionResultIndex]?.results[0];
+  if ((results[0]?.meta.changes ?? 0) !== 1 || (results[documentUpdateIndex]?.meta.changes ?? 0) !== 1 || !updatedPlan) {
     const active = await db
       .prepare(
         `SELECT 1 FROM sessions AS active_session
@@ -10275,4 +11168,487 @@ export async function getGroupActivitySeries(
     out.push({ user_id: m.user_id, days: daysArr });
   }
   return out;
+}
+
+// ---- OAuth grant transitions --------------------------------------------
+
+export interface OAuthCodeRedemption {
+  code: string;
+  client_id: string;
+  redirect_uri: string;
+  code_challenge: string;
+  code_challenge_method: string;
+  scope: string | null;
+  resource: string | null;
+  expires_at: number;
+  user_id: string | null;
+  access_token: string;
+  refresh_token: string;
+  access_expires_at: number;
+  grant_id: string;
+  owner_apple_sub?: string;
+}
+
+export interface OAuthRefreshRotation {
+  presented_refresh_token: string;
+  presented_client_id: string;
+  client_id: string;
+  scope: string | null;
+  expires_at: number;
+  user_id: string | null;
+  access_token: string;
+  refresh_token: string;
+  access_expires_at: number;
+  grant_id: string | null;
+  consumed_refresh_sha256: string;
+  owner_apple_sub?: string;
+}
+
+export interface OAuthTokenPair {
+  access_token: string;
+  refresh_token: string;
+  scope: string;
+  grant_id: string;
+}
+
+/**
+ * Consume one already-validated authorization-code snapshot and insert its
+ * sole successor in one D1 transaction. Every immutable validation input is
+ * repeated at the write boundary. If insertion fails, D1 rolls the batch back
+ * and leaves the code available for a corrected retry.
+ */
+export async function redeemOAuthAuthorizationCode(
+  db: D1Database,
+  redemption: OAuthCodeRedemption,
+): Promise<OAuthTokenPair | null> {
+  // Legacy unscoped grants belong only to an existing distinguished owner.
+  // Do not bootstrap a replacement identity while redeeming old credentials.
+  const principal = redemption.user_id
+    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(redemption.user_id).first<{ id: string }>()
+    : await findOwnerRow(db, redemption.owner_apple_sub);
+  if (!principal) return null;
+
+  const nowMs = now();
+  const tokenCreatedAt = Math.floor(nowMs / 1000);
+  const legacy = redemption.user_id === null;
+  const [family, inserted, consumed, cleaned] = await db.batch([
+    db.prepare(
+      `INSERT INTO oauth_grants
+         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
+       SELECT ?1, ?2, client_id, COALESCE(scope, 'mcp'), ?3, ?3, ?15
+         FROM oauth_codes
+        WHERE code = ?4
+          AND client_id = ?5
+          AND redirect_uri = ?6
+          AND code_challenge = ?7
+          AND code_challenge_method = ?8
+          AND expires_at = ?9
+          AND expires_at >= ?10
+          AND scope IS ?11
+          AND resource IS ?12
+          AND (user_id = ?13 OR (?14 = 1 AND user_id IS NULL))
+          AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)`,
+    ).bind(
+      redemption.grant_id,
+      principal.id,
+      nowMs,
+      redemption.code,
+      redemption.client_id,
+      redemption.redirect_uri,
+      redemption.code_challenge,
+      redemption.code_challenge_method,
+      redemption.expires_at,
+      nowMs,
+      redemption.scope,
+      redemption.resource,
+      redemption.user_id,
+      legacy ? 1 : 0,
+      legacy ? 1 : 0,
+    ),
+    db.prepare(
+      `INSERT INTO oauth_tokens
+         (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id, grant_id)
+       SELECT ?1, ?2, client_id, COALESCE(scope, 'mcp'), ?3, ?4, ?5, ?17
+         FROM oauth_codes
+        WHERE code = ?6
+          AND client_id = ?7
+          AND redirect_uri = ?8
+          AND code_challenge = ?9
+          AND code_challenge_method = ?10
+          AND expires_at = ?11
+          AND expires_at >= ?12
+          AND scope IS ?13
+          AND resource IS ?14
+          AND (user_id = ?15 OR (?16 = 1 AND user_id IS NULL))
+          AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)
+          AND EXISTS (SELECT 1 FROM oauth_grants WHERE id = ?17)
+          AND changes() = 1`,
+    ).bind(
+      redemption.access_token,
+      redemption.refresh_token,
+      redemption.access_expires_at,
+      tokenCreatedAt,
+      principal.id,
+      redemption.code,
+      redemption.client_id,
+      redemption.redirect_uri,
+      redemption.code_challenge,
+      redemption.code_challenge_method,
+      redemption.expires_at,
+      nowMs,
+      redemption.scope,
+      redemption.resource,
+      redemption.user_id,
+      legacy ? 1 : 0,
+      redemption.grant_id,
+    ),
+    db.prepare(
+      `DELETE FROM oauth_codes
+        WHERE code = ?1
+          AND client_id = ?2
+          AND redirect_uri = ?3
+          AND code_challenge = ?4
+          AND code_challenge_method = ?5
+          AND expires_at = ?6
+          AND expires_at >= ?7
+          AND scope IS ?8
+          AND resource IS ?9
+          AND (user_id = ?10 OR (?11 = 1 AND user_id IS NULL))
+          AND changes() = 1`,
+    ).bind(
+      redemption.code,
+      redemption.client_id,
+      redemption.redirect_uri,
+      redemption.code_challenge,
+      redemption.code_challenge_method,
+      redemption.expires_at,
+      nowMs,
+      redemption.scope,
+      redemption.resource,
+      redemption.user_id,
+      legacy ? 1 : 0,
+    ),
+    db.prepare(
+      `DELETE FROM oauth_grants
+        WHERE id = ?1
+          AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
+    ).bind(redemption.grant_id),
+  ]);
+  if (
+    family?.meta.changes !== 1 ||
+    inserted?.meta.changes !== 1 ||
+    consumed?.meta.changes !== 1 ||
+    cleaned?.meta.changes !== 0
+  ) return null;
+  return {
+    access_token: redemption.access_token,
+    refresh_token: redemption.refresh_token,
+    scope: redemption.scope ?? 'mcp',
+    grant_id: redemption.grant_id,
+  };
+}
+
+/** Rotate a refresh credential with one conditional write. */
+export async function rotateOAuthRefreshToken(
+  db: D1Database,
+  rotation: OAuthRefreshRotation,
+): Promise<OAuthTokenPair | null> {
+  if (!rotation.presented_client_id || rotation.presented_client_id !== rotation.client_id) {
+    return null;
+  }
+  const principal = rotation.user_id
+    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(rotation.user_id).first<{ id: string }>()
+    : await findOwnerRow(db, rotation.owner_apple_sub);
+  if (!principal) return null;
+
+  const refreshedAt = now();
+  const tokenCreatedAt = Math.floor(refreshedAt / 1000);
+  const legacy = rotation.user_id === null;
+  const grantId = rotation.grant_id ?? crypto.randomUUID();
+  const [adopted, rotated, archived, touched, cleaned] = await db.batch([
+    db.prepare(
+      `INSERT INTO oauth_grants
+         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
+       SELECT ?1, ?2, client_id, scope, created_at * 1000, ?3, 1
+         FROM oauth_tokens
+        WHERE refresh_token = ?4
+          AND client_id = ?5
+          AND expires_at = ?6
+          AND scope IS ?7
+          AND grant_id IS NULL
+          AND (user_id = ?8 OR (?9 = 1 AND user_id IS NULL))
+          AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)
+       ON CONFLICT(id) DO NOTHING`,
+    ).bind(
+      grantId,
+      principal.id,
+      refreshedAt,
+      rotation.presented_refresh_token,
+      rotation.client_id,
+      rotation.expires_at,
+      rotation.scope,
+      rotation.user_id,
+      legacy ? 1 : 0,
+    ),
+    db.prepare(
+    `UPDATE oauth_tokens
+        SET access_token = ?1,
+            refresh_token = ?2,
+            expires_at = ?3,
+            created_at = ?4,
+            user_id = ?5,
+            grant_id = ?12
+      WHERE refresh_token = ?6
+        AND client_id = ?7
+        AND expires_at = ?8
+        AND (user_id = ?9 OR (?10 = 1 AND user_id IS NULL))
+        AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)
+        AND scope IS ?11
+        AND (grant_id = ?12 OR grant_id IS NULL)
+        AND EXISTS (SELECT 1 FROM oauth_grants WHERE id = ?12 AND revoked_at IS NULL)
+        AND NOT EXISTS (
+              SELECT 1 FROM oauth_refresh_history WHERE token_sha256 = ?13
+            )`,
+  ).bind(
+    rotation.access_token,
+    rotation.refresh_token,
+    rotation.access_expires_at,
+    tokenCreatedAt,
+    principal.id,
+    rotation.presented_refresh_token,
+    rotation.client_id,
+    rotation.expires_at,
+    rotation.user_id,
+    legacy ? 1 : 0,
+    rotation.scope,
+    grantId,
+    rotation.consumed_refresh_sha256,
+  ),
+    db.prepare(
+      `INSERT INTO oauth_refresh_history (token_sha256, grant_id, client_id, consumed_at)
+       SELECT ?1, ?2, ?3, ?4
+        WHERE changes() = 1`,
+    ).bind(rotation.consumed_refresh_sha256, grantId, rotation.client_id, refreshedAt),
+    db.prepare(
+      `UPDATE oauth_grants SET last_refreshed_at = ?2
+        WHERE id = ?1 AND revoked_at IS NULL AND changes() = 1`,
+    ).bind(grantId, refreshedAt),
+    db.prepare(
+      `DELETE FROM oauth_grants
+        WHERE id = ?1 AND ?2 = 1
+          AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM oauth_refresh_history WHERE grant_id = ?1)`,
+    ).bind(grantId, rotation.grant_id === null ? 1 : 0),
+  ]);
+  if (rotated?.meta.changes !== 1 || archived?.meta.changes !== 1 || touched?.meta.changes !== 1) {
+    return null;
+  }
+  if (cleaned?.meta.changes !== 0) return null;
+  if (rotation.grant_id === null && adopted?.meta.changes !== 1) return null;
+  return {
+    access_token: rotation.access_token,
+    refresh_token: rotation.refresh_token,
+    scope: rotation.scope ?? 'mcp',
+    grant_id: grantId,
+  };
+}
+
+/**
+ * Complete refresh behavior for one validated snapshot. A clean CAS loss may
+ * mean another contender just consumed the same credential, so check history
+ * before returning invalid_grant and revoke that family's surviving token.
+ */
+export async function refreshOAuthGrant(
+  db: D1Database,
+  rotation: OAuthRefreshRotation,
+): Promise<OAuthTokenPair | null> {
+  const tokens = await rotateOAuthRefreshToken(db, rotation);
+  if (tokens) return tokens;
+  await revokeOAuthGrantOnRefreshReplay(
+    db,
+    rotation.consumed_refresh_sha256,
+    rotation.presented_client_id,
+    rotation.owner_apple_sub,
+  );
+  return null;
+}
+
+export interface OAuthGrantSummary {
+  id: string;
+  client_id: string;
+  scope: string;
+  created_at: number;
+  last_refreshed_at: number | null;
+  legacy: boolean;
+}
+
+/**
+ * A matching replay of a consumed refresh credential invalidates only its
+ * family. A wrong client id has no effect: public client ids bind requests but
+ * do not authenticate whoever presented the stale credential.
+ */
+export async function revokeOAuthGrantOnRefreshReplay(
+  db: D1Database,
+  tokenSha256: string,
+  clientId: string,
+  ownerAppleSub: string | undefined,
+): Promise<boolean> {
+  const replay = await db.prepare(
+    `SELECT g.id, g.user_id FROM oauth_refresh_history h
+       JOIN oauth_grants g ON g.id = h.grant_id
+      WHERE h.token_sha256 = ?1
+        AND h.client_id = ?2
+        AND g.client_id = ?2`,
+  ).bind(tokenSha256, clientId).first<{ id: string; user_id: string | null }>();
+  if (!replay) return false;
+  const principal = replay.user_id
+    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(replay.user_id).first<{ id: string }>()
+    : await findOwnerRow(db, ownerAppleSub);
+  if (!principal) return false;
+  const revokedAt = now();
+  const [revoked, removed] = await db.batch([
+    db.prepare(
+      `UPDATE oauth_grants SET revoked_at = ?2
+        WHERE id = ?1 AND revoked_at IS NULL
+          AND (user_id = ?3 OR (?4 = 1 AND user_id IS NULL))`,
+    ).bind(replay.id, revokedAt, replay.user_id, replay.user_id === null ? 1 : 0),
+    db.prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1 AND changes() = 1')
+      .bind(replay.id),
+  ]);
+  return revoked?.meta.changes === 1 && (removed?.meta.changes ?? 0) <= 1;
+}
+
+async function adoptUntrackedOAuthGrants(
+  db: D1Database,
+  userId: string,
+  includeLegacyOwner: boolean,
+): Promise<void> {
+  const rows = await db.prepare(
+    `SELECT access_token, user_id, client_id, scope, created_at
+       FROM oauth_tokens
+      WHERE grant_id IS NULL
+        AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))`,
+  ).bind(userId, includeLegacyOwner ? 1 : 0).all<{
+    access_token: string;
+    user_id: string | null;
+    client_id: string;
+    scope: string | null;
+    created_at: number;
+  }>();
+  for (const row of rows.results) {
+    const grantId = crypto.randomUUID();
+    await db.batch([
+      db.prepare(
+        `INSERT INTO oauth_grants
+           (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
+         SELECT ?1, ?2, client_id, scope, created_at * 1000, created_at * 1000, 1
+           FROM oauth_tokens
+          WHERE access_token = ?3 AND grant_id IS NULL
+            AND (user_id = ?2 OR (?4 = 1 AND user_id IS NULL))
+            AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
+            AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
+            AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)`,
+      ).bind(grantId, row.user_id ?? userId, row.access_token, row.user_id === null ? 1 : 0),
+      db.prepare(
+        `UPDATE oauth_tokens SET grant_id = ?2
+          WHERE access_token = ?1 AND grant_id IS NULL AND changes() = 1`,
+      ).bind(row.access_token, grantId),
+      db.prepare(
+        `DELETE FROM oauth_grants
+          WHERE id = ?1
+            AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
+      ).bind(grantId),
+    ]);
+  }
+}
+
+export async function listOAuthGrants(
+  db: D1Database,
+  userId: string,
+  ownerAppleSub: string | undefined,
+): Promise<OAuthGrantSummary[]> {
+  const owner = await findOwnerRow(db, ownerAppleSub);
+  const isOwner = owner?.id === userId;
+  await adoptUntrackedOAuthGrants(db, userId, isOwner);
+  const rows = await db.prepare(
+    `SELECT id, client_id, COALESCE(scope, 'mcp') AS scope, created_at,
+            last_refreshed_at, legacy
+       FROM oauth_grants
+      WHERE revoked_at IS NULL
+        AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))
+      ORDER BY created_at DESC, id`,
+  ).bind(userId, isOwner ? 1 : 0).all<{
+    id: string;
+    client_id: string;
+    scope: string;
+    created_at: number;
+    last_refreshed_at: number | null;
+    legacy: number;
+  }>();
+  return rows.results.map((row) => ({ ...row, legacy: row.legacy === 1 }));
+}
+
+/** Caller-scoped and idempotent; never returns or audits credential values. */
+export async function revokeOAuthGrant(
+  db: D1Database,
+  userId: string,
+  grantId: string,
+  ownerAppleSub: string | undefined,
+): Promise<boolean> {
+  const owner = await findOwnerRow(db, ownerAppleSub);
+  const isOwner = owner?.id === userId;
+  const grant = await db.prepare(
+    `SELECT id FROM oauth_grants
+      WHERE id = ?1 AND (user_id = ?2 OR (?3 = 1 AND user_id IS NULL))`,
+  ).bind(grantId, userId, isOwner ? 1 : 0).first<{ id: string }>();
+  if (!grant) return false;
+  await db.batch([
+    db.prepare(
+      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+       VALUES (?1,?2,'ios','revoke_coach_grant',?3,'revoked',?4)`,
+    ).bind(uuid(), userId, JSON.stringify({ grant_id: grantId }), now()),
+    db.prepare(
+      'UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?2) WHERE id = ?1',
+    ).bind(grantId, now()),
+    db.prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1').bind(grantId),
+  ]);
+  return true;
+}
+
+export async function revokeAllOAuthGrants(
+  db: D1Database,
+  userId: string,
+  ownerAppleSub: string | undefined,
+): Promise<number> {
+  const owner = await findOwnerRow(db, ownerAppleSub);
+  const isOwner = owner?.id === userId;
+  await adoptUntrackedOAuthGrants(db, userId, isOwner);
+  const [, revoked] = await db.batch([
+    db.prepare(
+      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+       VALUES (?1,?2,'ios','revoke_coach_grants',?3,'revoked',?4)`,
+    ).bind(uuid(), userId, JSON.stringify({ scope: 'all' }), now()),
+    db.prepare(
+      `UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?3)
+        WHERE revoked_at IS NULL
+          AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))`,
+    ).bind(userId, isOwner ? 1 : 0, now()),
+    db.prepare(
+      `DELETE FROM oauth_tokens
+        WHERE grant_id IN (
+          SELECT id FROM oauth_grants
+           WHERE revoked_at IS NOT NULL
+             AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))
+        )`,
+    ).bind(userId, isOwner ? 1 : 0),
+  ]);
+  return revoked?.meta.changes ?? 0;
 }
