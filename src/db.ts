@@ -30,6 +30,12 @@ import type {
 } from './types';
 import { WEEKDAYS, parsePlanMeta, serializePlanMeta } from './types';
 import {
+  comparePlanSnapshots,
+  parsePlanSnapshot,
+  serializePlanSnapshot,
+  type PlanSnapshotDocument,
+} from './planSnapshots';
+import {
   fetchCompletedActivities,
   fetchPlannedEvents,
   type ActivityFetchDeps,
@@ -1191,6 +1197,7 @@ export async function deleteUserAccount(
       )
       .bind(userId),
     db.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM plan_snapshots WHERE user_id = ?1').bind(userId),
     db
       .prepare(
         `DELETE FROM template_exercises
@@ -2166,6 +2173,12 @@ export async function exportUserData(
       .bind(userId),
     db
       .prepare(
+        `SELECT id,user_id,plan_id,version,document,actor,operation,reason,created_at
+           FROM plan_snapshots WHERE user_id=?1 ORDER BY plan_id,version`,
+      )
+      .bind(userId),
+    db
+      .prepare(
         `SELECT gm.group_id, g.name AS group_name, gm.display_name, gm.joined_at
            FROM group_members gm
            JOIN groups g ON g.id = gm.group_id
@@ -2191,7 +2204,8 @@ export async function exportUserData(
   const events = rowsAt(11);
   const externalActivities = rowsAt(12);
   const activities = rowsAt(13);
-  const memberships = rowsAt(14);
+  const planSnapshots = rowsAt(14);
+  const memberships = rowsAt(15);
 
   const auditRows = audit.map((row) => {
     if (row.tool !== 'create_invite' && row.tool !== 'redeem_invite') {
@@ -2212,7 +2226,7 @@ export async function exportUserData(
     }
   });
   return {
-    schema_version: 1,
+    schema_version: 2,
     exported_at: now(),
     account,
     training: {
@@ -2229,6 +2243,7 @@ export async function exportUserData(
       external_events: events,
       external_activities: externalActivities,
       activities,
+      plan_snapshots: planSnapshots,
     },
     group_memberships: memberships,
   };
@@ -2714,6 +2729,289 @@ export async function getPlanTree(
       ...d,
       exercises: exercises.filter((e) => e.day_template_id === d.id),
     })),
+  };
+}
+
+export interface PlanSnapshotRow {
+  id: string;
+  user_id: string;
+  plan_id: string;
+  version: number;
+  document: string;
+  actor: string;
+  operation: string;
+  reason: string | null;
+  created_at: number;
+}
+
+/**
+ * SQL serializer for the writable plan document. Keeping this as an INSERT
+ * statement lets a plan writer append it to the same D1 batch as its CAS,
+ * so a snapshot can never describe a later post-commit read.
+ */
+export function preparePlanSnapshotInsert(
+  db: D1Database,
+  input: {
+    userId: string;
+    planId: string;
+    version: number;
+    actor: string;
+    operation: string;
+    reason?: string | null;
+    createdAt: number;
+    ignoreExisting?: boolean;
+  },
+): D1PreparedStatement {
+  const insert = input.ignoreExisting ? 'INSERT OR IGNORE' : 'INSERT';
+  return db.prepare(
+    `${insert} INTO plan_snapshots
+       (id,user_id,plan_id,version,document,actor,operation,reason,created_at)
+     SELECT ?1,p.user_id,p.id,p.version,
+       json_object(
+         'schema_version',1,
+         'plan',json_object('name',p.name,'meta',p.meta),
+         'days',json(COALESCE((
+           SELECT json_group_array(json(day_document)) FROM (
+             SELECT json_object(
+               'id',d.id,'name',d.name,'day_label',d.day_label,
+               'order_index',d.order_index,'notes',d.notes,
+               'exercises',json(COALESCE((
+                 SELECT json_group_array(json(slot_document)) FROM (
+                   SELECT json_object(
+                     'id',te.id,'exercise_id',te.exercise_id,
+                     'order_index',te.order_index,'target_sets',te.target_sets,
+                     'target_reps',te.target_reps,'target_reps_max',te.target_reps_max,
+                     'target_rpe',te.target_rpe,'rest_seconds',te.rest_seconds,
+                     'target_weight',te.target_weight,'target_duration_s',te.target_duration_s,
+                     'progression',te.progression,'cues',te.cues,'is_warmup',te.is_warmup
+                   ) AS slot_document
+                   FROM template_exercises te
+                   WHERE te.day_template_id=d.id
+                   ORDER BY te.order_index,te.created_at,te.id
+                 )), '[]'))
+             ) AS day_document
+             FROM day_templates d
+             WHERE d.plan_id=p.id
+             ORDER BY d.order_index,d.created_at,d.id
+           )
+         ), '[]'))
+       ),?5,?6,?7,?8
+     FROM plans p
+     WHERE p.id=?2 AND p.user_id=?3 AND p.version=?4`,
+  ).bind(
+    uuid(), input.planId, input.userId, input.version, input.actor,
+    input.operation, input.reason ?? null, input.createdAt,
+  );
+}
+
+export async function getPlanSnapshot(
+  db: D1Database,
+  userId: string,
+  planId: string,
+  version: number,
+): Promise<(PlanSnapshotRow & { parsed: PlanSnapshotDocument }) | null> {
+  const row = await db.prepare(
+    'SELECT * FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3',
+  ).bind(userId, planId, version).first<PlanSnapshotRow>();
+  return row ? { ...row, parsed: parsePlanSnapshot(row.document) } : null;
+}
+
+export async function listPlanHistory(
+  db: D1Database,
+  userId: string,
+  limit = 30,
+  beforeVersion?: number,
+) {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' as const };
+  const capped = Math.max(1, Math.min(100, Math.floor(limit)));
+  const rows = await db.prepare(
+    `SELECT * FROM plan_snapshots
+      WHERE user_id=?1 AND plan_id=?2 AND (?3 IS NULL OR version < ?3)
+      ORDER BY version DESC LIMIT ?4`,
+  ).bind(userId, plan.id, beforeVersion ?? null, capped + 1).all<PlanSnapshotRow>();
+  const visible = rows.results.slice(0, capped);
+  const items = await Promise.all(visible.map(async (row) => {
+    const prior = await db.prepare(
+      `SELECT document FROM plan_snapshots
+        WHERE user_id=?1 AND plan_id=?2 AND version < ?3
+        ORDER BY version DESC LIMIT 1`,
+    ).bind(userId, plan.id, row.version).first<{ document: string }>();
+    const summary = prior
+      ? comparePlanSnapshots(parsePlanSnapshot(prior.document), parsePlanSnapshot(row.document)).summary
+      : null;
+    return {
+      version: row.version, actor: row.actor, operation: row.operation,
+      reason: row.reason, created_at: row.created_at, summary,
+    };
+  }));
+  return {
+    plan_id: plan.id,
+    current_version: plan.version,
+    items,
+    next_before_version: rows.results.length > capped ? visible.at(-1)?.version ?? null : null,
+  };
+}
+
+export async function comparePlanVersions(
+  db: D1Database,
+  userId: string,
+  fromVersion: number,
+  toVersion?: number,
+) {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' as const };
+  const from = await getPlanSnapshot(db, userId, plan.id, fromVersion);
+  if (!from) return { error: 'snapshot_not_found' as const };
+  let toDocument: PlanSnapshotDocument;
+  const resolvedTo = toVersion ?? plan.version;
+  if (toVersion == null || toVersion === plan.version) {
+    const tree = await getPlanTree(db, userId);
+    if (!tree) return { error: 'no_active_plan' as const };
+    toDocument = serializePlanSnapshot(tree);
+  } else {
+    const to = await getPlanSnapshot(db, userId, plan.id, toVersion);
+    if (!to) return { error: 'snapshot_not_found' as const };
+    toDocument = to.parsed;
+  }
+  return {
+    plan_id: plan.id, from_version: fromVersion, to_version: resolvedTo,
+    ...comparePlanSnapshots(from.parsed, toDocument),
+  };
+}
+
+export async function restorePlanSnapshot(
+  db: D1Database,
+  userId: string,
+  input: {
+    plan_id: string;
+    snapshot_version: number;
+    expected_version: number;
+    actor: 'mcp' | 'ios';
+    reason?: string | null;
+  },
+): Promise<
+  | { ok: true; plan_id: string; restored_from_version: number; version: number; plan: PlanTree }
+  | { conflict: true; current_plan_id: string; current_version: number }
+  | { error: 'snapshot_not_found' | 'active_workout' | 'no_active_plan' }
+> {
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' };
+  if (plan.id !== input.plan_id || plan.version !== input.expected_version) {
+    return { conflict: true, current_plan_id: plan.id, current_version: plan.version };
+  }
+  const snapshot = await getPlanSnapshot(db, userId, plan.id, input.snapshot_version);
+  if (!snapshot) return { error: 'snapshot_not_found' };
+  const active = await db.prepare(
+    `SELECT 1 FROM sessions
+      WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
+  ).bind(userId, plan.id).first();
+  if (active) return { error: 'active_workout' };
+
+  const current = await getPlanTree(db, userId);
+  if (!current) return { error: 'no_active_plan' };
+  const target = snapshot.parsed;
+  const targetDayIds = new Set(target.days.map((day) => day.id));
+  const targetSlots = target.days.flatMap((day) =>
+    day.exercises.map((slot) => ({ ...slot, day_template_id: day.id })),
+  );
+  const targetSlotIds = new Set(targetSlots.map((slot) => slot.id));
+  const ts = now();
+  const guarded = `EXISTS (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3)`;
+  const statements: D1PreparedStatement[] = [
+    preparePlanSnapshotInsert(db, {
+      userId, planId: plan.id, version: plan.version, actor: 'system',
+      operation: 'baseline', reason: 'First captured version', createdAt: ts,
+      ignoreExisting: true,
+    }),
+  ];
+  for (const day of target.days) {
+    statements.push(db.prepare(
+      `INSERT OR IGNORE INTO day_templates
+       (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
+       SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded}`,
+    ).bind(plan.id, userId, plan.version, day.id, day.name, day.day_label,
+      day.order_index, day.notes, ts));
+    statements.push(db.prepare(
+      `UPDATE day_templates SET name=?5,day_label=?6,order_index=?7,notes=?8,updated_at=?9
+       WHERE id=?4 AND plan_id=?1 AND ${guarded}`,
+    ).bind(plan.id, userId, plan.version, day.id, day.name, day.day_label,
+      day.order_index, day.notes, ts));
+  }
+  for (const slot of targetSlots) {
+    statements.push(db.prepare(
+      `INSERT OR IGNORE INTO template_exercises
+       (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,
+        target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
+        created_at,updated_at)
+       SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18
+       WHERE ${guarded}`,
+    ).bind(plan.id, userId, plan.version, slot.id, slot.day_template_id,
+      slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
+      slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
+      slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts));
+    statements.push(db.prepare(
+      `UPDATE template_exercises SET day_template_id=?5,exercise_id=?6,order_index=?7,
+       target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
+       rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
+       cues=?16,is_warmup=?17,updated_at=?18 WHERE id=?4 AND ${guarded}`,
+    ).bind(plan.id, userId, plan.version, slot.id, slot.day_template_id,
+      slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
+      slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
+      slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts));
+  }
+  for (const day of current.days) {
+    for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
+      statements.push(
+        db.prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded}`)
+          .bind(plan.id, userId, plan.version, ts, slot.id),
+        db.prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded}`)
+          .bind(plan.id, userId, plan.version, slot.id),
+      );
+    }
+    if (!targetDayIds.has(day.id)) {
+      statements.push(
+        db.prepare(`UPDATE sessions SET day_template_id=NULL,updated_at=?4 WHERE day_template_id=?5 AND user_id=?2 AND ${guarded}`)
+          .bind(plan.id, userId, plan.version, ts, day.id),
+        db.prepare(`DELETE FROM day_templates WHERE id=?4 AND plan_id=?1 AND ${guarded}`)
+          .bind(plan.id, userId, plan.version, day.id),
+      );
+    }
+  }
+  statements.push(
+    db.prepare(
+      `UPDATE plans SET name=?4,meta=?5,version=version+1,updated_at=?6
+       WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3`,
+    ).bind(plan.id, userId, plan.version, target.plan.name, target.plan.meta, ts),
+    db.prepare(
+      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+       SELECT ?4,?2,?5,'restore_plan',?6,?7,?8 WHERE EXISTS
+       (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND version=?3+1)`,
+    ).bind(plan.id, userId, plan.version, uuid(), input.actor,
+      JSON.stringify(input), JSON.stringify({ restored_from_version: input.snapshot_version, version: plan.version + 1 }), ts),
+    db.prepare(
+      `INSERT INTO notes (id,user_id,scope,ref_id,author,body,created_at)
+       SELECT ?4,?2,'plan',?1,?5,?6,?7 WHERE EXISTS
+       (SELECT 1 FROM plans WHERE id=?1 AND user_id=?2 AND version=?3+1)`,
+    ).bind(plan.id, userId, plan.version, uuid(), input.actor === 'mcp' ? 'claude' : 'nick',
+      input.reason ?? `Restored plan version ${input.snapshot_version}.`, ts),
+    preparePlanSnapshotInsert(db, {
+      userId, planId: plan.id, version: plan.version + 1, actor: input.actor,
+      operation: 'restore_plan', reason: input.reason ?? null, createdAt: ts,
+    }),
+  );
+  const results = await runWorkoutWriteBatch(db, statements);
+  if ((results.at(-1)?.meta.changes ?? 0) !== 1) {
+    const latest = await getActivePlan(db, userId);
+    return {
+      conflict: true,
+      current_plan_id: latest?.id ?? plan.id,
+      current_version: latest?.version ?? plan.version,
+    };
+  }
+  return {
+    ok: true, plan_id: plan.id, restored_from_version: input.snapshot_version,
+    version: plan.version + 1, plan: (await getPlanTree(db, userId))!,
   };
 }
 

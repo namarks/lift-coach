@@ -30,6 +30,7 @@ import {
   getVolume,
   ensureActivePlan,
   isGroupMember,
+  listPlanHistory,
   listGroupsForUser,
   logActivity,
   logSet,
@@ -39,6 +40,8 @@ import {
   patchDayTemplateAtVersion,
   patchSet,
   resolveExercise,
+  restorePlanSnapshot,
+  comparePlanVersions,
   removeTrip,
   setPeriodization,
   setPlanSchedule,
@@ -195,6 +198,49 @@ const TOOLS: Record<string, Tool> = {
         stress_model: meta.stress_model ?? null,
       };
     },
+  },
+  get_plan_history: {
+    description:
+      'List recent immutable versions of the active plan, including who changed it, why, and a compact summary. Use this before offering a restore.',
+    inputSchema: obj({
+      limit: { type: 'integer', minimum: 1, maximum: 100 },
+      before_version: { type: 'integer', minimum: 1 },
+    }),
+    handler: async (a, env, userId) => listPlanHistory(
+      env.DB, userId,
+      typeof a.limit === 'number' ? a.limit : 30,
+      typeof a.before_version === 'number' ? a.before_version : undefined,
+    ),
+  },
+  compare_plan_versions: {
+    description:
+      'Compare an older selected plan version with the current plan (default) or another captured version. Results are labeled from_version → to_version.',
+    inputSchema: obj({
+      from_version: { type: 'integer', minimum: 1 },
+      to_version: { type: 'integer', minimum: 1 },
+    }, ['from_version']),
+    handler: async (a, env, userId) => comparePlanVersions(
+      env.DB, userId, Number(a.from_version),
+      typeof a.to_version === 'number' ? a.to_version : undefined,
+    ),
+  },
+  restore_plan: {
+    description:
+      'Restore a captured version of the active plan as a NEW version. First compare the selected version with current. Requires the current plan id and expected version; rejects stale, foreign-plan, and active-workout attempts.',
+    inputSchema: obj({
+      snapshot_version: { type: 'integer', minimum: 1 },
+      plan_id: { type: 'string' },
+      expected_version: { type: 'integer', minimum: 1 },
+      reason: { type: 'string' },
+    }, ['snapshot_version', 'plan_id', 'expected_version']),
+    handler: async (a, env, userId) => restorePlanSnapshot(env.DB, userId, {
+      snapshot_version: Number(a.snapshot_version), plan_id: String(a.plan_id),
+      expected_version: Number(a.expected_version), actor: 'mcp',
+      reason: typeof a.reason === 'string' ? a.reason : null,
+    }),
+    // restorePlanSnapshot persists its audit, note, and resulting snapshot in
+    // the same D1 transaction as the restore; dispatcher-level writes would
+    // duplicate the trail and could fail after acknowledgement.
   },
   get_today_workout: {
     description:

@@ -35,6 +35,7 @@ import {
   isGroupMember,
   isAccountDeletionKey,
   leaveGroup,
+  listPlanHistory,
   listGroupsForUser,
   listOAuthGrants,
   logActivity,
@@ -48,6 +49,8 @@ import {
   revokeAllOAuthGrants,
   revokeOAuthGrant,
   resolveExercise,
+  restorePlanSnapshot,
+  comparePlanVersions,
   setPlanSchedule,
   setPlannedSession,
   skipPlannedSession,
@@ -211,6 +214,51 @@ apiRoutes.get('/state', async (c) => {
 apiRoutes.get('/plan/active', async (c) => {
   const tree = await getPlanTree(c.env.DB, c.get('userId'));
   return tree ? c.json(tree) : c.json({ error: 'no_active_plan' }, 404);
+});
+
+apiRoutes.get('/plan/history', async (c) => {
+  const limit = Number(c.req.query('limit') ?? 30);
+  const before = c.req.query('before_version');
+  const result = await listPlanHistory(
+    c.env.DB, c.get('userId'), limit,
+    before === undefined ? undefined : Number(before),
+  );
+  return 'error' in result ? c.json(result, 404) : c.json(result);
+});
+
+apiRoutes.get('/plan/history/:version/compare', async (c) => {
+  const from = Number(c.req.param('version'));
+  const rawTo = c.req.query('to_version');
+  if (!isPositiveInteger(from) || (rawTo !== undefined && !isPositiveInteger(Number(rawTo)))) {
+    return c.json({ error: 'invalid_version' }, 400);
+  }
+  const result = await comparePlanVersions(
+    c.env.DB, c.get('userId'), from,
+    rawTo === undefined ? undefined : Number(rawTo),
+  );
+  return 'error' in result ? c.json(result, 404) : c.json(result);
+});
+
+apiRoutes.post('/plan/history/:version/restore', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const version = Number(c.req.param('version'));
+  const invalid = invalidMutationFields(b, {
+    expected_plan_id: isNonEmptyString,
+    expected_version: isPositiveInteger,
+  }, { reason: isNullableString });
+  if (!isPositiveInteger(version)) invalid.push('snapshot_version');
+  if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const result = await restorePlanSnapshot(c.env.DB, c.get('userId'), {
+    plan_id: String(b.expected_plan_id), snapshot_version: version,
+    expected_version: Number(b.expected_version), actor: 'ios',
+    reason: typeof b.reason === 'string' ? b.reason : null,
+  });
+  if ('conflict' in result || ('error' in result && result.error === 'active_workout')) {
+    return c.json(result, 409);
+  }
+  return 'error' in result ? c.json(result, 404) : c.json(result);
 });
 
 // Idempotent manual-authoring bootstrap. This route deliberately does not use
