@@ -3,6 +3,59 @@
 Supporting material for [`plan.md`](plan.md). This file records owner
 decisions and measured baselines; it carries no live checklist.
 
+## 2026-09-06 — P3 repository delivery
+
+PR #132 delivered the P3 member-first-index repository slice. Its exact head
+`9845b6b3ccb292343537a77c761970c5fb29316a` had reviewed tree
+`4b37135074a12459bc85695dab2207ee7ff057b4`, passed required CI, and received a
+local independent exact-head review. GitHub Codex review refused to run because
+the account had reached its usage limit, so no GitHub Codex review is claimed.
+Squash merge `db344e1c87d1b373530414b1fde1450b27258a67` has the identical tree, and
+post-merge main CI run `34076609334` passed.
+
+This is repository-only evidence. It does not authorize or establish remote
+migration `0036`, a production Worker deployment, a manual production cron
+trigger, or a natural production tick. No production authority was granted by
+this delivery record.
+
+## 2026-09-06 — P4 local implementation, replay, and remaining race
+
+The original reviewed P4 source
+`32868e38e292266b44dd9c79413a2280a28d45c8` had tree
+`7195a569def0bb5d27e45cd7700581e2cd2e9cf3` and received an independent PASS.
+Its validation passed 154 focused tests and 626 full Vitest tests plus 5 uploader
+tests, along with TypeScript, query-plan, Wrangler dry-run, planning-compiler,
+offline production dependency-audit, and diff-hygiene checks. Combined P3/P4
+validation passed 142 focused tests and 629 full Vitest tests plus 5 uploader
+tests.
+
+The P4 change has stable patch id
+`2d28888fd5430059ce77633c9236e956d353b3fb`. It replayed without semantic
+conflict onto exact merged main `db344e1c87d1b373530414b1fde1450b27258a67`
+as `b2fe8834fbda83463af5e824acf5b229c5c3b4ca`, tree
+`3e56a68377240e63c269edfac9ea40557c143f40`, with migration order `0036` then
+`0037`. That rebased tree passed 142 focused tests, 629 full Vitest tests plus 5
+uploader tests, TypeScript, 5 query-plan assertions, Wrangler v4 dry-run, the
+planning compiler, the offline production dependency audit, and diff hygiene.
+The coherent branch and its future pull request remain the repository delivery
+boundary until merge; this narrative claims neither a pull-request number nor a
+merge for P4.
+
+Credential-generation fencing remains valid: stale responses from replaced or
+disconnected credentials cannot mutate cache rows, tombstones, dedup state,
+freshness, credentials, or authentication-error state. A pre-existing narrower
+race remains between overlapping syncs in the same credential generation. P4.5
+will add independent per-user/per-cache monotonic attempt fences claimed before
+provider I/O and checked by reconcile, tombstone, dedup, and freshness writes,
+with deterministic delayed-old/newer-first coverage for events and activities.
+That follow-up is not evidence that P4 generation fencing failed and does not
+block publishing the coherent P4 repository slice.
+
+No production authority accompanies this local or rebased evidence. Remote
+migrations, a Worker deploy, a manual production cron trigger, and natural-tick
+evidence remain outside this record. The owner has not made a P5 retention
+decision.
+
 ## 2026-09-06 — Owner acceptance of replacement evidence
 
 The owner accepted the privacy-safe post-release production samples as the
