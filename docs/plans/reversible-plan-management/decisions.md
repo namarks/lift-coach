@@ -55,7 +55,7 @@ refresh replay/revocation races, snapshot/response version mismatches, duplicate
 history rows, malformed write inputs and exhausted slot-retry conflicts.
 Regression tests cover atomic bootstrap and attribution rollback, deletion
 fences, legacy recovery/restore rejection, active-workout restore races and
-post-commit acknowledgement. The delivery pull request retains the final
+post-commit acknowledgement. The delivery pull request must retain the final
 reviewed head and required CI evidence. These checks establish repository
 behavior, not deployed production behavior.
 
