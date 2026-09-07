@@ -64,6 +64,40 @@ describe('plan snapshots', () => {
     });
   });
 
+  it('returns the acknowledged plan version when another write wins before response refresh', async () => {
+    const { userId, plan } = await fixture('response race');
+    let injected = false;
+    const racingDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'batch') return async (statements: D1PreparedStatement[]) => {
+          const result = await target.batch(statements);
+          if (!injected) {
+            injected = true;
+            const concurrent = await updatePlanTree(env.DB, userId, {
+              expected_version: plan.version + 1,
+              name: 'Concurrent second write',
+              days: [{ name: 'Second', exercises: [] }],
+            });
+            if (!('plan' in concurrent)) throw new Error('concurrent_write_failed');
+          }
+          return result;
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as D1Database;
+    const acknowledged = await updatePlanTree(racingDb, userId, {
+      expected_version: plan.version,
+      name: 'Acknowledged first write',
+      days: [{ name: 'First', exercises: [] }],
+    });
+    expect(acknowledged).toMatchObject({
+      conflict: false,
+      plan: { name: 'Acknowledged first write', version: plan.version + 1 },
+    });
+    expect((await getPlanTree(env.DB, userId))?.name).toBe('Concurrent second write');
+  });
+
   it('restores a caller-owned snapshot as a new version and retains both versions', async () => {
     const { userId, plan } = await fixture('restore');
     const changed = await updatePlanTree(env.DB, userId, {
