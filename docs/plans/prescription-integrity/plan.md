@@ -62,11 +62,20 @@ Snapshots and undo complement these guarantees; they do not replace them.
     audit/notes and the returned result. Do not characterize a fixed scalar as
     an individualized physiological deload prescription.
 - [ ] **P3 — Owner-approved production release and legacy assessment**
-  - Authorize the exact reviewed Worker, migration order and compatible rollback
-    before deployment. Read production prescription diagnostics only with the
-    appropriate data authority; approve any legacy correction separately.
-  - Verify deployed validation and atomic attribution with an approved canary.
-    Local fixtures and merged source do not establish production row health.
+  - [x] **(a) Release the approved service source and migrations**
+    - Source `2e67f93` and migrations through `0042` are live with independent
+      deployment/schema verification and a compatible forward-recovery boundary.
+  - [ ] **(b) Verify production behavior and assess legacy prescriptions**
+    - Use a separately approved canary to verify deployed validation and atomic
+      attribution. Keep diagnostics value-free and approve any legacy correction
+      separately. Local fixtures and deployment do not establish row health.
+    - The bounded aggregate assessment found zero violations in its checked
+      fields; unassessed cases and an import-transport metadata caveat are
+      recorded in [decisions.md](decisions.md). No legacy repair is proposed.
+
+## Execution frontier
+
+- P3(b)
 
 ## Dependencies
 
@@ -74,13 +83,13 @@ Snapshots and undo complement these guarantees; they do not replace them.
 |---|---|---|---|
 | P1 | coordinates_with | plan:reversible-plan-management#P0 | Establish one commit boundary for field edits and snapshots. |
 | P1 | coordinates_with | plan:bodyweight-training-support#P2 | Swap exposure must reuse the repaired writer and destination validation. |
-| P3 | gated_by | external:owner-training-trust-production-release | Production migration, deployment, canary and legacy data correction need explicit owner authority. |
+| P3(b) | gated_by | external:owner-training-trust-app-canary-release | The service is live; a production validation/attribution canary still requires owner approval, and any legacy repair requires a separate concrete proposal. |
 
 ## Next step
 
-**Now (@owner):** Authorize P3's exact production release and any separate
-legacy data assessment/correction. P0–P2 are complete for repository delivery,
-including Nick's approved monotonic arithmetic fix. The
+**Now (@owner):** Authorize a concrete P3(b) validation/attribution canary after
+the pending existing-client read check. The service release is complete;
+production write behavior and any legacy correction remain unexercised. The
 [contract and legacy recovery proof](decisions.md) preserve compatibility and
 the production boundary; local tests do not establish production row health.
 

@@ -96,3 +96,51 @@ The [release procedure](release.md) records the verified production starting
 point, executable activation and recovery boundary. No production migration,
 deployment, policy activation or TestFlight upload was performed by this
 repository delivery.
+
+## 2026-09-07: approved production release, activation awaiting client proof
+
+Nick approved release of exact source
+`2e67f93aa8b17058d4f9d99c7b71047bafbfa7f9`: migrations `0040`–`0042`, the reviewed
+Worker, an existing-client read check, then one-time policy activation with
+compatible forward recovery. This approval persists; activation does not need
+another release approval once its verification dependency is satisfied.
+TestFlight and a production workout-edit/restore canary were excluded.
+
+The release checkout was clean and its tree
+`4a19ab76bfed5858b78946d5d4b875f1ba38031e` exactly matched independently reviewed
+head `087fdb5fbc89b6113aaaac435e45de01e821958b`. Required CI
+[34166544062](https://github.com/namarks/tres-fort/actions/runs/34166544062)
+passed before PR #140 merged. A fresh production preflight confirmed the
+recorded `696c1d34` deployment, migrations through `0039` and active Intervals
+source fence; only `0040`, `0041` and `0042` were pending.
+
+All three migrations were ledgered at **2026-09-07 22:42:07 UTC**. Foreign-key
+checks were empty; legacy OAuth tokens were backfilled into grant families
+without orphan tokens or assigned expiry deadlines. The Intervals source fence
+retained its existing state and activation epoch.
+
+Worker version **`58d830ac-6a1f-4bf7-adeb-8b19c6bcba94`**, created at
+**22:42:27.681435 UTC**, is served at 100% by deployment
+**`48365148-8109-4c7b-9550-129f6fa1b71f`**, created at **22:42:28.187075 UTC**.
+Its annotation contains the exact approved source and tree. `/health`, OAuth
+authorization-server discovery and protected-resource discovery returned HTTP
+200. A second Sol agent independently verified the version, source annotation,
+migration ledger, disabled policy and unchanged source fence. Every source/schema
+verification SELECT in that independent check reported `changed_db=false` and
+`rows_written=0`. The later prescription diagnostic's import-transport metadata
+caveat is recorded separately in the [prescription evidence](../prescription-integrity/decisions.md).
+
+The authenticated read check remains **unexercised**. Computer-use inventory
+reported a locked Mac; a normal Claude CLI attempt with read-only tools allowed
+stopped at `Not logged in` before any Tres Fort tool call. No login, connection
+change, credential inspection or workout mutation occurred. A later inventory
+still found the Mac locked. The equivalent normal-client CLI path was attempted
+to satisfy the existing-client verification purpose without handling secrets.
+
+The lifecycle singleton remains **disabled**, with no activation nonce or grant
+deadlines; **no activation was attempted**. Once an existing authorized client is
+available, refresh deployed source/schema and policy state, complete the real
+read, run the already-approved single activation statement, then repeat the
+read and record the activation epoch. Preserve this source's deadline and
+lineage guarantees during recovery. Do not treat health/discovery success as
+authenticated client proof.
