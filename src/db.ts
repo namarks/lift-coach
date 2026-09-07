@@ -11209,6 +11209,45 @@ export interface OAuthTokenPair {
   refresh_token: string;
   scope: string;
   grant_id: string;
+  access_expires_at: number;
+}
+
+export const OAUTH_GRANT_INACTIVITY_MS = 90 * 24 * 60 * 60 * 1000;
+export const OAUTH_GRANT_ABSOLUTE_MS = 365 * 24 * 60 * 60 * 1000;
+
+/**
+ * One-time administrative policy activation. Migration 0042's trigger makes
+ * the conditional claim and every existing-grant update one transaction, so
+ * failure rolls the whole activation back.
+ * Existing deadlines are never overwritten, including a retry with the same
+ * nonce. Migration 0042's trigger initializes existing grants in the same
+ * transaction as this one conditional UPDATE.
+ */
+export async function activateOAuthGrantLifecyclePolicy(
+  db: D1Database,
+  activatedAt: number,
+  nonce: string,
+): Promise<{ newly_activated: boolean; activated_at: number }> {
+  if (!Number.isSafeInteger(activatedAt) || activatedAt <= 0 || !nonce) {
+    throw new Error('invalid OAuth grant lifecycle activation');
+  }
+  const claimed = await db
+    .prepare(
+      `UPDATE oauth_grant_lifecycle_policy
+          SET activated_at = ?1, activation_nonce = ?2
+        WHERE id = 1 AND activated_at IS NULL
+      RETURNING id`,
+    )
+    .bind(activatedAt, nonce)
+    .run();
+  const policy = await db.prepare(
+    'SELECT activated_at, activation_nonce FROM oauth_grant_lifecycle_policy WHERE id = 1',
+  ).first<{ activated_at: number; activation_nonce: string }>();
+  if (!policy) throw new Error('OAuth grant lifecycle policy row missing');
+  if (policy.activation_nonce !== nonce || policy.activated_at !== activatedAt) {
+    throw new Error('OAuth grant lifecycle policy already activated');
+  }
+  return { newly_activated: claimed.results.length === 1, activated_at: policy.activated_at };
 }
 
 /**
@@ -11234,19 +11273,26 @@ export async function redeemOAuthAuthorizationCode(
   const [family, inserted, consumed, cleaned] = await db.batch([
     db.prepare(
       `INSERT INTO oauth_grants
-         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
-       SELECT ?1, ?2, client_id, COALESCE(scope, 'mcp'), ?3, ?3, ?15
-         FROM oauth_codes
-        WHERE code = ?4
-          AND client_id = ?5
-          AND redirect_uri = ?6
-          AND code_challenge = ?7
-          AND code_challenge_method = ?8
-          AND expires_at = ?9
-          AND expires_at >= ?10
-          AND scope IS ?11
-          AND resource IS ?12
-          AND (user_id = ?13 OR (?14 = 1 AND user_id IS NULL))
+         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
+          inactivity_expires_at, absolute_expires_at)
+       SELECT ?1, ?2, c.client_id, COALESCE(c.scope, 'mcp'), ?3, ?3, ?15,
+              CASE WHEN p.activated_at IS NULL THEN NULL
+                   ELSE MAX(c.created_at, p.activated_at) + ?16 END,
+              CASE WHEN p.activated_at IS NULL THEN NULL
+                   ELSE MAX(c.created_at, p.activated_at) + ?17 END
+         FROM oauth_codes c
+         LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
+        WHERE c.code = ?4
+          AND p.id = 1
+          AND c.client_id = ?5
+          AND c.redirect_uri = ?6
+          AND c.code_challenge = ?7
+          AND c.code_challenge_method = ?8
+          AND c.expires_at = ?9
+          AND c.expires_at >= ?10
+          AND c.scope IS ?11
+          AND c.resource IS ?12
+          AND (c.user_id = ?13 OR (?14 = 1 AND c.user_id IS NULL))
           AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)`,
@@ -11266,27 +11312,34 @@ export async function redeemOAuthAuthorizationCode(
       redemption.user_id,
       legacy ? 1 : 0,
       legacy ? 1 : 0,
+      OAUTH_GRANT_INACTIVITY_MS,
+      OAUTH_GRANT_ABSOLUTE_MS,
     ),
     db.prepare(
       `INSERT INTO oauth_tokens
          (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id, grant_id)
-       SELECT ?1, ?2, client_id, COALESCE(scope, 'mcp'), ?3, ?4, ?5, ?17
-         FROM oauth_codes
-        WHERE code = ?6
-          AND client_id = ?7
-          AND redirect_uri = ?8
-          AND code_challenge = ?9
-          AND code_challenge_method = ?10
-          AND expires_at = ?11
-          AND expires_at >= ?12
-          AND scope IS ?13
-          AND resource IS ?14
-          AND (user_id = ?15 OR (?16 = 1 AND user_id IS NULL))
+       SELECT ?1, ?2, c.client_id, COALESCE(c.scope, 'mcp'),
+              CASE WHEN g.inactivity_expires_at IS NULL THEN ?3
+                   ELSE MIN(?3, CAST(g.inactivity_expires_at / 1000 AS INTEGER),
+                                CAST(g.absolute_expires_at / 1000 AS INTEGER)) END,
+              ?4, ?5, ?17
+         FROM oauth_codes c
+         JOIN oauth_grants g ON g.id = ?17
+        WHERE c.code = ?6
+          AND c.client_id = ?7
+          AND c.redirect_uri = ?8
+          AND c.code_challenge = ?9
+          AND c.code_challenge_method = ?10
+          AND c.expires_at = ?11
+          AND c.expires_at >= ?12
+          AND c.scope IS ?13
+          AND c.resource IS ?14
+          AND (c.user_id = ?15 OR (?16 = 1 AND c.user_id IS NULL))
           AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)
-          AND EXISTS (SELECT 1 FROM oauth_grants WHERE id = ?17)
-          AND changes() = 1`,
+          AND changes() = 1
+       RETURNING expires_at`,
     ).bind(
       redemption.access_token,
       redemption.refresh_token,
@@ -11349,6 +11402,7 @@ export async function redeemOAuthAuthorizationCode(
     refresh_token: redemption.refresh_token,
     scope: redemption.scope ?? 'mcp',
     grant_id: redemption.grant_id,
+    access_expires_at: (inserted.results?.[0] as { expires_at: number }).expires_at,
   };
 }
 
@@ -11369,18 +11423,25 @@ export async function rotateOAuthRefreshToken(
   const tokenCreatedAt = Math.floor(refreshedAt / 1000);
   const legacy = rotation.user_id === null;
   const grantId = rotation.grant_id ?? crypto.randomUUID();
-  const [adopted, rotated, archived, touched, cleaned] = await db.batch([
+  const [adopted, initialized, rotated, archived, touched, cleaned] = await db.batch([
     db.prepare(
       `INSERT INTO oauth_grants
-         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
-       SELECT ?1, ?2, client_id, scope, created_at * 1000, ?3, 1
-         FROM oauth_tokens
-        WHERE refresh_token = ?4
-          AND client_id = ?5
-          AND expires_at = ?6
-          AND scope IS ?7
-          AND grant_id IS NULL
-          AND (user_id = ?8 OR (?9 = 1 AND user_id IS NULL))
+         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
+          inactivity_expires_at, absolute_expires_at)
+       SELECT ?1, ?2, t.client_id, t.scope, t.created_at * 1000, ?3, 1,
+              CASE WHEN p.activated_at IS NULL THEN NULL
+                   ELSE MAX(t.created_at * 1000, p.activated_at) + ?10 END,
+              CASE WHEN p.activated_at IS NULL THEN NULL
+                   ELSE MAX(t.created_at * 1000, p.activated_at) + ?11 END
+         FROM oauth_tokens t
+         LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
+        WHERE t.refresh_token = ?4
+          AND p.id = 1
+          AND t.client_id = ?5
+          AND t.expires_at = ?6
+          AND t.scope IS ?7
+          AND t.grant_id IS NULL
+          AND (t.user_id = ?8 OR (?9 = 1 AND t.user_id IS NULL))
           AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)
@@ -11395,28 +11456,58 @@ export async function rotateOAuthRefreshToken(
       rotation.scope,
       rotation.user_id,
       legacy ? 1 : 0,
+      OAUTH_GRANT_INACTIVITY_MS,
+      OAUTH_GRANT_ABSOLUTE_MS,
     ),
+    db.prepare(
+      `UPDATE oauth_grants
+          SET inactivity_expires_at = MAX(created_at, p.activated_at) + ?2,
+              absolute_expires_at = MAX(created_at, p.activated_at) + ?3
+         FROM oauth_grant_lifecycle_policy p
+        WHERE oauth_grants.id = ?1
+          AND p.id = 1 AND p.activated_at IS NOT NULL
+          AND oauth_grants.revoked_at IS NULL
+          AND oauth_grants.inactivity_expires_at IS NULL
+          AND oauth_grants.absolute_expires_at IS NULL`,
+    ).bind(grantId, OAUTH_GRANT_INACTIVITY_MS, OAUTH_GRANT_ABSOLUTE_MS),
     db.prepare(
     `UPDATE oauth_tokens
         SET access_token = ?1,
             refresh_token = ?2,
-            expires_at = ?3,
-            created_at = ?4,
+            expires_at = CASE
+              WHEN g.inactivity_expires_at IS NULL AND g.absolute_expires_at IS NULL
+                   AND p.activated_at IS NULL THEN ?3
+              ELSE MIN(?3,
+                       CAST(MIN(CAST(unixepoch('subsec') * 1000 AS INTEGER) + ?14,
+                                    g.absolute_expires_at) / 1000 AS INTEGER))
+            END,
+            created_at = CAST(unixepoch('subsec') AS INTEGER),
             user_id = ?5,
             grant_id = ?12
-      WHERE refresh_token = ?6
-        AND client_id = ?7
-        AND expires_at = ?8
-        AND (user_id = ?9 OR (?10 = 1 AND user_id IS NULL))
+       FROM oauth_grants g
+       LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
+      WHERE oauth_tokens.refresh_token = ?6
+        AND oauth_tokens.client_id = ?7
+        AND oauth_tokens.expires_at = ?8
+        AND (oauth_tokens.user_id = ?9 OR (?10 = 1 AND oauth_tokens.user_id IS NULL))
         AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)
-        AND scope IS ?11
-        AND (grant_id = ?12 OR grant_id IS NULL)
-        AND EXISTS (SELECT 1 FROM oauth_grants WHERE id = ?12 AND revoked_at IS NULL)
+        AND oauth_tokens.scope IS ?11
+        AND (oauth_tokens.grant_id = ?12 OR oauth_tokens.grant_id IS NULL)
+        AND g.id = ?12 AND g.revoked_at IS NULL
+        AND (
+          (p.id = 1 AND p.activated_at IS NULL
+           AND g.inactivity_expires_at IS NULL AND g.absolute_expires_at IS NULL)
+          OR
+          (p.id = 1 AND p.activated_at IS NOT NULL
+           AND g.inactivity_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER)
+           AND g.absolute_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER))
+        )
         AND NOT EXISTS (
               SELECT 1 FROM oauth_refresh_history WHERE token_sha256 = ?13
-            )`,
+            )
+      RETURNING expires_at`,
   ).bind(
     rotation.access_token,
     rotation.refresh_token,
@@ -11431,6 +11522,7 @@ export async function rotateOAuthRefreshToken(
     rotation.scope,
     grantId,
     rotation.consumed_refresh_sha256,
+    OAUTH_GRANT_INACTIVITY_MS,
   ),
     db.prepare(
       `INSERT INTO oauth_refresh_history (token_sha256, grant_id, client_id, consumed_at)
@@ -11438,9 +11530,15 @@ export async function rotateOAuthRefreshToken(
         WHERE changes() = 1`,
     ).bind(rotation.consumed_refresh_sha256, grantId, rotation.client_id, refreshedAt),
     db.prepare(
-      `UPDATE oauth_grants SET last_refreshed_at = ?2
+      `UPDATE oauth_grants
+          SET last_refreshed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER),
+              inactivity_expires_at = CASE
+                WHEN inactivity_expires_at IS NULL THEN NULL
+                ELSE MIN(CAST(unixepoch('subsec') * 1000 AS INTEGER) + ?3,
+                         absolute_expires_at)
+              END
         WHERE id = ?1 AND revoked_at IS NULL AND changes() = 1`,
-    ).bind(grantId, refreshedAt),
+    ).bind(grantId, refreshedAt, OAUTH_GRANT_INACTIVITY_MS),
     db.prepare(
       `DELETE FROM oauth_grants
         WHERE id = ?1 AND ?2 = 1
@@ -11458,6 +11556,7 @@ export async function rotateOAuthRefreshToken(
     refresh_token: rotation.refresh_token,
     scope: rotation.scope ?? 'mcp',
     grant_id: grantId,
+    access_expires_at: (rotated.results?.[0] as { expires_at: number }).expires_at,
   };
 }
 
@@ -11548,15 +11647,28 @@ async function adoptUntrackedOAuthGrants(
     await db.batch([
       db.prepare(
         `INSERT INTO oauth_grants
-           (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
-         SELECT ?1, ?2, client_id, scope, created_at * 1000, created_at * 1000, 1
-           FROM oauth_tokens
+           (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
+            inactivity_expires_at, absolute_expires_at)
+         SELECT ?1, ?2, t.client_id, t.scope, t.created_at * 1000, t.created_at * 1000, 1,
+                CASE WHEN p.activated_at IS NULL THEN NULL
+                     ELSE MAX(t.created_at * 1000, p.activated_at) + ?5 END,
+                CASE WHEN p.activated_at IS NULL THEN NULL
+                     ELSE MAX(t.created_at * 1000, p.activated_at) + ?6 END
+           FROM oauth_tokens t
+           LEFT JOIN oauth_grant_lifecycle_policy p ON p.id = 1
           WHERE access_token = ?3 AND grant_id IS NULL
             AND (user_id = ?2 OR (?4 = 1 AND user_id IS NULL))
             AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
             AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
             AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)`,
-      ).bind(grantId, row.user_id ?? userId, row.access_token, row.user_id === null ? 1 : 0),
+      ).bind(
+        grantId,
+        row.user_id ?? userId,
+        row.access_token,
+        row.user_id === null ? 1 : 0,
+        OAUTH_GRANT_INACTIVITY_MS,
+        OAUTH_GRANT_ABSOLUTE_MS,
+      ),
       db.prepare(
         `UPDATE oauth_tokens SET grant_id = ?2
           WHERE access_token = ?1 AND grant_id IS NULL AND changes() = 1`,
@@ -11579,12 +11691,21 @@ export async function listOAuthGrants(
   const isOwner = owner?.id === userId;
   await adoptUntrackedOAuthGrants(db, userId, isOwner);
   const rows = await db.prepare(
-    `SELECT id, client_id, COALESCE(scope, 'mcp') AS scope, created_at,
-            last_refreshed_at, legacy
-       FROM oauth_grants
-      WHERE revoked_at IS NULL
-        AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))
-      ORDER BY created_at DESC, id`,
+    `SELECT g.id, g.client_id, COALESCE(g.scope, 'mcp') AS scope, g.created_at,
+            g.last_refreshed_at, g.legacy
+       FROM oauth_grants g
+       JOIN oauth_grant_lifecycle_policy p ON p.id = 1
+      WHERE g.revoked_at IS NULL
+        AND (
+          (p.activated_at IS NULL
+           AND g.inactivity_expires_at IS NULL AND g.absolute_expires_at IS NULL)
+          OR
+          (p.activated_at IS NOT NULL
+           AND g.inactivity_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER)
+           AND g.absolute_expires_at > CAST(unixepoch('subsec') * 1000 AS INTEGER))
+        )
+        AND (g.user_id = ?1 OR (?2 = 1 AND g.user_id IS NULL))
+      ORDER BY g.created_at DESC, g.id`,
   ).bind(userId, isOwner ? 1 : 0).all<{
     id: string;
     client_id: string;
