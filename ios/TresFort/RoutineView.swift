@@ -77,6 +77,7 @@ struct RoutineView: View {
     @State private var scheduleDraft: [String: String] = [:]
     @State private var loadedScheduleIdentity: [String] = []
     @State private var creatingRoutine = false
+    @State private var showHistory = false
 
     private let weekdayNames = [
         "mon": "Monday", "tue": "Tuesday", "wed": "Wednesday",
@@ -146,6 +147,9 @@ struct RoutineView: View {
             }
             .sheet(item: $editTarget) { target in
                 EditWorkoutSheet(sync: sync, dayID: target.id)
+            }
+            .sheet(isPresented: $showHistory) {
+                PlanHistoryView(sync: sync)
             }
             .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
                 reconcileScheduleDraft()
@@ -284,6 +288,15 @@ struct RoutineView: View {
                 Text("These choices recur and drive Today. Use the calendar for one-date changes; those do not alter this schedule.")
             }
 
+            Section("Changes") {
+                Button {
+                    showHistory = true
+                } label: {
+                    Label("Routine history", systemImage: "clock.arrow.circlepath")
+                }
+                .disabled(sync.isRoutineMutationInFlight)
+            }
+
             if let error = sync.loadError {
                 Section { Text(error).foregroundStyle(Theme.danger) }
             }
@@ -361,5 +374,95 @@ struct RoutineView: View {
         reordered.move(fromOffsets: offsets, toOffset: destination)
         guard let target = reordered.firstIndex(where: { $0.id == movedID }) else { return }
         Task { await sync.moveWorkoutDay(dayID: movedID, toIndex: target) }
+    }
+}
+
+private struct PlanHistoryView: View {
+    @ObservedObject var sync: SyncModel
+    @Environment(\.dismiss) private var dismiss
+    @State private var history: PlanHistoryResponse?
+    @State private var comparison: PlanComparisonResponse?
+    @State private var selected: PlanHistoryItem?
+    @State private var restoring = false
+
+    var body: some View {
+        NavigationStack {
+            List {
+                if let comparison, let selected {
+                    Section("Version \(selected.version) → current version \(comparison.to_version)") {
+                        if comparison.changes.isEmpty {
+                            Text("This version matches the current routine.")
+                        } else {
+                            ForEach(comparison.changes) { change in
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(changeLabel(change))
+                                        .font(Theme.mono(12, .bold))
+                                    Text(change.path)
+                                        .font(Theme.mono(10)).foregroundStyle(Theme.muted)
+                                }
+                            }
+                            Button("Restore version \(selected.version)", role: .destructive) {
+                                restoring = true
+                            }
+                            .disabled(sync.running || sync.isRoutineMutationInFlight)
+                        }
+                    }
+                }
+                Section("Captured versions") {
+                    ForEach(history?.items ?? []) { item in
+                        Button {
+                            selected = item
+                            Task { comparison = await sync.comparePlanVersion(item.version) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text("Version \(item.version) · \(item.operation.replacingOccurrences(of: "_", with: " "))")
+                                    .font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
+                                Text(item.reason ?? "\(item.actor.capitalized) change")
+                                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                                if let count = item.summary?.total {
+                                    Text("\(count) change\(count == 1 ? "" : "s")")
+                                        .font(Theme.mono(10)).foregroundStyle(Theme.muted)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Routine history")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } } }
+            .task { history = await sync.loadPlanHistory() }
+            .confirmationDialog(
+                "Restore version \(selected?.version ?? 0)?",
+                isPresented: $restoring,
+                titleVisibility: .visible
+            ) {
+                Button("Restore as a new version", role: .destructive) {
+                    guard let selected else { return }
+                    Task {
+                        if await sync.restorePlanVersion(
+                            selected.version,
+                            reason: "Restored from Routine history") {
+                            history = await sync.loadPlanHistory()
+                            comparison = nil
+                            self.selected = nil
+                        }
+                    }
+                }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The selected version is shown on the left of the comparison arrow. Your current routine stays in history, and the restored routine becomes a new version.")
+            }
+        }
+        .preferredColorScheme(.dark)
+    }
+
+    private func changeLabel(_ change: PlanVersionChange) -> String {
+        switch change.kind {
+        case "schedule": return "Weekly schedule changed"
+        case "day": return "Workout changed"
+        case "exercise": return "Exercise prescription changed"
+        default: return "Routine changed"
+        }
     }
 }

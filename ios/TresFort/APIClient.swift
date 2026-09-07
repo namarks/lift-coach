@@ -350,6 +350,37 @@ struct APIClient {
         let ok: Bool
         let session: SessionRow
     }
+    struct RestorePlanResult: Decodable {
+        let ok: Bool
+        let plan_id: String
+        let restored_from_version: Int
+        let version: Int
+    }
+
+    func getPlanHistory(jwt: String) async throws -> PlanHistoryResponse {
+        try await get("api/plan/history", jwt: jwt)
+    }
+
+    func comparePlanVersion(_ version: Int, jwt: String) async throws
+        -> PlanComparisonResponse
+    {
+        try await get("api/plan/history/\(version)/compare", jwt: jwt)
+    }
+
+    func restorePlanVersion(
+        _ version: Int,
+        expectedPlanID: String,
+        expectedVersion: Int,
+        reason: String?,
+        jwt: String
+    ) async throws -> RestorePlanResult {
+        var body: [String: Any] = [
+            "expected_plan_id": expectedPlanID,
+            "expected_version": expectedVersion,
+        ]
+        if let reason { body["reason"] = reason }
+        return try await post("api/plan/history/\(version)/restore", body: body, jwt: jwt)
+    }
 
     func ensureActivePlan(name: String, jwt: String) async throws
         -> EnsureActivePlanResult
@@ -747,6 +778,13 @@ extension APIClient: PlanEditingAPI {}
 /// seam so their conflict/reload behavior can be tested without networking.
 @MainActor
 protocol RoutineEditingAPI {
+    func getPlanHistory(jwt: String) async throws -> PlanHistoryResponse
+    func comparePlanVersion(_ version: Int, jwt: String) async throws
+        -> PlanComparisonResponse
+    func restorePlanVersion(
+        _ version: Int, expectedPlanID: String, expectedVersion: Int,
+        reason: String?, jwt: String
+    ) async throws -> APIClient.RestorePlanResult
     func ensureActivePlan(name: String, jwt: String) async throws
         -> APIClient.EnsureActivePlanResult
     func addDay(

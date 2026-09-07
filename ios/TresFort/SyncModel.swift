@@ -4601,6 +4601,61 @@ final class SyncModel: ObservableObject {
 
     // MARK: manual routine + calendar authoring
 
+    func loadPlanHistory() async -> PlanHistoryResponse? {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return nil }
+        do { return try await routineEditingAPI.getPlanHistory(jwt: jwt) }
+        catch { handle(error, jwt: jwt); return nil }
+    }
+
+    func comparePlanVersion(_ version: Int) async -> PlanComparisonResponse? {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return nil }
+        do { return try await routineEditingAPI.comparePlanVersion(version, jwt: jwt) }
+        catch { handle(error, jwt: jwt); return nil }
+    }
+
+    /// Returns true once the server acknowledges the restore. A following
+    /// state refresh may fail, but that never turns the acknowledged mutation
+    /// into a retry invitation; the existing sync error remains visible.
+    func restorePlanVersion(_ snapshotVersion: Int, reason: String?) async -> Bool {
+        guard canInitiateBoundFeatureAction, let currentPlan = plan else { return false }
+        while isRoutineMutationInFlight {
+            await withCheckedContinuation { routineMutationWaiters.append($0) }
+            guard canInitiateBoundFeatureAction else { return false }
+        }
+        guard let jwt = currentJWT else { return false }
+        isRoutineMutationInFlight = true
+        defer {
+            isRoutineMutationInFlight = false
+            let waiters = routineMutationWaiters
+            routineMutationWaiters.removeAll()
+            waiters.forEach { $0.resume() }
+        }
+        do {
+            _ = try await routineEditingAPI.restorePlanVersion(
+                snapshotVersion, expectedPlanID: currentPlan.id,
+                expectedVersion: currentPlan.version, reason: reason, jwt: jwt)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return true
+            }
+            await loadAfterMutation()
+            return true
+        } catch {
+            if case let APIError.http(code, body) = error,
+               Self.routineMutationNeedsReload(code: code, body: body) {
+                await loadAfterMutation()
+                if body.contains("active_workout") {
+                    loadError = "Finish or discard the active workout before restoring a routine."
+                } else if loadError == nil {
+                    loadError = "The routine changed elsewhere. Latest version loaded — review and try again."
+                }
+            } else {
+                handle(error, jwt: jwt)
+            }
+            return false
+        }
+    }
+
     private func performRoutineMutation<T>(
         _ operation: (any RoutineEditingAPI, String) async throws -> T
     ) async -> T? {

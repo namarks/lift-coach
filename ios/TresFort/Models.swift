@@ -202,6 +202,82 @@ struct PlanTree: Codable {
     }
 }
 
+struct PlanChangeSummary: Codable {
+    let plan_fields: Int
+    let schedule_days: Int
+    let days_added: Int
+    let days_removed: Int
+    let days_changed: Int
+    let exercises_added: Int
+    let exercises_removed: Int
+    let exercises_changed: Int
+
+    var total: Int {
+        plan_fields + schedule_days + days_added + days_removed + days_changed
+            + exercises_added + exercises_removed + exercises_changed
+    }
+}
+
+struct PlanHistoryItem: Codable, Identifiable {
+    var id: Int { version }
+    let version: Int
+    let actor: String
+    let operation: String
+    let reason: String?
+    let created_at: Int
+    let summary: PlanChangeSummary?
+}
+
+struct PlanHistoryResponse: Codable {
+    let plan_id: String
+    let current_version: Int
+    let items: [PlanHistoryItem]
+    let next_before_version: Int?
+}
+
+struct PlanVersionChange: Codable, Identifiable {
+    var id: String { "\(kind):\(path)" }
+    let kind: String
+    let path: String
+    let before: JSONValue?
+    let after: JSONValue?
+}
+
+enum JSONValue: Codable {
+    case string(String), number(Double), bool(Bool), object([String: JSONValue])
+    case array([JSONValue]), null
+
+    init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer()
+        if value.decodeNil() { self = .null }
+        else if let v = try? value.decode(Bool.self) { self = .bool(v) }
+        else if let v = try? value.decode(Double.self) { self = .number(v) }
+        else if let v = try? value.decode(String.self) { self = .string(v) }
+        else if let v = try? value.decode([String: JSONValue].self) { self = .object(v) }
+        else { self = .array(try value.decode([JSONValue].self)) }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var value = encoder.singleValueContainer()
+        switch self {
+        case let .string(v): try value.encode(v)
+        case let .number(v): try value.encode(v)
+        case let .bool(v): try value.encode(v)
+        case let .object(v): try value.encode(v)
+        case let .array(v): try value.encode(v)
+        case .null: try value.encodeNil()
+        }
+    }
+}
+
+struct PlanComparisonResponse: Codable {
+    let plan_id: String
+    let from_version: Int
+    let to_version: Int
+    let changes: [PlanVersionChange]
+    let summary: PlanChangeSummary
+}
+
 struct SessionRow: Codable, Identifiable {
     let id: String
     let date: String
