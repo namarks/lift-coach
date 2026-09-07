@@ -6,6 +6,7 @@ import {
   getPlanTree,
   updateExercise,
   updatePlanTree,
+  validateExercisePrescription,
 } from '../src/db';
 import { handleMcp } from '../src/mcp/server';
 import type { Env } from '../src/types';
@@ -23,6 +24,71 @@ async function user(label: string): Promise<string> {
 }
 
 describe('prescription integrity', () => {
+  it('audits malformed legacy rows and recovers through validated full replacement', async () => {
+    const userId = await user('legacy-prescription-audit');
+    const built = await updatePlanTree(env.DB, userId, {
+      days: [{ name: 'Legacy day', day_label: 'L', exercises: [
+        { exercise: 'bench', target_sets: 3, target_reps: 5, target_reps_max: 8, target_weight: 100 },
+      ] }],
+    });
+    if (!('plan' in built)) throw new Error('legacy_fixture_failed');
+    const slotId = built.plan.days[0]!.exercises[0]!.id;
+    // Model a pre-validation database row, including malformed text that a
+    // coercing repair must not silently default or accept.
+    await env.DB.prepare(
+      `UPDATE template_exercises
+          SET target_sets='three', target_reps_max=2, target_rpe=99,
+              rest_seconds=-1, target_weight=-5, is_warmup=2
+        WHERE id=?1`,
+    ).bind(slotId).run();
+
+    const versionBeforeAudit = (await getActivePlan(env.DB, userId))!.version;
+    const auditBefore = await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM audit_log WHERE user_id=?1',
+    ).bind(userId).first<number>('n');
+    const stored = (await getPlanTree(env.DB, userId))!.days[0]!.exercises[0]!;
+    const diagnostic = validateExercisePrescription({
+      ...stored,
+      progression: stored.progression === null ? null : JSON.parse(stored.progression),
+    }, { modality: stored.exercise_modality });
+    expect(diagnostic).toEqual({
+      error: 'invalid_fields',
+      fields: ['is_warmup', 'rest_seconds', 'target_reps_max', 'target_rpe', 'target_sets', 'target_weight'],
+    });
+
+    const rejected = await updateExercise(
+      env.DB, userId, { template_exercise_id: slotId }, { cues: 'Do not launder legacy values' },
+    );
+    expect(rejected).toEqual(diagnostic);
+    expect((await getPlanTree(env.DB, userId))!.days[0]!.exercises[0]).toMatchObject({
+      target_sets: 'three', target_reps_max: 2, target_rpe: 99,
+      rest_seconds: -1, target_weight: -5, is_warmup: 2, cues: null,
+    });
+    expect((await getActivePlan(env.DB, userId))!.version).toBe(versionBeforeAudit);
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM audit_log WHERE user_id=?1')
+      .bind(userId).first<number>('n')).toBe(auditBefore);
+
+    const corrected = await updatePlanTree(env.DB, userId, {
+      expected_version: versionBeforeAudit,
+      name: built.plan.name,
+      days: [{ name: 'Legacy day', day_label: 'L', exercises: [
+        { exercise: 'bench', target_sets: 3, target_reps: 5, target_reps_max: 8,
+          target_rpe: 8, rest_seconds: 120, target_weight: 100, is_warmup: 0 },
+      ] }],
+    });
+    if (!('plan' in corrected)) throw new Error('legacy_correction_failed');
+    const repaired = corrected.plan.days[0]!.exercises[0]!;
+    expect(corrected.plan.version).toBe(versionBeforeAudit + 1);
+    expect(validateExercisePrescription({
+      ...repaired,
+      progression: repaired.progression === null ? null : JSON.parse(repaired.progression),
+    }, { modality: repaired.exercise_modality })).toBeNull();
+    expect(JSON.parse(JSON.stringify(corrected.plan)).days[0].exercises[0]).toMatchObject({
+      target_sets: 3, target_reps: 5, target_reps_max: 8,
+      target_rpe: 8, rest_seconds: 120, target_weight: 100, is_warmup: 0,
+    });
+  });
+
   it('rejects malformed first-plan payloads without creating state', async () => {
     const userId = await user('invalid-first-plan');
     const result = await updatePlanTree(env.DB, userId, {
