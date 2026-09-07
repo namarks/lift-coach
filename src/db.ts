@@ -2907,6 +2907,33 @@ export async function getPlanSnapshot(
   return row ? { ...row, parsed: parsePlanSnapshot(row.document) } : null;
 }
 
+async function materializeSnapshotPlan(
+  db: D1Database,
+  base: PlanRow,
+  version: number,
+  updatedAt: number,
+  document: PlanSnapshotDocument,
+): Promise<PlanTree> {
+  const catalog = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise]));
+  return {
+    ...base, name: document.plan.name, meta: document.plan.meta, version, updated_at: updatedAt,
+    days: document.days.map((day) => ({
+      ...day, plan_id: base.id, created_at: updatedAt, updated_at: updatedAt,
+      exercises: day.exercises.map((slot) => {
+        const exercise = catalog.get(slot.exercise_id);
+        if (!exercise) throw new Error('snapshot_exercise_missing');
+        return {
+          ...slot, day_template_id: day.id, created_at: updatedAt, updated_at: updatedAt,
+          exercise_name: exercise.name, exercise_unit: exercise.unit,
+          exercise_muscle: exercise.primary_muscle, exercise_modality: exercise.modality,
+          exercise_laterality: exercise.laterality, exercise_load_mode: exercise.load_mode,
+          exercise_demo_slug: exercise.demo_slug,
+        };
+      }),
+    })),
+  };
+}
+
 export async function listPlanHistory(
   db: D1Database,
   userId: string,
@@ -2955,17 +2982,43 @@ export async function comparePlanVersions(
   if (!plan) return { error: 'no_active_plan' as const };
   const from = await getPlanSnapshot(db, userId, plan.id, fromVersion);
   if (!from) return { error: 'snapshot_not_found' as const };
-  let toDocument: PlanSnapshotDocument;
-  const resolvedTo = toVersion ?? plan.version;
+  let toDocument: PlanSnapshotDocument | undefined;
+  let resolvedTo = toVersion ?? plan.version;
   if (toVersion == null || toVersion === plan.version) {
-    const tree = await getPlanTree(db, userId);
-    if (!tree) return { error: 'no_active_plan' as const };
-    toDocument = serializePlanSnapshot(tree);
+    const captured = await getPlanSnapshot(db, userId, plan.id, plan.version);
+    if (captured) {
+      toDocument = captured.parsed;
+    } else {
+      // A pre-0040 plan has no captured current snapshot. Bound the legacy
+      // fallback by the version before and after the multi-query tree read so
+      // comparison content is never labeled with a different version.
+      let stableTree: PlanTree | null = null;
+      for (let attempt = 0; attempt < 3 && !stableTree; attempt++) {
+        const before = await getActivePlan(db, userId);
+        const tree = await getPlanTree(db, userId);
+        const after = await getActivePlan(db, userId);
+        if (before && tree && after && before.id === after.id &&
+            before.version === tree.version && tree.version === after.version) {
+          stableTree = tree;
+          resolvedTo = tree.version;
+        } else if (after) {
+          const afterSnapshot = await getPlanSnapshot(db, userId, after.id, after.version);
+          if (afterSnapshot) {
+            toDocument = afterSnapshot.parsed;
+            resolvedTo = after.version;
+            break;
+          }
+        }
+      }
+      if (!toDocument && !stableTree) return { error: 'plan_changed' as const };
+      if (stableTree) toDocument = serializePlanSnapshot(stableTree);
+    }
   } else {
     const to = await getPlanSnapshot(db, userId, plan.id, toVersion);
     if (!to) return { error: 'snapshot_not_found' as const };
     toDocument = to.parsed;
   }
+  if (!toDocument) return { error: 'plan_changed' as const };
   const exerciseNames = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.name]));
   return {
     plan_id: plan.id, from_version: fromVersion, to_version: resolvedTo,
@@ -2985,6 +3038,7 @@ export async function restorePlanSnapshot(
   },
 ): Promise<
   | { ok: true; plan_id: string; restored_from_version: number; version: number; plan: PlanTree }
+  | { ok: true; acknowledged: true; refresh_required: true; plan_id: string; restored_from_version: number; version: number }
   | { conflict: true; current_plan_id: string; current_version: number }
   | { error: 'snapshot_not_found' | 'active_workout' | 'no_active_plan' }
 > {
@@ -3096,9 +3150,17 @@ export async function restorePlanSnapshot(
       current_version: latest?.version ?? plan.version,
     };
   }
+  const restoredVersion = plan.version + 1;
+  const committed = await getPlanSnapshot(db, userId, plan.id, restoredVersion);
+  if (!committed) {
+    return {
+      ok: true, acknowledged: true, refresh_required: true, plan_id: plan.id,
+      restored_from_version: input.snapshot_version, version: restoredVersion,
+    };
+  }
   return {
     ok: true, plan_id: plan.id, restored_from_version: input.snapshot_version,
-    version: plan.version + 1, plan: (await getPlanTree(db, userId))!,
+    version: restoredVersion, plan: await materializeSnapshotPlan(db, plan, restoredVersion, ts, committed.parsed),
   };
 }
 
@@ -3633,7 +3695,8 @@ export async function addTemplateExercise(
   const siblings = await db.prepare(
     'SELECT id,order_index FROM template_exercises WHERE day_template_id=?1 ORDER BY order_index,created_at,id',
   ).bind(row.day_template_id).all<{ id: string; order_index: number }>();
-  const ordered = orderDayRows([...siblings.results, row], row.id);
+  const collides = siblings.results.some((slot) => slot.order_index === row.order_index);
+  const ordered = collides ? orderDayRows([...siblings.results, row], row.id) : [...siblings.results, row];
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
@@ -3649,10 +3712,10 @@ export async function addTemplateExercise(
       row.target_weight, row.target_duration_s, row.progression, row.cues, row.is_warmup ? 1 : 0,
       row.created_at, row.updated_at, plan.id, plan.user_id, plan.version, nonce,
     ),
-    ...ordered.map((slot, index) => db.prepare(
+    ...(collides ? ordered.map((slot, index) => db.prepare(
       `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
        AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`,
-    ).bind(slot.id, index, ts, plan.id, plan.user_id, plan.version, nonce)),
+    ).bind(slot.id, index, ts, plan.id, plan.user_id, plan.version, nonce)) : []),
   ];
   const versionResultIndex = statements.length;
   statements.push(...preparePlanWriteFinish(db, plan, { ...attribution, result: row.id }, ts, nonce));
@@ -3660,7 +3723,7 @@ export async function addTemplateExercise(
   if ((results[0]?.meta.changes ?? 0) !== 1 || (results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
     throw new Error('plan_write_conflict');
   }
-  row.order_index = ordered.findIndex((slot) => slot.id === row.id);
+  if (collides) row.order_index = ordered.findIndex((slot) => slot.id === row.id);
   return row;
 }
 
@@ -5658,6 +5721,7 @@ export async function updatePlanTree(
 ): Promise<
   | { conflict: true; current_version: number }
   | { conflict: false; plan: PlanTree }
+  | { conflict: false; acknowledged: true; refresh_required: true; plan_id: string; version: number }
   | { error: 'unknown_exercise'; queries: string[]; query: string }
   | PrescriptionValidationError
 > {
@@ -6163,7 +6227,18 @@ export async function updatePlanTree(
     const current = await getActivePlan(db, userId);
     return { conflict: true, current_version: current?.version ?? plan.version };
   }
-  return { conflict: false, plan: (await getPlanTree(db, userId))! };
+  const acknowledgedVersion = plan.version + 1;
+  const committed = await getPlanSnapshot(db, userId, plan.id, acknowledgedVersion);
+  if (!committed) {
+    return {
+      conflict: false, acknowledged: true, refresh_required: true,
+      plan_id: plan.id, version: acknowledgedVersion,
+    };
+  }
+  return {
+    conflict: false,
+    plan: await materializeSnapshotPlan(db, plan, acknowledgedVersion, ts, committed.parsed),
+  };
 }
 
 /** Find a template_exercise slot by id, or by (day + exercise name/id).
@@ -6319,6 +6394,7 @@ export async function updateExercise(
         )${rangePredicates.length ? ` AND ${rangePredicates.join(' AND ')}` : ''}`,
     ).bind(...values),
   ];
+  let acknowledgedOrder = patch.order_index ?? slot.order_index;
   if (patch.order_index !== undefined) {
     const siblings = await db.prepare(
       'SELECT id,order_index FROM template_exercises WHERE day_template_id=?1 ORDER BY order_index,created_at,id',
@@ -6327,6 +6403,7 @@ export async function updateExercise(
     const hasDuplicate = new Set(moved.map((row) => row.order_index)).size !== moved.length;
     if (hasDuplicate) {
       const ordered = orderDayRows(moved, slot.id);
+      acknowledgedOrder = ordered.findIndex((row) => row.id === slot.id);
       ordered.forEach((row, index) => statements.push(
         db.prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
           AND EXISTS (SELECT 1 FROM day_templates d JOIN plans p ON p.id=d.plan_id
@@ -6352,7 +6429,14 @@ export async function updateExercise(
     }
     return null;
   }
-  return db.prepare('SELECT * FROM template_exercises WHERE id=?1').bind(slot.id).first<TemplateExerciseRow>();
+  return {
+    ...slot,
+    ...merged,
+    progression: merged.progression == null ? null : JSON.stringify(merged.progression),
+    is_warmup: merged.is_warmup ? 1 : 0,
+    order_index: acknowledgedOrder,
+    updated_at: ts,
+  };
 }
 
 /**
@@ -6506,6 +6590,9 @@ export async function adjustToday(
   recurring: true;
   affected_workouts: string[];
   no_op: boolean;
+  acknowledged?: true;
+  refresh_required?: true;
+  version?: number;
 }> {
   if (!['deload', 'reduce_volume', 'reduce_intensity'].includes(intent)
       || !['light', 'moderate', 'heavy'].includes(magnitude)) {
@@ -6544,7 +6631,7 @@ export async function adjustToday(
               AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
             .bind(te.id, w, ts, tree.id, userId, tree.version, nonce),
         );
-        changes.push(`${d.day_label ?? d.name}/${te.exercise_id}: weight ${te.target_weight}→${w}`);
+        changes.push(`${d.day_label ?? d.name}/${te.exercise_name}: weight ${te.target_weight}→${w}`);
       } else {
         const s = Math.max(1, Math.round(te.target_sets * setF));
         if (s === te.target_sets) continue;
@@ -6554,13 +6641,18 @@ export async function adjustToday(
               AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
             .bind(te.id, s, ts, tree.id, userId, tree.version, nonce),
         );
-        changes.push(`${d.day_label ?? d.name}/${te.exercise_id}: sets ${te.target_sets}→${s}`);
+        changes.push(`${d.day_label ?? d.name}/${te.exercise_name}: sets ${te.target_sets}→${s}`);
       }
     }
   }
   if (changes.length) {
     const versionResultIndex = stmts.length;
-    stmts.push(...preparePlanWriteFinish(db, tree, attribution, ts, nonce));
+    const workouts = days.map((day) => day.day_label ?? day.name).join(', ');
+    const detail = `Recurring templates (${workouts}): ${changes.length} change(s): ${changes.join('; ')}`;
+    stmts.push(...preparePlanWriteFinish(db, tree, {
+      ...attribution,
+      note: attribution.note ? `${attribution.note} ${detail}` : detail,
+    }, ts, nonce));
     const results = await runWorkoutWriteBatch<{ version: number }>(db, stmts);
     if ((results[0]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
       return {
@@ -6568,9 +6660,23 @@ export async function adjustToday(
         affected_workouts: [], no_op: true,
       };
     }
+    const committedVersion = tree.version + 1;
+    const committed = await getPlanSnapshot(db, userId, tree.id, committedVersion);
+    if (!committed) {
+      return {
+        plan: null, changes, recurring: true,
+        affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: false,
+        acknowledged: true, refresh_required: true, version: committedVersion,
+      };
+    }
+    return {
+      plan: await materializeSnapshotPlan(db, tree, committedVersion, ts, committed.parsed),
+      changes, recurring: true,
+      affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: false,
+    };
   }
   return {
-    plan: await getPlanTree(db, userId),
+    plan: tree,
     changes,
     recurring: true,
     affected_workouts: days.map((day) => day.day_label ?? day.name),

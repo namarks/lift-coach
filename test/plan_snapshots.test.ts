@@ -3,6 +3,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import {
   comparePlanVersions,
   createPlan,
+  deleteUserAccount,
   exportUserData,
   getOrCreateSession,
   getPlanSnapshot,
@@ -41,6 +42,26 @@ describe('plan snapshots', () => {
     const diff = comparePlanSnapshots(stored!.parsed, changed);
     expect(diff.summary.exercises_changed).toBe(1);
     expect(diff.changes[0]?.path).toContain('Strength A');
+  });
+
+  it('compares a labeled current version from its immutable snapshot', async () => {
+    const { userId, plan } = await fixture('comparison fence');
+    const snapshotOnlyDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'prepare') return (sql: string) => {
+          if (sql.includes('FROM day_templates WHERE plan_id')) {
+            throw new Error('live_tree_read_not_allowed');
+          }
+          return target.prepare(sql);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as D1Database;
+    const comparison = await comparePlanVersions(snapshotOnlyDb, userId, plan.version);
+    expect(comparison).toMatchObject({
+      from_version: plan.version, to_version: plan.version, changes: [],
+    });
   });
 
   it('restores a caller-owned snapshot as a new version and retains both versions', async () => {
@@ -87,6 +108,41 @@ describe('plan snapshots', () => {
       plan_id: one.plan.id, snapshot_version: one.plan.version,
       expected_version: one.plan.version, actor: 'ios',
     })).toEqual({ error: 'active_workout' });
+  });
+
+  it('rejects a workout that starts after restore prechecks but before its write batch', async () => {
+    const { userId, plan } = await fixture('restore race');
+    const changed = await updatePlanTree(env.DB, userId, {
+      expected_version: plan.version,
+      days: [{ name: 'Current', day_label: 'C', exercises: [
+        { exercise: 'squat', target_sets: 3, target_reps: 5 },
+      ] }],
+    });
+    if (!('plan' in changed)) throw new Error('changed_plan_failed');
+    let intercepted = false;
+    const racingDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'batch') return async (statements: D1PreparedStatement[]) => {
+          if (!intercepted) {
+            intercepted = true;
+            const ts = Date.now();
+            await env.DB.prepare(
+              `INSERT INTO sessions
+               (id,user_id,plan_id,day_template_id,date,status,started_at,created_at,updated_at)
+               VALUES (?1,?2,?3,?4,'2026-09-07','in_progress',?5,?5,?5)`,
+            ).bind(crypto.randomUUID(), userId, plan.id, changed.plan.days[0]!.id, ts).run();
+          }
+          return target.batch(statements);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as D1Database;
+    expect(await restorePlanSnapshot(racingDb, userId, {
+      plan_id: plan.id, snapshot_version: plan.version,
+      expected_version: changed.plan.version, actor: 'ios',
+    })).toEqual({ error: 'active_workout' });
+    expect((await getPlanTree(env.DB, userId))?.version).toBe(changed.plan.version);
   });
 
   it('includes immutable plan history in the portable export', async () => {
@@ -165,6 +221,17 @@ describe('plan snapshots', () => {
     expect((await getPlanTree(env.DB, userId))?.version).toBe(plan.version);
   });
 
+  it('deletes user-owned snapshots while retaining the deletion receipt', async () => {
+    const { userId } = await fixture('snapshot deletion');
+    expect(await deleteUserAccount(env.DB, userId, undefined, crypto.randomUUID()))
+      .toMatchObject({ ok: true });
+    expect(await env.DB.prepare('SELECT 1 FROM plan_snapshots WHERE user_id=?1').bind(userId).first())
+      .toBeNull();
+    expect(await env.DB.prepare('SELECT 1 FROM users WHERE id=?1').bind(userId).first()).toBeNull();
+    expect(await env.DB.prepare('SELECT 1 FROM account_deletion_receipts WHERE user_id=?1').bind(userId).first())
+      .not.toBeNull();
+  });
+
   it('preserves historical session and set values while safely detaching replaced refs', async () => {
     const { userId, plan } = await fixture('historical refs');
     const day = plan.days[0]!;
@@ -205,6 +272,7 @@ describe('plan snapshots', () => {
       })),
     }));
     const bytes = new TextEncoder().encode(JSON.stringify(stored)).byteLength;
+    console.log(JSON.stringify({ event: 'plan_snapshot_growth', days: 50, slots: 1000, bytes }));
     expect(bytes).toBeGreaterThan(100_000);
     expect(bytes).toBeLessThan(1_000_000);
   });
