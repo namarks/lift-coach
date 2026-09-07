@@ -259,6 +259,9 @@ private final class SetPlanEditingAPIStub: PlanEditingAPI {
 
 @MainActor
 private final class SetRoutineEditingAPIStub: RoutineEditingAPI {
+    var historyHandler: ((Int, Int?, String) async throws -> PlanHistoryResponse)?
+    var comparisonHandler: ((Int, Int, String) async throws -> PlanComparisonResponse)?
+    var restoreHandler: ((Int, String, Int, String?, String) async throws -> APIClient.RestorePlanResult)?
     var ensureHandler: ((String, String) async throws -> APIClient.EnsureActivePlanResult)?
     var addDayHandler: ((String, String, Int, String) async throws -> APIClient.DayIDRow)?
     var updateDayHandler: ((String, [String: Any], Int, String) async throws -> APIClient.DayIDRow)?
@@ -269,6 +272,30 @@ private final class SetRoutineEditingAPIStub: RoutineEditingAPI {
     private(set) var deleteDayCalls = 0
     private(set) var scheduleCalls = 0
     private(set) var calendarCalls = 0
+    private(set) var restoreCalls = 0
+
+    func getPlanHistory(limit: Int, beforeVersion: Int?, jwt: String) async throws
+        -> PlanHistoryResponse
+    {
+        guard let historyHandler else { throw URLError(.badServerResponse) }
+        return try await historyHandler(limit, beforeVersion, jwt)
+    }
+
+    func comparePlanVersion(_ version: Int, toVersion: Int, jwt: String) async throws
+        -> PlanComparisonResponse
+    {
+        guard let comparisonHandler else { throw URLError(.badServerResponse) }
+        return try await comparisonHandler(version, toVersion, jwt)
+    }
+
+    func restorePlanVersion(
+        _ version: Int, expectedPlanID: String, expectedVersion: Int,
+        reason: String?, jwt: String
+    ) async throws -> APIClient.RestorePlanResult {
+        restoreCalls += 1
+        guard let restoreHandler else { throw URLError(.badServerResponse) }
+        return try await restoreHandler(version, expectedPlanID, expectedVersion, reason, jwt)
+    }
 
     func ensureActivePlan(name: String, jwt: String) async throws
         -> APIClient.EnsureActivePlanResult
@@ -3780,6 +3807,77 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(capturedWeek["mon"], "day-a")
         XCTAssertEqual(model.plan?.version, 2)
         XCTAssertEqual(model.plan?.schedule?.templateID(forWeekdayKey: "mon"), "day-a")
+    }
+
+    func testHistoryRestorePinsReviewedPlanIdentityAndVersionAndKeepsAcknowledgement() async {
+        let defaults = defaults()
+        let routineAPI = SetRoutineEditingAPIStub()
+        var captured: (Int, String, Int, String?)?
+        routineAPI.restoreHandler = { version, planID, expectedVersion, reason, _ in
+            captured = (version, planID, expectedVersion, reason)
+            return APIClient.RestorePlanResult(
+                ok: true, plan_id: planID, restored_from_version: version,
+                version: expectedVersion + 1)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { _ in throw URLError(.cannotConnectToHost) }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(),
+            routineEditingAPI: routineAPI,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: session(status: "planned", attempt: 0), sets: [],
+            days: [day(with: [exercise()])], planVersion: 11))
+
+        let acknowledged = await model.restorePlanVersion(
+            4, expectedPlanID: "plan-a", reviewedCurrentVersion: 9,
+            reason: "Review restore")
+
+        XCTAssertTrue(acknowledged)
+        XCTAssertEqual(captured?.0, 4)
+        XCTAssertEqual(captured?.1, "plan-a")
+        XCTAssertEqual(captured?.2, 9)
+        XCTAssertEqual(captured?.3, "Review restore")
+        XCTAssertEqual(routineAPI.restoreCalls, 1)
+        XCTAssertNotNil(model.loadError)
+    }
+
+    func testHistoryConflictIsNotAnAcknowledgedRestoreAndReloadsLatestState() async {
+        let defaults = defaults()
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.restoreHandler = { _, _, _, _, _ in
+            throw APIError.http(409, #"{"conflict":true,"current_version":12}"#)
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: session(status: "planned", attempt: 0), sets: [],
+                  days: [day(with: [exercise()])], planVersion: 12)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: routineAPI,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(
+            session: session(status: "planned", attempt: 0), sets: [],
+            days: [day(with: [exercise()])], planVersion: 9))
+
+        let acknowledged = await model.restorePlanVersion(
+            4, expectedPlanID: "plan-a", reviewedCurrentVersion: 9, reason: nil)
+        XCTAssertFalse(acknowledged)
+        XCTAssertEqual(model.plan?.version, 12)
+        XCTAssertEqual(routineAPI.restoreCalls, 1)
+    }
+
+    func testPlanHistoryPresentationUsesReadableValuesWithoutStoragePaths() {
+        let change = PlanVersionChange(
+            kind: "exercise", path: "days.day-a.exercises.slot-a.target_weight",
+            before: .number(7.5), after: .number(5))
+        XCTAssertEqual(PlanHistoryPresentation.fieldName(for: change), "Target load")
+        XCTAssertEqual(PlanHistoryPresentation.value(change.before), "7.5")
+        XCTAssertEqual(PlanHistoryPresentation.value(change.after), "5")
     }
 
     func testFirstManualDayPinsTheExactEnsuredPlanIdentityAndVersion() async {

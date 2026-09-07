@@ -377,6 +377,25 @@ struct RoutineView: View {
     }
 }
 
+enum PlanHistoryPresentation {
+    static func fieldName(for change: PlanVersionChange) -> String {
+        let field = change.path.split(separator: ".").last.map(String.init) ?? change.kind
+        let names = [
+            "target_sets": "Target sets", "target_reps": "Target reps",
+            "target_reps_max": "Maximum reps", "target_rpe": "Target effort",
+            "target_weight": "Target load", "target_duration_s": "Target duration",
+            "rest_seconds": "Rest time", "schedule": "Weekly schedule",
+            "name": change.kind == "day" ? "Workout name" : "Routine name",
+            "cues": "Coaching cues", "order_index": "Order",
+        ]
+        return names[field] ?? field.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    static func value(_ value: JSONValue?) -> String {
+        value?.displayText ?? "Not set"
+    }
+}
+
 private struct PlanHistoryView: View {
     @ObservedObject var sync: SyncModel
     @Environment(\.dismiss) private var dismiss
@@ -384,68 +403,44 @@ private struct PlanHistoryView: View {
     @State private var comparison: PlanComparisonResponse?
     @State private var selected: PlanHistoryItem?
     @State private var restoring = false
+    @State private var loadingHistory = true
+    @State private var loadingComparison = false
+    @State private var loadingMore = false
+    @State private var errorMessage: String?
 
     var body: some View {
         NavigationStack {
             List {
-                if let comparison, let selected {
-                    Section("Version \(selected.version) → current version \(comparison.to_version)") {
-                        if comparison.changes.isEmpty {
-                            Text("This version matches the current routine.")
-                        } else {
-                            ForEach(comparison.changes) { change in
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(changeLabel(change))
-                                        .font(Theme.mono(12, .bold))
-                                    Text(change.path)
-                                        .font(Theme.mono(10)).foregroundStyle(Theme.muted)
-                                }
-                            }
-                            Button("Restore version \(selected.version)", role: .destructive) {
-                                restoring = true
-                            }
-                            .disabled(sync.running || sync.isRoutineMutationInFlight)
-                        }
-                    }
-                }
-                Section("Captured versions") {
-                    ForEach(history?.items ?? []) { item in
-                        Button {
-                            selected = item
-                            Task { comparison = await sync.comparePlanVersion(item.version) }
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("Version \(item.version) · \(item.operation.replacingOccurrences(of: "_", with: " "))")
-                                    .font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
-                                Text(item.reason ?? "\(item.actor.capitalized) change")
-                                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
-                                if let count = item.summary?.total {
-                                    Text("\(count) change\(count == 1 ? "" : "s")")
-                                        .font(Theme.mono(10)).foregroundStyle(Theme.muted)
-                                }
-                            }
-                        }
-                    }
-                }
+                comparisonContent
+                capturedVersionsContent
+                errorContent
             }
             .navigationTitle("Routine history")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } } }
-            .task { history = await sync.loadPlanHistory() }
+            .task { await loadInitialHistory() }
             .confirmationDialog(
                 "Restore version \(selected?.version ?? 0)?",
                 isPresented: $restoring,
                 titleVisibility: .visible
             ) {
                 Button("Restore as a new version", role: .destructive) {
-                    guard let selected else { return }
+                    guard let selected, let reviewedComparison = comparison, let history,
+                          reviewedComparison.from_version == selected.version,
+                          reviewedComparison.plan_id == history.plan_id,
+                          reviewedComparison.to_version == history.current_version else { return }
                     Task {
                         if await sync.restorePlanVersion(
                             selected.version,
+                            expectedPlanID: history.plan_id,
+                            reviewedCurrentVersion: reviewedComparison.to_version,
                             reason: "Restored from Routine history") {
-                            history = await sync.loadPlanHistory()
+                            await loadInitialHistory()
                             comparison = nil
                             self.selected = nil
+                        } else {
+                            errorMessage = sync.loadError ?? "The routine changed. Review the latest comparison before restoring."
+                            await loadInitialHistory()
                         }
                     }
                 }
@@ -457,12 +452,116 @@ private struct PlanHistoryView: View {
         .preferredColorScheme(.dark)
     }
 
-    private func changeLabel(_ change: PlanVersionChange) -> String {
-        switch change.kind {
-        case "schedule": return "Weekly schedule changed"
-        case "day": return "Workout changed"
-        case "exercise": return "Exercise prescription changed"
-        default: return "Routine changed"
+    @ViewBuilder private var comparisonContent: some View {
+        if let comparison, let selected,
+           comparison.from_version == selected.version,
+           comparison.plan_id == history?.plan_id {
+            Section("Version \(selected.version) → current version \(comparison.to_version)") {
+                if comparison.changes.isEmpty {
+                    Text("This version matches the current routine.")
+                } else {
+                    ForEach(comparison.changes) { change in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(PlanHistoryPresentation.fieldName(for: change)).font(Theme.mono(12, .bold))
+                            Text("\(PlanHistoryPresentation.value(change.before)) → \(PlanHistoryPresentation.value(change.after))")
+                                .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                        }
+                    }
+                    Button("Restore version \(selected.version)", role: .destructive) { restoring = true }
+                        .disabled(sync.running || sync.isRoutineMutationInFlight)
+                    if sync.running {
+                        Text("Finish or discard the active workout before restoring a routine.")
+                            .font(Theme.mono(10)).foregroundStyle(Theme.muted)
+                    }
+                }
+            }
+        } else if loadingComparison {
+            Section { ProgressView("Comparing routines…") }
         }
+    }
+
+    @ViewBuilder private var capturedVersionsContent: some View {
+        Section("Captured versions") {
+            if loadingHistory {
+                ProgressView("Loading routine history…")
+            } else if history?.items.isEmpty != false {
+                Text("No captured routine changes yet.").foregroundStyle(Theme.muted)
+            }
+            ForEach(history?.items ?? []) { item in
+                Button { select(item) } label: { historyRow(item) }
+            }
+            if history?.next_before_version != nil {
+                Button(loadingMore ? "Loading…" : "Load earlier changes") { Task { await loadMore() } }
+                    .disabled(loadingMore)
+            }
+        }
+    }
+
+    private func historyRow(_ item: PlanHistoryItem) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Version \(item.version) · \(item.operation.replacingOccurrences(of: "_", with: " "))")
+                .font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
+            Text(item.reason ?? "\(item.actor.capitalized) change")
+                .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+            Text("\(item.actor.capitalized) · \(historyDate(item.created_at))")
+                .font(Theme.mono(10)).foregroundStyle(Theme.muted)
+            if let count = item.summary?.total {
+                Text("\(count) change\(count == 1 ? "" : "s")")
+                    .font(Theme.mono(10)).foregroundStyle(Theme.muted)
+            }
+        }
+    }
+
+    @ViewBuilder private var errorContent: some View {
+        if let errorMessage {
+            Section {
+                Text(errorMessage).foregroundStyle(Theme.danger)
+                Button("Try again") { Task { await loadInitialHistory() } }
+            }
+        }
+    }
+
+    private func select(_ item: PlanHistoryItem) {
+        guard let history else { return }
+        selected = item
+        comparison = nil
+        loadingComparison = true
+        let planID = history.plan_id
+        let currentVersion = history.current_version
+        Task {
+            let loaded = await sync.comparePlanVersion(item.version, toVersion: currentVersion)
+            guard selected?.version == item.version,
+                  self.history?.plan_id == planID,
+                  self.history?.current_version == currentVersion else { return }
+            comparison = loaded
+            loadingComparison = false
+            if loaded == nil { errorMessage = sync.loadError ?? "Could not compare this routine version." }
+        }
+    }
+
+    private func loadInitialHistory() async {
+        loadingHistory = true
+        errorMessage = nil
+        history = await sync.loadPlanHistory()
+        loadingHistory = false
+        if history == nil { errorMessage = sync.loadError ?? "Could not load routine history." }
+    }
+
+    private func loadMore() async {
+        guard let current = history, let before = current.next_before_version else { return }
+        loadingMore = true
+        defer { loadingMore = false }
+        guard let page = await sync.loadPlanHistory(beforeVersion: before), page.plan_id == current.plan_id else {
+            errorMessage = sync.loadError ?? "Could not load earlier changes."
+            return
+        }
+        history = PlanHistoryResponse(
+            plan_id: current.plan_id, current_version: current.current_version,
+            items: current.items + page.items, next_before_version: page.next_before_version)
+    }
+
+    private func historyDate(_ milliseconds: Int) -> String {
+        Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
+            .formatted(date: .abbreviated, time: .shortened)
     }
 }

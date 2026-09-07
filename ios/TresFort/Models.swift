@@ -202,7 +202,7 @@ struct PlanTree: Codable {
     }
 }
 
-struct PlanChangeSummary: Codable {
+struct PlanChangeSummary: Codable, Equatable {
     let plan_fields: Int
     let schedule_days: Int
     let days_added: Int
@@ -218,7 +218,7 @@ struct PlanChangeSummary: Codable {
     }
 }
 
-struct PlanHistoryItem: Codable, Identifiable {
+struct PlanHistoryItem: Codable, Identifiable, Equatable {
     var id: Int { version }
     let version: Int
     let actor: String
@@ -228,14 +228,14 @@ struct PlanHistoryItem: Codable, Identifiable {
     let summary: PlanChangeSummary?
 }
 
-struct PlanHistoryResponse: Codable {
+struct PlanHistoryResponse: Codable, Equatable {
     let plan_id: String
     let current_version: Int
     let items: [PlanHistoryItem]
     let next_before_version: Int?
 }
 
-struct PlanVersionChange: Codable, Identifiable {
+struct PlanVersionChange: Codable, Identifiable, Equatable {
     var id: String { "\(kind):\(path)" }
     let kind: String
     let path: String
@@ -243,7 +243,7 @@ struct PlanVersionChange: Codable, Identifiable {
     let after: JSONValue?
 }
 
-enum JSONValue: Codable {
+enum JSONValue: Codable, Equatable {
     case string(String), number(Double), bool(Bool), object([String: JSONValue])
     case array([JSONValue]), null
 
@@ -270,7 +270,24 @@ enum JSONValue: Codable {
     }
 }
 
-struct PlanComparisonResponse: Codable {
+extension JSONValue {
+    var displayText: String {
+        switch self {
+        case let .string(value): return value
+        case let .number(value):
+            return value.rounded() == value ? String(Int(value)) : String(value)
+        case let .bool(value): return value ? "Yes" : "No"
+        case .null: return "None"
+        case let .array(values): return values.map(\.displayText).joined(separator: ", ")
+        case let .object(value):
+            return value.sorted { $0.key < $1.key }
+                .map { "\($0.key.replacingOccurrences(of: "_", with: " ")): \($0.value.displayText)" }
+                .joined(separator: ", ")
+        }
+    }
+}
+
+struct PlanComparisonResponse: Codable, Equatable {
     let plan_id: String
     let from_version: Int
     let to_version: Int

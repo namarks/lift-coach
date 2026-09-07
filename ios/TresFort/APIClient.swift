@@ -357,14 +357,16 @@ struct APIClient {
         let version: Int
     }
 
-    func getPlanHistory(jwt: String) async throws -> PlanHistoryResponse {
-        try await get("api/plan/history", jwt: jwt)
+    func getPlanHistory(limit: Int, beforeVersion: Int?, jwt: String) async throws -> PlanHistoryResponse {
+        var path = "api/plan/history?limit=\(limit)"
+        if let beforeVersion { path += "&before_version=\(beforeVersion)" }
+        return try await get(path, jwt: jwt)
     }
 
-    func comparePlanVersion(_ version: Int, jwt: String) async throws
+    func comparePlanVersion(_ version: Int, toVersion: Int, jwt: String) async throws
         -> PlanComparisonResponse
     {
-        try await get("api/plan/history/\(version)/compare", jwt: jwt)
+        try await get("api/plan/history/\(version)/compare?to_version=\(toVersion)", jwt: jwt)
     }
 
     func restorePlanVersion(
@@ -778,8 +780,8 @@ extension APIClient: PlanEditingAPI {}
 /// seam so their conflict/reload behavior can be tested without networking.
 @MainActor
 protocol RoutineEditingAPI {
-    func getPlanHistory(jwt: String) async throws -> PlanHistoryResponse
-    func comparePlanVersion(_ version: Int, jwt: String) async throws
+    func getPlanHistory(limit: Int, beforeVersion: Int?, jwt: String) async throws -> PlanHistoryResponse
+    func comparePlanVersion(_ version: Int, toVersion: Int, jwt: String) async throws
         -> PlanComparisonResponse
     func restorePlanVersion(
         _ version: Int, expectedPlanID: String, expectedVersion: Int,

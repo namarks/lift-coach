@@ -4601,23 +4601,28 @@ final class SyncModel: ObservableObject {
 
     // MARK: manual routine + calendar authoring
 
-    func loadPlanHistory() async -> PlanHistoryResponse? {
+    func loadPlanHistory(limit: Int = 25, beforeVersion: Int? = nil) async -> PlanHistoryResponse? {
         guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return nil }
-        do { return try await routineEditingAPI.getPlanHistory(jwt: jwt) }
+        do { return try await routineEditingAPI.getPlanHistory(limit: limit, beforeVersion: beforeVersion, jwt: jwt) }
         catch { handle(error, jwt: jwt); return nil }
     }
 
-    func comparePlanVersion(_ version: Int) async -> PlanComparisonResponse? {
+    func comparePlanVersion(_ version: Int, toVersion: Int) async -> PlanComparisonResponse? {
         guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return nil }
-        do { return try await routineEditingAPI.comparePlanVersion(version, jwt: jwt) }
+        do { return try await routineEditingAPI.comparePlanVersion(version, toVersion: toVersion, jwt: jwt) }
         catch { handle(error, jwt: jwt); return nil }
     }
 
     /// Returns true once the server acknowledges the restore. A following
     /// state refresh may fail, but that never turns the acknowledged mutation
     /// into a retry invitation; the existing sync error remains visible.
-    func restorePlanVersion(_ snapshotVersion: Int, reason: String?) async -> Bool {
-        guard canInitiateBoundFeatureAction, let currentPlan = plan else { return false }
+    func restorePlanVersion(
+        _ snapshotVersion: Int,
+        expectedPlanID: String,
+        reviewedCurrentVersion: Int,
+        reason: String?
+    ) async -> Bool {
+        guard canInitiateBoundFeatureAction else { return false }
         while isRoutineMutationInFlight {
             await withCheckedContinuation { routineMutationWaiters.append($0) }
             guard canInitiateBoundFeatureAction else { return false }
@@ -4632,8 +4637,8 @@ final class SyncModel: ObservableObject {
         }
         do {
             _ = try await routineEditingAPI.restorePlanVersion(
-                snapshotVersion, expectedPlanID: currentPlan.id,
-                expectedVersion: currentPlan.version, reason: reason, jwt: jwt)
+                snapshotVersion, expectedPlanID: expectedPlanID,
+                expectedVersion: reviewedCurrentVersion, reason: reason, jwt: jwt)
             guard canInitiateBoundFeatureAction else {
                 auth.noteAccountStatePersisted(for: accountID)
                 return true
