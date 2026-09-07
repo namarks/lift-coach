@@ -8,7 +8,6 @@ import {
   getPlanSnapshot,
   getPlanTree,
   listPlanHistory,
-  preparePlanSnapshotInsert,
   restorePlanSnapshot,
   updatePlanTree,
 } from '../src/db';
@@ -29,10 +28,6 @@ async function fixture(label: string) {
     ] }],
   });
   if (!('plan' in built)) throw new Error('fixture_plan_failed');
-  await env.DB.batch([preparePlanSnapshotInsert(env.DB, {
-    userId, planId: built.plan.id, version: built.plan.version,
-    actor: 'mcp', operation: 'update_plan', reason: 'Initial plan', createdAt: Date.now(),
-  })]);
   return { userId, plan: built.plan };
 }
 
@@ -100,6 +95,6 @@ describe('plan snapshots', () => {
       schema_version: number; training: { plan_snapshots: unknown[] };
     };
     expect(exported.schema_version).toBe(2);
-    expect(exported.training.plan_snapshots).toHaveLength(1);
+    expect(exported.training.plan_snapshots).toHaveLength(2);
   });
 });

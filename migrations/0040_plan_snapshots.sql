@@ -1,3 +1,5 @@
+ALTER TABLE plans ADD COLUMN plan_write_nonce TEXT;
+
 CREATE TABLE plan_snapshots (
   id         TEXT PRIMARY KEY,
   user_id    TEXT NOT NULL REFERENCES users(id),
