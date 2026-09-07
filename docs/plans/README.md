@@ -92,11 +92,11 @@ Make every workout and plan mutation authorized, validated, durable, and
 recoverable before adding product depth.
 
 - [Reversible plan management](reversible-plan-management/plan.md) —
-  **planned**; make coach and manual plan changes inspectable and reversible.
-- [Coach access integrity](coach-access-integrity/plan.md) — **planned**;
+  **active**; make coach and manual plan changes inspectable and reversible.
+- [Coach access integrity](coach-access-integrity/plan.md) — **active**;
   make code redemption/refresh atomic and add scoped grant replay/revocation
   behavior with an explicit lifecycle transition.
-- [Prescription integrity](prescription-integrity/plan.md) — **planned**;
+- [Prescription integrity](prescription-integrity/plan.md) — **active**;
   reject invalid targets, preserve concurrent edits and make reductions honest
   before expanding plan authoring.
 

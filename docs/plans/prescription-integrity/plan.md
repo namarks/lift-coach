@@ -1,6 +1,6 @@
 # Prescription Integrity
 
-Slug: prescription-integrity · Status: planned · Updated: 2026-09-07 · Theme: training-trust
+Slug: prescription-integrity · Status: active · Updated: 2026-09-07 · Theme: training-trust
 
 ## Goal
 
@@ -71,9 +71,10 @@ Snapshots and undo complement these guarantees; they do not replace them.
 
 ## Next step
 
-**Now (@owner):** Activate P0 and the focused P1/P2 repairs ahead of new
-authoring complexity. This review updates the plan; it does not activate code
-delivery or authorize changes to stored production prescriptions.
+**Now (@agent):** Implement P0 validation, P1 atomic writers, and P2 honest
+reductions in that order, with focused Workers/D1 regression proof. Nick
+activated repository delivery through the Training Data Trust initiative on
+2026-09-07; changes to stored production prescriptions remain unauthorized.
 
 ## Notes / open questions
 

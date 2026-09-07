@@ -1,6 +1,6 @@
 # Reversible Plan Management
 
-Slug: reversible-plan-management · Status: planned · Updated: 2026-09-07 · Theme: training-trust
+Slug: reversible-plan-management · Status: active · Updated: 2026-09-07 · Theme: training-trust
 
 ## Goal
 
@@ -40,9 +40,11 @@ audit trail rather than rewriting them.
 
 ## Next step
 
-**Now (@owner):** Activate P0 after prescription-integrity P1 establishes the
-writer boundary snapshots require. Serializer design can be prepared alongside
-that work, but snapshot delivery must prove atomicity for every covered writer.
+**Now (@agent):** Prepare the serializer contract, then implement P0 after
+prescription-integrity P1 establishes the writer boundary snapshots require.
+Nick activated repository delivery through the Training Data Trust initiative
+on 2026-09-07. Snapshot delivery must prove atomicity for every covered writer;
+production migration and TestFlight release remain separate owner gates.
 
 ## Dependencies
 

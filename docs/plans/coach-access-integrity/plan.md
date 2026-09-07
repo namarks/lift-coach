@@ -1,6 +1,6 @@
 # Coach Access Integrity
 
-Slug: coach-access-integrity · Status: planned · Updated: 2026-09-07 · Theme: training-trust
+Slug: coach-access-integrity · Status: active · Updated: 2026-09-07 · Theme: training-trust
 
 ## Goal
 
@@ -56,8 +56,9 @@ boundary uncovered in the [September app review](../../reviews/2026-09-app-revie
 
 ## Next step
 
-**Now (@owner):** Activate P0 as a focused security repair. P0's local
-implementation and concurrency tests need no production credentials; P1(a)
+**Now (@agent):** Implement and verify P0's atomic, validated grant exchange.
+Nick activated the Training Data Trust initiative on 2026-09-07 with an Astra
+orchestrator and Sol workers. Repository implementation is authorized; P1(a)
 retains the lifecycle and production transition decision.
 
 ## Notes / open questions
