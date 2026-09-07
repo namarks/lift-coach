@@ -468,6 +468,10 @@ describe('syncExternalEvents — reconciled cache, the failed-fetch guard', () =
       today: TODAY,
       fetcher: payload([ev({ id: 'a' })]),
     } as any);
+    // Explicitly disconnect after the seeded poll. Owner env credentials are
+    // now durably versioned before the first provider request, so merely
+    // omitting the env key on a later call must not erase that stored identity.
+    await setUserIntervalsCreds(env.DB, userId, null, null);
     const r = await syncExternalEvents(
       env.DB,
       { ...env, INTERVALS_ICU_API_KEY: undefined } as unknown as Env,
@@ -1406,6 +1410,7 @@ describe('syncExternalActivities — reconciled cache + failed-fetch guard', () 
       today: TODAY,
       fetcher: payload([act({ id: 'a1' })]),
     } as any);
+    await setUserIntervalsCreds(env.DB, userId, null, null);
     const r = await syncExternalActivities(
       env.DB,
       { ...env, INTERVALS_ICU_API_KEY: undefined } as unknown as Env,

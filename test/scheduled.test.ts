@@ -76,21 +76,25 @@ describe('scheduled() cron entrypoint', () => {
     expect(before.length).toBeGreaterThan(0);
 
     // Now the cron fires while intervals.icu 500s — must not throw, cache kept.
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => new Response('boom', { status: 500 })),
-    );
+    const failingFetch = vi.fn(async () => new Response('boom', { status: 500 }));
+    vi.stubGlobal('fetch', failingFetch);
     ctx = createExecutionContext();
     await expect(
       (async () => {
         await worker.scheduled!(
-          createScheduledController({ scheduledTime: new Date(), cron: '0 */6 * * *' }),
+          // Advance beyond P4's two-hour freshness window so this exercises
+          // the failed-fetch path instead of correctly skipping fresh caches.
+          createScheduledController({
+            scheduledTime: new Date(Date.now() + 3 * 60 * 60 * 1000),
+            cron: '0 * * * *',
+          }),
           env,
           ctx,
         );
         await waitOnExecutionContext(ctx);
       })(),
     ).resolves.toBeUndefined();
+    expect(failingFetch).toHaveBeenCalledTimes(2);
     const after = await getUpcomingRides(env.DB, owner.id, { from: '2026-05-18' });
     expect(after.map((r) => r.id).sort()).toEqual(before.map((r) => r.id).sort());
   });

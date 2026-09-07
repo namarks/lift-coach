@@ -303,6 +303,17 @@ Done means:
     SQLite file and asserts the query plan for each hot query names the
     expected index, so an index regression fails CI instead of showing up as
     latency months later.
+  - Repository-only evidence on 2026-09-06: PR #132 exact head
+    `9845b6b3ccb292343537a77c761970c5fb29316a` (reviewed tree
+    `4b37135074a12459bc85695dab2207ee7ff057b4`) passed required CI and a local
+    independent exact-head review. GitHub Codex review refused to run because
+    the account had reached its usage limit; it is not represented as a
+    completed GitHub review. Squash merge
+    `db344e1c87d1b373530414b1fde1450b27258a67` has the identical tree, and
+    post-merge main CI run `34076609334` passed. This establishes repository
+    delivery only: migration `0036` has not been applied remotely, the merged
+    Worker has not been deployed, and no natural production tick has supplied
+    P3 evidence. P3 therefore remains unchecked and production-gated.
 - [ ] **P4 — A cron that finishes its route**
   - Per-member isolation: a fetch failure already returns a value and the
     loop continues; the gap is an unexpected exception (for example a D1
@@ -324,6 +335,40 @@ Done means:
     webhook is skipped while the other cache still polls, and a 429 with
     `Retry-After` skips the member's second cache without touching either; the P0 cron log shows external calls per tick bounded by the
     number of stale members, not the number of connected members.
+  - The original reviewed P4 source
+    `32868e38e292266b44dd9c79413a2280a28d45c8` (tree
+    `7195a569def0bb5d27e45cd7700581e2cd2e9cf3`) received an independent PASS
+    after 154 focused tests, 626 full Vitest tests plus 5 uploader tests,
+    TypeScript, query-plan, Wrangler dry-run, planning-compiler, production
+    dependency-audit, and diff-hygiene checks passed. The combined P3/P4
+    validation then passed 142 focused tests and 629 full Vitest tests plus 5
+    uploader tests.
+  - Its stable patch id is
+    `2d28888fd5430059ce77633c9236e956d353b3fb`. The exact patch was replayed
+    without semantic conflict onto merged main
+    `db344e1c87d1b373530414b1fde1450b27258a67` as
+    `b2fe8834fbda83463af5e824acf5b229c5c3b4ca` (tree
+    `3e56a68377240e63c269edfac9ea40557c143f40`), preserving migration order
+    `0036` then `0037`. The rebased tree passed all 142 focused tests, all 629
+    full Vitest tests plus 5 uploader tests, TypeScript, 5 query-plan
+    assertions, Wrangler v4 dry-run, the planning compiler, the offline
+    production dependency audit, and diff hygiene.
+  - This coherent branch and its future pull request remain the repository
+    delivery boundary until merge. Production is a separate owner-authorized
+    boundary: migration `0037`, a Worker deploy, and natural-tick evidence are
+    absent, so P4 remains unchecked and production-gated.
+- [ ] **P4.5 — Order overlapping same-generation cache syncs**
+  - Add an independent monotonic attempt fence per user and per cache. Claim
+    the attempt before provider I/O, then require the winning attempt at every
+    reconcile, tombstone, dedup, and freshness write so a delayed older
+    same-generation response cannot overwrite a newer completed sync.
+  - Add deterministic delayed-old/newer-first interleaving tests for both
+    events and activities, while retaining every credential-generation
+    replacement, disconnect, authentication-error, and stale-response
+    regression.
+  - This is a real pre-existing concurrency follow-up. It does not show that
+    P4's credential-generation fencing failed, and it is not a blocker to
+    publishing P4's coherent repository slice.
 - [ ] **P5 — Retention decision for the two unbounded tables**
   - Using P0 numbers, the owner decides retention for `audit_log` (for
     example keep `args` for twelve months, keep the row forever) and for the
@@ -343,6 +388,7 @@ Done means:
 
 - P3
 - P4
+- P4.5
 
 ## Dependencies
 
@@ -351,16 +397,15 @@ Done means:
 | P0.5 | coordinates_with | plan:activity-integration-integrity#P2 | Both exercise activity correction/deletion convergence and the existing intervals-to-HealthKit dedup regression boundary; preserve its semantics and do not edit the same reconcile path concurrently. |
 | P1 | coordinates_with | plan:activity-integration-integrity#P2 | Both change how tombstones ride `/api/state`; land the cursor rule once and share it. |
 | P2 | coordinates_with | plan:activity-integration-integrity#P2 | Both edit the intervals reconcile upsert; do not run concurrently. |
+| P3 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0036`, a Worker deploy, or natural-tick production evidence. |
+| P4 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0037`, a Worker deploy, or natural-tick production evidence. |
 | P5 | gated_by | external:owner-retention-decision | Deleting or trimming audit and source data is an owner data-retention decision, not an inferred cleanup. |
 
 ## Next step
 
-**Now (@agent):** Implement and independently verify P3 and P4 as separate,
-coordinated slices. Preserve the measured index-cost boundary, avoid conflicting
-migration numbering or shared-test edits, and retain P5's explicit owner
-retention gate. Do not fabricate provider rows, manually trigger production
-cron, change the plan tier, or infer the P5 retention decision from scheduler
-order.
+**Now (@agent):** Implement and independently verify P4.5. Keep P3 and P4
+production preparation read-only. Do not apply remote migrations, deploy a
+Worker, manually trigger production cron, or infer the P5 retention decision.
 
 ## Notes / open questions
 

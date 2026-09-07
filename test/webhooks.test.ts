@@ -1,5 +1,5 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 const BASE = 'https://tres-fort.test';
 // Matches INTERVALS_WEBHOOK_SECRET injected by vitest.config.ts.
@@ -7,6 +7,10 @@ const SECRET = 'test-webhook-secret';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 async function devJwt(): Promise<string> {
@@ -78,6 +82,58 @@ describe('POST /webhooks/intervals — intervals.icu push receiver', () => {
     expect(r.status).toBe(200);
     expect(r.status).not.toBe(204);
     expect(await r.json()).toEqual({ ok: true });
+  });
+
+  it('a successful CALENDAR_UPDATED stamps both cache freshness fields', async () => {
+    const athleteId = await connectAthlete('wh-athlete-freshness');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+
+    const r = await post({
+      secret: SECRET,
+      events: [{ athlete_id: athleteId, type: 'CALENDAR_UPDATED' }],
+    });
+    expect(r.status).toBe(200);
+
+    await vi.waitFor(async () => {
+      const row = await env.DB.prepare(
+        `SELECT intervals_events_synced_at AS events,
+                intervals_activities_synced_at AS activities
+           FROM users WHERE intervals_athlete_id = ?1`,
+      )
+        .bind(athleteId)
+        .first<{ events: number | null; activities: number | null }>();
+      expect(row?.events).toEqual(expect.any(Number));
+      expect(row?.activities).toEqual(expect.any(Number));
+    });
+  });
+
+  it('an ACTIVITY_UPDATED success stamps only the activities cache', async () => {
+    const athleteId = await connectAthlete('wh-athlete-activity-freshness');
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response(JSON.stringify([]), { status: 200 })),
+    );
+
+    const r = await post({
+      secret: SECRET,
+      events: [{ athlete_id: athleteId, type: 'ACTIVITY_UPDATED' }],
+    });
+    expect(r.status).toBe(200);
+
+    await vi.waitFor(async () => {
+      const row = await env.DB.prepare(
+        `SELECT intervals_events_synced_at AS events,
+                intervals_activities_synced_at AS activities
+           FROM users WHERE intervals_athlete_id = ?1`,
+      )
+        .bind(athleteId)
+        .first<{ events: number | null; activities: number | null }>();
+      expect(row?.events).toBeNull();
+      expect(row?.activities).toEqual(expect.any(Number));
+    });
   });
 
   it('ACTIVITY_* events for a known athlete are accepted with 200', async () => {

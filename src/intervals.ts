@@ -22,7 +22,12 @@ export type Fetcher = (
     body?: string;
     signal?: AbortSignal;
   },
-) => Promise<{ ok: boolean; status: number; json: () => Promise<unknown> }>;
+) => Promise<{
+  ok: boolean;
+  status: number;
+  json: () => Promise<unknown>;
+  headers?: { get: (name: string) => string | null };
+}>;
 
 export interface FetchDeps {
   /** Defaults to global fetch. Stubbed in tests so the suite is offline. */
@@ -44,9 +49,29 @@ export interface FetchDeps {
 
 export type FetchResult =
   | { ok: true; events: PlannedEvent[] }
-  | { ok: false; reason: 'disabled' | 'http' | 'timeout' | 'parse'; status?: number };
+  | {
+      ok: false;
+      reason: 'disabled' | 'http' | 'timeout' | 'parse';
+      status?: number;
+      retryAfterMs?: number;
+    };
 
 const DAY_MS = 86_400_000;
+
+/** Parse the HTTP Retry-After delay-seconds or HTTP-date forms. */
+function retryAfterMs(
+  headers: { get: (name: string) => string | null } | undefined,
+): number | undefined {
+  const value = headers?.get('Retry-After')?.trim();
+  if (!value) return undefined;
+  if (/^\d+$/.test(value)) {
+    const milliseconds = Number(value) * 1000;
+    return Number.isFinite(milliseconds) ? milliseconds : undefined;
+  }
+  const at = Date.parse(value);
+  if (!Number.isFinite(at)) return undefined;
+  return Math.max(0, at - Date.now());
+}
 
 function todayLocal(): string {
   return new Date().toISOString().slice(0, 10);
@@ -188,7 +213,12 @@ export async function fetchPlannedEvents(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
-  let res: { ok: boolean; status: number; json: () => Promise<unknown> };
+  let res: {
+    ok: boolean;
+    status: number;
+    json: () => Promise<unknown>;
+    headers?: { get: (name: string) => string | null };
+  };
   try {
     res = await fetcher(url, {
       method: 'GET',
@@ -203,7 +233,15 @@ export async function fetchPlannedEvents(
     clearTimeout(timer);
   }
 
-  if (!res.ok) return { ok: false, reason: 'http', status: res.status };
+  if (!res.ok) {
+    const retryAfter = res.status === 429 ? retryAfterMs(res.headers) : undefined;
+    return {
+      ok: false,
+      reason: 'http',
+      status: res.status,
+      ...(retryAfter !== undefined ? { retryAfterMs: retryAfter } : {}),
+    };
+  }
 
   let body: unknown;
   try {
@@ -282,7 +320,12 @@ export interface ActivityFetchDeps {
 
 export type ActivityFetchResult =
   | { ok: true; activities: CompletedActivity[] }
-  | { ok: false; reason: 'disabled' | 'http' | 'timeout' | 'parse'; status?: number };
+  | {
+      ok: false;
+      reason: 'disabled' | 'http' | 'timeout' | 'parse';
+      status?: number;
+      retryAfterMs?: number;
+    };
 
 /**
  * GET intervals.icu completed activities in [today-pastDays, today]. Returns
@@ -312,7 +355,12 @@ export async function fetchCompletedActivities(
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), deps.timeoutMs ?? 10_000);
-  let res: { ok: boolean; status: number; json: () => Promise<unknown> };
+  let res: {
+    ok: boolean;
+    status: number;
+    json: () => Promise<unknown>;
+    headers?: { get: (name: string) => string | null };
+  };
   try {
     res = await fetcher(url, {
       method: 'GET',
@@ -325,7 +373,15 @@ export async function fetchCompletedActivities(
     clearTimeout(timer);
   }
 
-  if (!res.ok) return { ok: false, reason: 'http', status: res.status };
+  if (!res.ok) {
+    const retryAfter = res.status === 429 ? retryAfterMs(res.headers) : undefined;
+    return {
+      ok: false,
+      reason: 'http',
+      status: res.status,
+      ...(retryAfter !== undefined ? { retryAfterMs: retryAfter } : {}),
+    };
+  }
 
   let body: unknown;
   try {

@@ -8,8 +8,11 @@ import { inviteLinkRoutes } from './routes/invites';
 import { webhookRoutes } from './routes/webhooks';
 import { mcpRoutes } from './mcp';
 import { oauthRoutes } from './oauth';
+import type { Fetcher } from './intervals';
 import {
+  ensureOwnerUser,
   observeD1Usage,
+  seedOwnerIntervalsCredsFromEnv,
   syncExternalActivities,
   syncExternalEvents,
 } from './db';
@@ -60,20 +63,144 @@ async function fetch(
   );
 }
 
+const CRON_FRESHNESS_MS = 2 * 60 * 60 * 1000;
+const CRON_MEMBER_CONCURRENCY = 4;
+
+export interface IntervalsCronResult {
+  failed: boolean;
+  connected_members: number;
+  events_polled: number;
+  activities_polled: number;
+  provider_calls: number;
+  rate_limited_members: number;
+}
+
+function cronCacheIsStale(stamp: number | null, scheduledTime: number): boolean {
+  return stamp === null || stamp < scheduledTime - CRON_FRESHNESS_MS;
+}
+
 /**
- * Cron entrypoint (wrangler triggers.crons). SAFETY NET for intervals.icu
- * sync — real-time reconciliation is push-based (POST /webhooks/intervals);
- * this cron backstops any webhook a user's account didn't deliver. Two
- * independent best-effort jobs, each isolated so one's failure cannot affect
- * the other:
- *  1. reconcile the intervals.icu planned-event cache (ride awareness);
- *  2. reconcile the intervals.icu completed-activity cache (workouts done).
- * Both are dormant no-ops when INTERVALS_ICU_API_KEY is unset and NEVER
- * bump plans.version. The cache syncs are the audited-elsewhere manual path
- * (refresh_rides).
+ * Webhook-primary intervals.icu backstop. Members run concurrently in a
+ * bounded worker pool, while each member's two caches remain sequenced so a
+ * Retry-After-bearing 429 can suppress that member's second provider call.
+ * Every promise created here is awaited by Promise.all; scheduled() places
+ * the single aggregate promise under its existing waitUntil lifetime.
  */
+export async function runIntervalsCron(
+  db: D1Database,
+  env: Env,
+  scheduledTime: number,
+  deps: { fetcher?: Fetcher } = {},
+): Promise<IntervalsCronResult> {
+  await ensureOwnerUser(db, env.OWNER_APPLE_SUB);
+  const members = await seedOwnerIntervalsCredsFromEnv(
+    db,
+    env.INTERVALS_ICU_API_KEY,
+    env.INTERVALS_ICU_ATHLETE_ID,
+    env.OWNER_APPLE_SUB,
+  );
+  const result: IntervalsCronResult = {
+    failed: false,
+    connected_members: members.length,
+    events_polled: 0,
+    activities_polled: 0,
+    provider_calls: 0,
+    rate_limited_members: 0,
+  };
+  const fetcher: Fetcher =
+    deps.fetcher ?? ((input, init) => globalThis.fetch(input, init));
+  const countedFetcher: Fetcher = async (input, init) => {
+    result.provider_calls += 1;
+    return fetcher(input, init);
+  };
+  let nextMember = 0;
+
+  const runMember = async (): Promise<void> => {
+    while (true) {
+      const index = nextMember++;
+      const member = members[index];
+      if (!member) return;
+
+      let suppressRemainingCaches = false;
+      if (cronCacheIsStale(member.events_synced_at, scheduledTime)) {
+        result.events_polled += 1;
+        try {
+          const events = await syncExternalEvents(db, env, {
+            userId: member.user_id,
+            fetcher: countedFetcher,
+          });
+          result.failed ||= events.status === 'fetch_failed';
+          if (events.retryAfterMs !== undefined) {
+            suppressRemainingCaches = true;
+            result.rate_limited_members += 1;
+            console.warn({
+              event: 'intervals_cron_rate_limited',
+              cache: 'events',
+              retry_after_ms: events.retryAfterMs,
+            });
+          }
+        } catch (error) {
+          result.failed = true;
+          console.error({
+            event: 'intervals_cron_member_sync_failed',
+            cache: 'events',
+            error_type: error instanceof Error ? error.name : 'unknown',
+          });
+        }
+      }
+
+      if (
+        !suppressRemainingCaches &&
+        cronCacheIsStale(member.activities_synced_at, scheduledTime)
+      ) {
+        result.activities_polled += 1;
+        try {
+          const activities = await syncExternalActivities(db, env, {
+            userId: member.user_id,
+            fetcher: countedFetcher,
+          });
+          result.failed ||= activities.status === 'fetch_failed';
+          if (activities.retryAfterMs !== undefined) {
+            result.rate_limited_members += 1;
+            console.warn({
+              event: 'intervals_cron_rate_limited',
+              cache: 'activities',
+              retry_after_ms: activities.retryAfterMs,
+            });
+          }
+        } catch (error) {
+          result.failed = true;
+          console.error({
+            event: 'intervals_cron_member_sync_failed',
+            cache: 'activities',
+            error_type: error instanceof Error ? error.name : 'unknown',
+          });
+        }
+      }
+    }
+  };
+
+  await Promise.all(
+    Array.from(
+      { length: Math.min(CRON_MEMBER_CONCURRENCY, members.length) },
+      () => runMember(),
+    ),
+  );
+  console.log({
+    event: 'intervals_cron_sync',
+    outcome: result.failed ? 'error' : 'ok',
+    connected_members: result.connected_members,
+    events_polled: result.events_polled,
+    activities_polled: result.activities_polled,
+    provider_calls: result.provider_calls,
+    rate_limited_members: result.rate_limited_members,
+  });
+  return result;
+}
+
+/** Cron entrypoint (wrangler triggers.crons); see runIntervalsCron. */
 async function scheduled(
-  _event: ScheduledController,
+  event: ScheduledController,
   env: Env,
   ctx: ExecutionContext,
 ): Promise<void> {
@@ -81,28 +208,8 @@ async function scheduled(
     observeD1Usage(
       env.DB,
       'cron tick',
-      async (db) => {
-        let failed = false;
-        try {
-          const result = await syncExternalEvents(db, env);
-          failed ||= result.status === 'fetch_failed';
-        } catch (e) {
-          failed = true;
-          // A sync failure must never crash the scheduled handler — the
-          // failed-fetch guard already left the cache untouched.
-          console.error('scheduled syncExternalEvents failed', e);
-        }
-        try {
-          const result = await syncExternalActivities(db, env);
-          failed ||= result.status === 'fetch_failed';
-        } catch (e) {
-          failed = true;
-          // Same isolation as the planned-event sync above.
-          console.error('scheduled syncExternalActivities failed', e);
-        }
-        return failed;
-      },
-      (failed) => (failed ? 'error' : 'ok'),
+      (db) => runIntervalsCron(db, env, event.scheduledTime),
+      (result) => (result.failed ? 'error' : 'ok'),
     ),
   );
 }
