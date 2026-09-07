@@ -235,8 +235,7 @@ struct PlanHistoryResponse: Codable, Equatable {
     let next_before_version: Int?
 }
 
-struct PlanVersionChange: Codable, Identifiable, Equatable {
-    var id: String { "\(kind):\(path)" }
+struct PlanVersionChange: Codable, Equatable {
     let kind: String
     let path: String
     let before: JSONValue?

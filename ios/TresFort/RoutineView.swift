@@ -378,6 +378,11 @@ struct RoutineView: View {
 }
 
 enum PlanHistoryPresentation {
+    static func indexedChanges(_ changes: [PlanVersionChange])
+        -> [(offset: Int, change: PlanVersionChange)] {
+        changes.enumerated().map { (offset: $0.offset, change: $0.element) }
+    }
+
     static func fieldName(for change: PlanVersionChange) -> String {
         if change.path.contains(" · ") { return change.path }
         let field = change.path.split(separator: ".").last.map(String.init) ?? change.kind
@@ -471,7 +476,8 @@ private struct PlanHistoryView: View {
                 if comparison.changes.isEmpty {
                     Text("This version matches the current routine.")
                 } else {
-                    ForEach(comparison.changes) { change in
+                    ForEach(PlanHistoryPresentation.indexedChanges(comparison.changes), id: \.offset) { entry in
+                        let change = entry.change
                         VStack(alignment: .leading, spacing: 3) {
                             Text(PlanHistoryPresentation.fieldName(for: change)).font(Theme.mono(12, .bold))
                             Text("\(PlanHistoryPresentation.value(change.before)) → \(PlanHistoryPresentation.value(change.after))")

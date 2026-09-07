@@ -3916,6 +3916,15 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(JSONValue.number(9_007_199_254_740_991).displayText, "9007199254740991")
     }
 
+    func testPlanHistoryKeepsDuplicateExercisePathsAsDistinctRows() {
+        let duplicate = PlanVersionChange(
+            kind: "exercise", path: "Strength · Bench Press",
+            before: .number(100), after: .number(105))
+        let rows = PlanHistoryPresentation.indexedChanges([duplicate, duplicate])
+        XCTAssertEqual(rows.map(\.offset), [0, 1])
+        XCTAssertEqual(rows.map(\.change), [duplicate, duplicate])
+    }
+
     func testFirstManualDayPinsTheExactEnsuredPlanIdentityAndVersion() async {
         let defaults = defaults()
         let ex = exercise()
