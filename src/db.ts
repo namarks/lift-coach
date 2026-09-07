@@ -530,6 +530,7 @@ export async function upsertUser(
     timezone: null,
     intervals_api_key: null,
     intervals_athlete_id: null,
+    intervals_cutover_athlete_id: null,
     intervals_oauth_access_token: null,
     intervals_oauth_refresh_token: null,
     intervals_oauth_expires_at: null,
@@ -539,6 +540,7 @@ export async function upsertUser(
     intervals_activities_synced_at: null,
     intervals_events_sync_attempt: 0,
     intervals_activities_sync_attempt: 0,
+    intervals_protocol_write_seq: 0,
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
@@ -613,6 +615,7 @@ async function insertOwnerUnlessTombstoned(
     timezone: null,
     intervals_api_key: null,
     intervals_athlete_id: null,
+    intervals_cutover_athlete_id: null,
     intervals_oauth_access_token: null,
     intervals_oauth_refresh_token: null,
     intervals_oauth_expires_at: null,
@@ -622,6 +625,7 @@ async function insertOwnerUnlessTombstoned(
     intervals_activities_synced_at: null,
     intervals_events_sync_attempt: 0,
     intervals_activities_sync_attempt: 0,
+    intervals_protocol_write_seq: 0,
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
@@ -1386,6 +1390,90 @@ export async function setUserTimezoneIfChanged(
 // ---- intervals.icu credentials (per-user; M1 multi-user foundation) ------
 
 /**
+ * P4.6 dual-mode SQL. Migration 0039 keeps the shadow column NULL until its
+ * monotonic fence is activated, then atomically moves every durable athlete id
+ * into it and clears the legacy column. COALESCE is therefore unambiguous on
+ * both sides of the cutover.
+ */
+const INTERVALS_EFFECTIVE_ATHLETE_SQL =
+  'COALESCE(intervals_cutover_athlete_id, intervals_athlete_id)';
+const INTERVALS_SOURCE_FENCE_ENABLED_SQL =
+  'COALESCE((SELECT enabled FROM intervals_source_fence WHERE singleton = 1), 0)';
+
+export interface IntervalsSourceFenceState {
+  enabled: boolean;
+  activated_at: number | null;
+  activated_user_count: number | null;
+  activated_connected_count: number | null;
+}
+
+/**
+ * Activate the source-bound cutover with one SQLite statement. The database
+ * trigger owns the all-user move, validation, and rollback semantics; callers
+ * never read or rewrite credential values. This helper is intentionally not
+ * mounted on an HTTP route.
+ */
+export async function activateIntervalsSourceFence(
+  db: D1Database,
+  activatedAt: number,
+): Promise<IntervalsSourceFenceState> {
+  if (!Number.isSafeInteger(activatedAt) || activatedAt < 0) {
+    throw new Error('intervals_source_fence_invalid_activation_time');
+  }
+  const activated = await db
+    .prepare(
+      `UPDATE intervals_source_fence
+          SET enabled = 1,
+              activated_at = ?1,
+              activated_user_count = (SELECT COUNT(*) FROM users),
+              activated_connected_count = (
+                SELECT COUNT(*) FROM users
+                 WHERE intervals_athlete_id IS NOT NULL
+                   AND (intervals_api_key IS NOT NULL
+                        OR intervals_oauth_access_token IS NOT NULL)
+              )
+        WHERE singleton = 1 AND enabled = 0
+      RETURNING enabled, activated_at,
+                activated_user_count, activated_connected_count`,
+    )
+    .bind(activatedAt)
+    .first<{
+      enabled: number;
+      activated_at: number;
+      activated_user_count: number;
+      activated_connected_count: number;
+    }>();
+  if (activated) {
+    return {
+      enabled: activated.enabled === 1,
+      activated_at: activated.activated_at,
+      activated_user_count: activated.activated_user_count,
+      activated_connected_count: activated.activated_connected_count,
+    };
+  }
+
+  const current = await db
+    .prepare(
+      `SELECT enabled, activated_at,
+              activated_user_count, activated_connected_count
+         FROM intervals_source_fence WHERE singleton = 1`,
+    )
+    .first<{
+      enabled: number;
+      activated_at: number | null;
+      activated_user_count: number | null;
+      activated_connected_count: number | null;
+    }>();
+  if (!current) throw new Error('intervals_source_fence_missing');
+  return {
+    enabled: current.enabled === 1,
+    activated_at: current.activated_at,
+    activated_user_count: current.activated_user_count,
+    activated_connected_count: current.activated_connected_count,
+  };
+}
+
+/**
  * A user paired with their intervals.icu credentials. `athlete_id` is always
  * present; auth is EITHER `api_key` (HTTP Basic) OR `access_token` (OAuth
  * Bearer) — for a connected user exactly one is non-null (intervals.ts
@@ -1417,11 +1505,11 @@ export async function listUsersWithIntervalsCreds(
     .prepare(
       `SELECT id, intervals_api_key, intervals_oauth_access_token,
               intervals_oauth_refresh_token, intervals_oauth_expires_at,
-              intervals_athlete_id,
+              ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_effective_athlete_id,
               intervals_credential_generation,
               intervals_events_synced_at, intervals_activities_synced_at
          FROM users
-        WHERE intervals_athlete_id IS NOT NULL
+        WHERE ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS NOT NULL
           AND (intervals_api_key IS NOT NULL
                OR intervals_oauth_access_token IS NOT NULL)`,
     )
@@ -1431,7 +1519,7 @@ export async function listUsersWithIntervalsCreds(
       intervals_oauth_access_token: string | null;
       intervals_oauth_refresh_token: string | null;
       intervals_oauth_expires_at: number | null;
-      intervals_athlete_id: string;
+      intervals_effective_athlete_id: string;
       intervals_credential_generation: number;
       intervals_events_synced_at: number | null;
       intervals_activities_synced_at: number | null;
@@ -1442,7 +1530,7 @@ export async function listUsersWithIntervalsCreds(
     access_token: row.intervals_oauth_access_token,
     refresh_token: row.intervals_oauth_refresh_token,
     expires_at: row.intervals_oauth_expires_at,
-    athlete_id: row.intervals_athlete_id,
+    athlete_id: row.intervals_effective_athlete_id,
     credential_generation: row.intervals_credential_generation,
     events_synced_at: row.intervals_events_synced_at,
     activities_synced_at: row.intervals_activities_synced_at,
@@ -1468,7 +1556,7 @@ export async function getUserIntervalsCreds(
               intervals_oauth_access_token AS access_token,
               intervals_oauth_refresh_token AS refresh_token,
               intervals_oauth_expires_at AS expires_at,
-              intervals_athlete_id AS athlete_id,
+              ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS athlete_id,
               intervals_auth_error_at AS auth_error_at,
               intervals_credential_generation AS credential_generation
          FROM users WHERE id = ?1`,
@@ -1497,17 +1585,16 @@ export async function getUserIntervalsCreds(
 /**
  * Resolve the user row owning a given intervals.icu `athlete_id`. Used by the
  * webhook receiver (`POST /webhooks/intervals`) to route a pushed event to the
- * right user before kicking the relevant sync. `intervals_athlete_id` is the
- * canonical "intervals connected" column shared by both auth schemes (API key
- * and OAuth), so a single lookup covers both. Returns null when no user has
- * connected that athlete (an unknown/disconnected athlete → graceful no-op).
+ * right user before kicking the relevant sync. The expression index installed
+ * by migration 0039 covers the effective identity before and after cutover.
+ * Returns null when no user has connected that athlete.
  */
 export async function getUserByIntervalsAthleteId(
   db: D1Database,
   athleteId: string,
 ): Promise<User | null> {
   return await db
-    .prepare('SELECT * FROM users WHERE intervals_athlete_id = ?1')
+    .prepare(`SELECT * FROM users WHERE ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?1`)
     .bind(athleteId)
     .first<User>();
 }
@@ -1549,6 +1636,11 @@ export async function userHasTouchedIntervalsCreds(
  * intervals creds (set OR clear), the seed is permanently a no-op for them.
  * Otherwise, after the user disconnects via the UI, the next sync would
  * silently re-seed from env and resume polling — defeating the disconnect.
+ * Generation zero remains mandatory even after the P4.6 cutover. Activation
+ * bumps every generation, permanently closing this fallback; a release must
+ * seed any legitimate env-only owner before activation. This also prevents an
+ * old Worker's disconnect-row commit from racing ahead of its separate audit
+ * insert and being resurrected by a new Worker.
  */
 export async function seedOwnerIntervalsCredsFromEnv(
   db: D1Database,
@@ -1568,7 +1660,9 @@ export async function seedOwnerIntervalsCredsFromEnv(
   // Already seeded (or set via PATCH / connected via OAuth): no-op. Checks
   // BOTH auth schemes so an OAuth-connected owner (api_key NULL, token set)
   // is recognised as already-connected and never env-seeded.
-  if ((owner.intervals_api_key || owner.intervals_oauth_access_token) && owner.intervals_athlete_id) {
+  const ownerAthleteId =
+    owner.intervals_cutover_athlete_id ?? owner.intervals_athlete_id;
+  if ((owner.intervals_api_key || owner.intervals_oauth_access_token) && ownerAthleteId) {
     return listUsersWithIntervalsCreds(db);
   }
   // Owner has explicitly PATCHed their creds (set then cleared, possibly):
@@ -1589,18 +1683,23 @@ export async function seedOwnerIntervalsCredsFromEnv(
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
-              intervals_athlete_id = ?3,
+              intervals_athlete_id = CASE
+                WHEN ${INTERVALS_SOURCE_FENCE_ENABLED_SQL} = 1 THEN NULL ELSE ?3 END,
+              intervals_cutover_athlete_id = CASE
+                WHEN ${INTERVALS_SOURCE_FENCE_ENABLED_SQL} = 1 THEN ?3 ELSE NULL END,
               intervals_oauth_refresh_token = NULL,
               intervals_oauth_expires_at = NULL,
               intervals_credential_generation = intervals_credential_generation + 1,
               intervals_events_synced_at = NULL,
               intervals_activities_synced_at = NULL,
               intervals_events_sync_attempt = 0,
-              intervals_activities_sync_attempt = 0
+              intervals_activities_sync_attempt = 0,
+              intervals_protocol_write_seq = intervals_protocol_write_seq
+                + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
         WHERE id = ?1
           AND intervals_api_key IS NULL
           AND intervals_oauth_access_token IS NULL
-          AND intervals_athlete_id IS NULL
+          AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS NULL
           AND intervals_auth_error_at IS NULL
           AND intervals_credential_generation = 0
           AND NOT EXISTS (
@@ -1635,7 +1734,10 @@ export async function setUserIntervalsCreds(
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
-              intervals_athlete_id = ?3,
+              intervals_athlete_id = CASE
+                WHEN ${INTERVALS_SOURCE_FENCE_ENABLED_SQL} = 1 THEN NULL ELSE ?3 END,
+              intervals_cutover_athlete_id = CASE
+                WHEN ${INTERVALS_SOURCE_FENCE_ENABLED_SQL} = 1 THEN ?3 ELSE NULL END,
               intervals_oauth_access_token = NULL,
               intervals_oauth_refresh_token = NULL,
               intervals_oauth_expires_at = NULL,
@@ -1643,34 +1745,36 @@ export async function setUserIntervalsCreds(
               intervals_credential_generation = CASE
                 WHEN ?4 = 1
                  AND intervals_api_key IS ?2
-                 AND intervals_athlete_id IS ?3
+                 AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?3
                  AND intervals_oauth_access_token IS NULL
                 THEN intervals_credential_generation
                 ELSE intervals_credential_generation + 1 END,
               intervals_events_synced_at = CASE
                 WHEN ?4 = 1
                  AND intervals_api_key IS ?2
-                 AND intervals_athlete_id IS ?3
+                 AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?3
                  AND intervals_oauth_access_token IS NULL
                 THEN intervals_events_synced_at ELSE NULL END,
               intervals_activities_synced_at = CASE
                 WHEN ?4 = 1
                  AND intervals_api_key IS ?2
-                 AND intervals_athlete_id IS ?3
+                 AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?3
                  AND intervals_oauth_access_token IS NULL
                 THEN intervals_activities_synced_at ELSE NULL END,
               intervals_events_sync_attempt = CASE
                 WHEN ?4 = 1
                  AND intervals_api_key IS ?2
-                 AND intervals_athlete_id IS ?3
+                 AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?3
                  AND intervals_oauth_access_token IS NULL
                 THEN intervals_events_sync_attempt ELSE 0 END,
               intervals_activities_sync_attempt = CASE
                 WHEN ?4 = 1
                  AND intervals_api_key IS ?2
-                 AND intervals_athlete_id IS ?3
+                 AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?3
                  AND intervals_oauth_access_token IS NULL
-                THEN intervals_activities_sync_attempt ELSE 0 END
+                THEN intervals_activities_sync_attempt ELSE 0 END,
+              intervals_protocol_write_seq = intervals_protocol_write_seq
+                + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
         WHERE id = ?1`,
     )
     .bind(userId, connect ? apiKey : null, connect ? athleteId : null, connect ? 1 : 0)
@@ -1681,8 +1785,9 @@ export async function setUserIntervalsCreds(
 /**
  * Store a user's intervals.icu OAuth credentials — the /auth/intervals/callback
  * success path. Sets the bearer token + the `athlete.id` the token exchange
- * returned (into the shared `intervals_athlete_id` column) and CLEARS any
- * prior API key (the two schemes are mutually exclusive; Bearer wins).
+ * returned (into the effective legacy-or-shadow athlete column selected in
+ * the same statement) and CLEARS any prior API key (the two schemes are
+ * mutually exclusive; Bearer wins).
  * `refreshToken` / `expiresAt` are stored when present — the documented
  * intervals.icu token response carries neither (long-lived tokens), so both
  * are typically null.
@@ -1701,35 +1806,40 @@ async function writeUserIntervalsOAuth(
           SET intervals_oauth_access_token = ?2,
               intervals_oauth_refresh_token = ?3,
               intervals_oauth_expires_at = ?4,
-              intervals_athlete_id = ?5,
+              intervals_athlete_id = CASE
+                WHEN ${INTERVALS_SOURCE_FENCE_ENABLED_SQL} = 1 THEN NULL ELSE ?5 END,
+              intervals_cutover_athlete_id = CASE
+                WHEN ${INTERVALS_SOURCE_FENCE_ENABLED_SQL} = 1 THEN ?5 ELSE NULL END,
               intervals_api_key = NULL,
               intervals_auth_error_at = NULL,
               intervals_credential_generation = CASE
                 WHEN intervals_oauth_access_token IS ?2
-                  AND intervals_athlete_id IS ?5
+                  AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?5
                   AND intervals_api_key IS NULL
                 THEN intervals_credential_generation
                 ELSE intervals_credential_generation + 1 END,
               intervals_events_synced_at = CASE
                 WHEN intervals_oauth_access_token IS ?2
-                  AND intervals_athlete_id IS ?5
+                  AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?5
                   AND intervals_api_key IS NULL
                 THEN intervals_events_synced_at ELSE NULL END,
               intervals_activities_synced_at = CASE
                 WHEN intervals_oauth_access_token IS ?2
-                  AND intervals_athlete_id IS ?5
+                  AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?5
                   AND intervals_api_key IS NULL
                 THEN intervals_activities_synced_at ELSE NULL END,
               intervals_events_sync_attempt = CASE
                 WHEN intervals_oauth_access_token IS ?2
-                  AND intervals_athlete_id IS ?5
+                  AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?5
                   AND intervals_api_key IS NULL
                 THEN intervals_events_sync_attempt ELSE 0 END,
               intervals_activities_sync_attempt = CASE
                 WHEN intervals_oauth_access_token IS ?2
-                  AND intervals_athlete_id IS ?5
+                  AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} IS ?5
                   AND intervals_api_key IS NULL
-                THEN intervals_activities_sync_attempt ELSE 0 END
+                THEN intervals_activities_sync_attempt ELSE 0 END,
+              intervals_protocol_write_seq = intervals_protocol_write_seq
+                + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
         WHERE id = ?1`,
     )
     .bind(
@@ -1881,13 +1991,16 @@ export async function getMeProfile(
 ): Promise<MeProfile> {
   const u = await db
     .prepare(
-      'SELECT display_name, email, intervals_athlete_id, intervals_auth_error_at, share_health_activities FROM users WHERE id = ?1',
+      `SELECT display_name, email,
+              ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_effective_athlete_id,
+              intervals_auth_error_at, share_health_activities
+         FROM users WHERE id = ?1`,
     )
     .bind(userId)
     .first<{
       display_name: string | null;
       email: string | null;
-      intervals_athlete_id: string | null;
+      intervals_effective_athlete_id: string | null;
       intervals_auth_error_at: number | null;
       share_health_activities: number | null;
     }>();
@@ -1919,8 +2032,8 @@ export async function getMeProfile(
     display_name: u?.display_name ?? null,
     email: u?.email ?? null,
     intervals: {
-      connected: !!u?.intervals_athlete_id,
-      athlete_id: u?.intervals_athlete_id ?? null,
+      connected: !!u?.intervals_effective_athlete_id,
+      athlete_id: u?.intervals_effective_athlete_id ?? null,
       // A dead credential clears athlete_id (connected:false) AND sets the
       // marker — so iOS can say "your intervals connection expired, reconnect"
       // rather than the ambiguous "not connected".
@@ -1961,7 +2074,8 @@ export async function exportUserData(
     db
       .prepare(
         `SELECT id, apple_sub, email, display_name, created_at, timezone,
-                intervals_athlete_id, intervals_auth_error_at,
+                ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_athlete_id,
+                intervals_auth_error_at,
                 share_health_activities
            FROM users WHERE id = ?1`,
       )
@@ -7480,24 +7594,28 @@ async function claimIntervalsSyncAttempt(
     credential.kind === 'oauth'
       ? db.prepare(
           `UPDATE users
-              SET ${column} = ${column} + 1
+              SET ${column} = ${column} + 1,
+                  intervals_protocol_write_seq = intervals_protocol_write_seq
+                    + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
             WHERE id = ?1
               AND intervals_credential_generation = ?2
               AND intervals_oauth_access_token = ?3
               AND intervals_oauth_refresh_token IS ?4
               AND intervals_oauth_expires_at IS ?5
-              AND intervals_athlete_id = ?6
+              AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?6
               AND intervals_api_key IS NULL
               AND ${column} < ${MAX_INTERVALS_SYNC_ATTEMPT}
             ${returning}`,
         )
       : db.prepare(
           `UPDATE users
-              SET ${column} = ${column} + 1
+              SET ${column} = ${column} + 1,
+                  intervals_protocol_write_seq = intervals_protocol_write_seq
+                    + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
             WHERE id = ?1
               AND intervals_credential_generation = ?2
               AND intervals_api_key = ?3
-              AND intervals_athlete_id = ?4
+              AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?4
               AND intervals_oauth_access_token IS NULL
               AND intervals_oauth_refresh_token IS NULL
               AND intervals_oauth_expires_at IS NULL
@@ -7530,7 +7648,7 @@ async function claimIntervalsSyncAttempt(
                 AND intervals_oauth_access_token = ?3
                 AND intervals_oauth_refresh_token IS ?4
                 AND intervals_oauth_expires_at IS ?5
-                AND intervals_athlete_id = ?6
+                AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?6
                 AND intervals_api_key IS NULL`,
           )
           .bind(
@@ -7548,7 +7666,7 @@ async function claimIntervalsSyncAttempt(
               WHERE id = ?1
                 AND intervals_credential_generation = ?2
                 AND intervals_api_key = ?3
-                AND intervals_athlete_id = ?4
+                AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?4
                 AND intervals_oauth_access_token IS NULL
                 AND intervals_oauth_refresh_token IS NULL
                 AND intervals_oauth_expires_at IS NULL`,
@@ -7615,13 +7733,15 @@ async function stampIntervalsSyncSuccess(
           SET ${freshnessColumn} = CASE
                 WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
                 ELSE ${freshnessColumn} + 1
-              END
+              END,
+              intervals_protocol_write_seq = intervals_protocol_write_seq
+                + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
         WHERE id = ?1
           AND intervals_credential_generation = ?3
           AND intervals_oauth_access_token = ?4
           AND intervals_oauth_refresh_token IS ?5
           AND intervals_oauth_expires_at IS ?6
-          AND intervals_athlete_id = ?7
+          AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?7
           AND intervals_api_key IS NULL
           AND ${attemptColumn} = ?8`,
         )
@@ -7630,11 +7750,13 @@ async function stampIntervalsSyncSuccess(
           SET ${freshnessColumn} = CASE
                 WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
                 ELSE ${freshnessColumn} + 1
-              END
+              END,
+              intervals_protocol_write_seq = intervals_protocol_write_seq
+                + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
         WHERE id = ?1
           AND intervals_credential_generation = ?3
           AND intervals_api_key = ?4
-          AND intervals_athlete_id = ?5
+          AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?5
           AND intervals_oauth_access_token IS NULL
           AND intervals_oauth_refresh_token IS NULL
           AND intervals_oauth_expires_at IS NULL
@@ -7730,18 +7852,21 @@ async function markIntervalsAuthError(
                 intervals_oauth_refresh_token = NULL,
                 intervals_oauth_expires_at = NULL,
                 intervals_athlete_id = NULL,
+                intervals_cutover_athlete_id = NULL,
                 intervals_auth_error_at = ?2,
                 intervals_credential_generation = intervals_credential_generation + 1,
                 intervals_events_synced_at = NULL,
                 intervals_activities_synced_at = NULL,
                 intervals_events_sync_attempt = 0,
-                intervals_activities_sync_attempt = 0
+                intervals_activities_sync_attempt = 0,
+                intervals_protocol_write_seq = intervals_protocol_write_seq
+                  + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
           WHERE id = ?1
             AND intervals_credential_generation = ?3
             AND intervals_oauth_access_token = ?4
             AND intervals_oauth_refresh_token IS ?5
             AND intervals_oauth_expires_at IS ?6
-            AND intervals_athlete_id = ?7
+            AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?7
             AND intervals_api_key IS NULL
             AND intervals_events_sync_attempt = ?8
             AND intervals_activities_sync_attempt = ?9`,
@@ -7753,16 +7878,19 @@ async function markIntervalsAuthError(
                 intervals_oauth_refresh_token = NULL,
                 intervals_oauth_expires_at = NULL,
                 intervals_athlete_id = NULL,
+                intervals_cutover_athlete_id = NULL,
                 intervals_auth_error_at = ?2,
                 intervals_credential_generation = intervals_credential_generation + 1,
                 intervals_events_synced_at = NULL,
                 intervals_activities_synced_at = NULL,
                 intervals_events_sync_attempt = 0,
-                intervals_activities_sync_attempt = 0
+                intervals_activities_sync_attempt = 0,
+                intervals_protocol_write_seq = intervals_protocol_write_seq
+                  + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
           WHERE id = ?1
             AND intervals_credential_generation = ?3
             AND intervals_api_key = ?4
-            AND intervals_athlete_id = ?5
+            AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?5
             AND intervals_oauth_access_token IS NULL
             AND intervals_oauth_refresh_token IS NULL
             AND intervals_oauth_expires_at IS NULL
@@ -7848,7 +7976,7 @@ async function tryRefreshIntervalsOAuth(
           AND intervals_oauth_access_token = ?3
           AND intervals_oauth_refresh_token IS ?4
           AND intervals_oauth_expires_at IS ?5
-          AND intervals_athlete_id = ?6
+          AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?6
           AND intervals_api_key IS NULL
           AND intervals_events_sync_attempt = ?7
           AND intervals_activities_sync_attempt = ?8`,
@@ -7904,13 +8032,15 @@ async function tryRefreshIntervalsOAuth(
           SET intervals_oauth_access_token = ?9,
               intervals_oauth_refresh_token = ?10,
               intervals_oauth_expires_at = ?11,
-              intervals_auth_error_at = NULL
+              intervals_auth_error_at = NULL,
+              intervals_protocol_write_seq = intervals_protocol_write_seq
+                + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
         WHERE id = ?1
           AND intervals_credential_generation = ?2
           AND intervals_oauth_access_token = ?3
           AND intervals_oauth_refresh_token IS ?4
           AND intervals_oauth_expires_at IS ?5
-          AND intervals_athlete_id = ?6
+          AND ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?6
           AND intervals_api_key IS NULL
           AND intervals_events_sync_attempt = ?7
           AND intervals_activities_sync_attempt = ?8`,

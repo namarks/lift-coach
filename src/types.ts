@@ -86,14 +86,10 @@ export interface User {
    * NULL → that user's cycling-awareness is dormant (no fetch, no error).
    */
   intervals_api_key: string | null;
-  /**
-   * Per-user intervals.icu athlete id. Shared across BOTH auth schemes:
-   * the API-key path stores it directly; the OAuth callback stores the
-   * `athlete.id` returned by the token exchange into this same column. So
-   * `intervals_athlete_id != null` is the canonical "intervals connected"
-   * signal regardless of which auth backs it.
-   */
+  /** Legacy athlete identity. Null after the monotonic P4.6 source-fence cutover. */
   intervals_athlete_id: string | null;
+  /** Active athlete identity after the P4.6 source-fence cutover. */
+  intervals_cutover_athlete_id: string | null;
   /**
    * Per-user intervals.icu OAuth bearer token (0022). When set, intervals
    * I/O uses `Authorization: Bearer <token>` and `intervals_api_key` is
@@ -121,6 +117,8 @@ export interface User {
   intervals_events_sync_attempt: number;
   /** Latest completed-activities sync attempt claimed in the current credential generation. */
   intervals_activities_sync_attempt: number;
+  /** Monotonic protected-write sequence used by the P4.6 source fence. */
+  intervals_protocol_write_seq: number;
   /**
    * Per-user MCP passphrase (M3 multi-tenant, 0025). PBKDF2-SHA256 hash +
    * per-user salt; never plaintext. NULL → no passphrase set, so this user
