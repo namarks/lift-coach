@@ -10,7 +10,7 @@ UPDATE oauth_tokens
 
 CREATE TABLE oauth_grants (
   id                    TEXT PRIMARY KEY,
-  user_id               TEXT,
+  user_id               TEXT REFERENCES users(id) ON DELETE CASCADE,
   client_id             TEXT NOT NULL,
   scope                 TEXT,
   created_at            INTEGER NOT NULL,
@@ -23,7 +23,7 @@ CREATE TABLE oauth_grants (
 
 INSERT INTO oauth_grants
   (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
-SELECT grant_id, user_id, client_id, scope, created_at, created_at, 1
+SELECT grant_id, user_id, client_id, scope, created_at * 1000, created_at * 1000, 1
   FROM oauth_tokens;
 
 CREATE TABLE oauth_refresh_history (
@@ -39,3 +39,27 @@ CREATE INDEX ix_oauth_grants_user
   ON oauth_grants(user_id, revoked_at, created_at);
 CREATE INDEX ix_oauth_refresh_history_grant
   ON oauth_refresh_history(grant_id);
+
+CREATE TRIGGER reject_deleting_oauth_grant
+BEFORE INSERT ON oauth_grants
+WHEN NEW.user_id IS NOT NULL
+ AND (
+   NOT EXISTS (SELECT 1 FROM users WHERE id = NEW.user_id)
+   OR EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = NEW.user_id)
+   OR EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = NEW.user_id)
+ )
+BEGIN
+  SELECT RAISE(ABORT, 'deleting_user');
+END;
+
+CREATE TRIGGER reject_deleting_oauth_grant_update
+BEFORE UPDATE ON oauth_grants
+WHEN NEW.user_id IS NOT NULL
+ AND (
+   NOT EXISTS (SELECT 1 FROM users WHERE id = NEW.user_id)
+   OR EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = NEW.user_id)
+   OR EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = NEW.user_id)
+ )
+BEGIN
+  SELECT RAISE(ABORT, 'deleting_user');
+END;

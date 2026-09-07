@@ -10515,9 +10515,9 @@ export async function redeemOAuthAuthorizationCode(
   if (!principal) return null;
 
   const nowMs = now();
-  const createdAt = Math.floor(nowMs / 1000);
+  const tokenCreatedAt = Math.floor(nowMs / 1000);
   const legacy = redemption.user_id === null;
-  const [family, inserted, consumed] = await db.batch([
+  const [family, inserted, consumed, cleaned] = await db.batch([
     db.prepare(
       `INSERT INTO oauth_grants
          (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
@@ -10539,7 +10539,7 @@ export async function redeemOAuthAuthorizationCode(
     ).bind(
       redemption.grant_id,
       principal.id,
-      createdAt,
+      nowMs,
       redemption.code,
       redemption.client_id,
       redemption.redirect_uri,
@@ -10577,7 +10577,7 @@ export async function redeemOAuthAuthorizationCode(
       redemption.access_token,
       redemption.refresh_token,
       redemption.access_expires_at,
-      createdAt,
+      tokenCreatedAt,
       principal.id,
       redemption.code,
       redemption.client_id,
@@ -10618,11 +10618,17 @@ export async function redeemOAuthAuthorizationCode(
       redemption.user_id,
       legacy ? 1 : 0,
     ),
+    db.prepare(
+      `DELETE FROM oauth_grants
+        WHERE id = ?1
+          AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
+    ).bind(redemption.grant_id),
   ]);
   if (
     family?.meta.changes !== 1 ||
     inserted?.meta.changes !== 1 ||
-    consumed?.meta.changes !== 1
+    consumed?.meta.changes !== 1 ||
+    cleaned?.meta.changes !== 0
   ) return null;
   return {
     access_token: redemption.access_token,
@@ -10645,38 +10651,36 @@ export async function rotateOAuthRefreshToken(
     : await findOwnerRow(db, rotation.owner_apple_sub);
   if (!principal) return null;
 
-  const createdAt = Math.floor(now() / 1000);
+  const refreshedAt = now();
+  const tokenCreatedAt = Math.floor(refreshedAt / 1000);
   const legacy = rotation.user_id === null;
   const grantId = rotation.grant_id ?? crypto.randomUUID();
-  const [adopted, archived, result, touched] = await db.batch([
+  const [adopted, rotated, archived, touched, cleaned] = await db.batch([
     db.prepare(
       `INSERT INTO oauth_grants
          (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
-       SELECT ?1, ?2, client_id, scope, created_at, ?3, 1
+       SELECT ?1, ?2, client_id, scope, created_at * 1000, ?3, 1
          FROM oauth_tokens
-        WHERE refresh_token = ?4 AND grant_id IS NULL
-       ON CONFLICT(id) DO NOTHING`,
-    ).bind(grantId, principal.id, createdAt, rotation.presented_refresh_token),
-    db.prepare(
-      `INSERT INTO oauth_refresh_history (token_sha256, grant_id, client_id, consumed_at)
-       SELECT ?1, ?2, client_id, ?3 FROM oauth_tokens
         WHERE refresh_token = ?4
           AND client_id = ?5
-          AND (grant_id = ?2 OR grant_id IS NULL)
-          AND (user_id = ?6 OR (?7 = 1 AND user_id IS NULL))
-          AND EXISTS (SELECT 1 FROM users WHERE id = ?8)
-          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?8)
-          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?8)
-       ON CONFLICT(token_sha256) DO NOTHING`,
+          AND expires_at = ?6
+          AND scope IS ?7
+          AND grant_id IS NULL
+          AND (user_id = ?8 OR (?9 = 1 AND user_id IS NULL))
+          AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)
+       ON CONFLICT(id) DO NOTHING`,
     ).bind(
-      rotation.consumed_refresh_sha256,
       grantId,
-      createdAt,
+      principal.id,
+      refreshedAt,
       rotation.presented_refresh_token,
       rotation.client_id,
+      rotation.expires_at,
+      rotation.scope,
       rotation.user_id,
       legacy ? 1 : 0,
-      principal.id,
     ),
     db.prepare(
     `UPDATE oauth_tokens
@@ -10695,12 +10699,15 @@ export async function rotateOAuthRefreshToken(
         AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)
         AND scope IS ?11
         AND (grant_id = ?12 OR grant_id IS NULL)
-        AND changes() = 1`,
+        AND EXISTS (SELECT 1 FROM oauth_grants WHERE id = ?12 AND revoked_at IS NULL)
+        AND NOT EXISTS (
+              SELECT 1 FROM oauth_refresh_history WHERE token_sha256 = ?13
+            )`,
   ).bind(
     rotation.access_token,
     rotation.refresh_token,
     rotation.access_expires_at,
-    createdAt,
+    tokenCreatedAt,
     principal.id,
     rotation.presented_refresh_token,
     rotation.client_id,
@@ -10709,15 +10716,28 @@ export async function rotateOAuthRefreshToken(
     legacy ? 1 : 0,
     rotation.scope,
     grantId,
+    rotation.consumed_refresh_sha256,
   ),
+    db.prepare(
+      `INSERT INTO oauth_refresh_history (token_sha256, grant_id, client_id, consumed_at)
+       SELECT ?1, ?2, ?3, ?4
+        WHERE changes() = 1`,
+    ).bind(rotation.consumed_refresh_sha256, grantId, rotation.client_id, refreshedAt),
     db.prepare(
       `UPDATE oauth_grants SET last_refreshed_at = ?2
         WHERE id = ?1 AND revoked_at IS NULL AND changes() = 1`,
-    ).bind(grantId, createdAt),
+    ).bind(grantId, refreshedAt),
+    db.prepare(
+      `DELETE FROM oauth_grants
+        WHERE id = ?1 AND ?2 = 1
+          AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)
+          AND NOT EXISTS (SELECT 1 FROM oauth_refresh_history WHERE grant_id = ?1)`,
+    ).bind(grantId, rotation.grant_id === null ? 1 : 0),
   ]);
-  if (archived?.meta.changes !== 1 || result?.meta.changes !== 1 || touched?.meta.changes !== 1) {
+  if (rotated?.meta.changes !== 1 || archived?.meta.changes !== 1 || touched?.meta.changes !== 1) {
     return null;
   }
+  if (cleaned?.meta.changes !== 0) return null;
   if (rotation.grant_id === null && adopted?.meta.changes !== 1) return null;
   return {
     access_token: rotation.access_token,
@@ -10795,14 +10815,23 @@ async function adoptUntrackedOAuthGrants(
       db.prepare(
         `INSERT INTO oauth_grants
            (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
-         SELECT ?1, ?2, client_id, scope, created_at, created_at, 1
+         SELECT ?1, ?2, client_id, scope, created_at * 1000, created_at * 1000, 1
            FROM oauth_tokens
-          WHERE access_token = ?3 AND grant_id IS NULL`,
-      ).bind(grantId, row.user_id ?? userId, row.access_token),
+          WHERE access_token = ?3 AND grant_id IS NULL
+            AND (user_id = ?2 OR (?4 = 1 AND user_id IS NULL))
+            AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
+            AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
+            AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)`,
+      ).bind(grantId, row.user_id ?? userId, row.access_token, row.user_id === null ? 1 : 0),
       db.prepare(
         `UPDATE oauth_tokens SET grant_id = ?2
           WHERE access_token = ?1 AND grant_id IS NULL AND changes() = 1`,
       ).bind(row.access_token, grantId),
+      db.prepare(
+        `DELETE FROM oauth_grants
+          WHERE id = ?1
+            AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
+      ).bind(grantId),
     ]);
   }
 }

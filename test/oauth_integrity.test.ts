@@ -1,7 +1,11 @@
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
-import { redeemOAuthAuthorizationCode } from '../src/db';
+import {
+  listOAuthGrants,
+  redeemOAuthAuthorizationCode,
+  rotateOAuthRefreshToken,
+} from '../src/db';
 import { validateBearer } from '../src/oauth';
 
 const BASE = 'https://tres-fort.test';
@@ -16,6 +20,13 @@ async function challenge(verifier: string): Promise<string> {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
+}
+
+async function hexDigest(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 async function seedCode(options: { expired?: boolean; userId?: string; clientId?: string } = {}) {
@@ -232,6 +243,32 @@ describe('atomic OAuth grant transitions', () => {
       await env.DB.prepare('DROP TRIGGER oauth_integrity_fail_update').run();
     }
   });
+
+  it('rechecks deletion after stale refresh validation without family or history residue', async () => {
+    const grant = await seedRefresh();
+    const row = await env.DB.prepare('SELECT * FROM oauth_tokens WHERE refresh_token = ?1')
+      .bind(grant.refresh).first<any>();
+    await env.DB.prepare(
+      `INSERT INTO account_deletion_intents
+         (user_id, idempotency_key_sha256, apple_revocation, created_at)
+       VALUES (?1, 'stale-refresh', NULL, ?2)`,
+    ).bind(grant.userId, Date.now()).run();
+    expect(await rotateOAuthRefreshToken(env.DB, {
+      ...row,
+      presented_refresh_token: grant.refresh,
+      presented_client_id: grant.clientId,
+      access_token: `next-access-${crypto.randomUUID()}`,
+      refresh_token: `next-refresh-${crypto.randomUUID()}`,
+      access_expires_at: Math.floor(Date.now() / 1000) + 600,
+      grant_id: null,
+      consumed_refresh_sha256: await hexDigest(grant.refresh),
+    })).toBeNull();
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM oauth_grants WHERE user_id = ?1')
+      .bind(grant.userId).first<number>('n')).toBe(0);
+    expect(await env.DB.prepare(
+      'SELECT COUNT(*) AS n FROM oauth_refresh_history WHERE token_sha256 = ?1',
+    ).bind(await hexDigest(grant.refresh)).first<number>('n')).toBe(0);
+  });
 });
 
 describe('OAuth grant families and caller revocation', () => {
@@ -291,5 +328,17 @@ describe('OAuth grant families and caller revocation', () => {
       method: 'DELETE', headers: { Authorization: `Bearer ${jwt}` },
     })).status).toBe(200);
     expect(await validateBearer(env, grant.access)).toBeNull();
+  });
+
+  it('does not adopt an untracked grant after account deletion is claimed', async () => {
+    const grant = await seedRefresh();
+    await env.DB.prepare(
+      `INSERT INTO account_deletion_intents
+         (user_id, idempotency_key_sha256, apple_revocation, created_at)
+       VALUES (?1, 'adoption-race', NULL, ?2)`,
+    ).bind(grant.userId, Date.now()).run();
+    expect(await listOAuthGrants(env.DB, grant.userId, undefined)).toEqual([]);
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM oauth_grants WHERE user_id = ?1')
+      .bind(grant.userId).first<number>('n')).toBe(0);
   });
 });
