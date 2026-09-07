@@ -1,6 +1,6 @@
 # Coach Access Integrity
 
-Slug: coach-access-integrity · Status: active · Updated: 2026-09-07 · Theme: training-trust
+Slug: coach-access-integrity · Status: gated · Updated: 2026-09-07 · Theme: training-trust
 
 ## Goal
 
@@ -12,7 +12,7 @@ boundary uncovered in the [September app review](../../reviews/2026-09-app-revie
 
 ## Phases
 
-- [ ] **P0 — Atomic, validated token exchange**
+- [x] **P0 — Atomic, validated token exchange**
   - Reproduce concurrent code redemption and refresh in the Workers/D1 runtime.
     The review's synthetic interleaving harness already shows two HTTP 200
     responses and two token pairs when one DELETE reports zero changes.
@@ -47,6 +47,10 @@ boundary uncovered in the [September app review](../../reviews/2026-09-app-revie
     - Record the owner's chosen lifetime/legacy transition and authorize any
       production grant invalidation separately from repository implementation.
 
+## Execution frontier
+
+- P1(a)
+
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
@@ -56,17 +60,20 @@ boundary uncovered in the [September app review](../../reviews/2026-09-app-revie
 
 ## Next step
 
-**Now (@agent):** Implement and verify P0's atomic, validated grant exchange.
-Nick activated the Training Data Trust initiative on 2026-09-07 with an Astra
-orchestrator and Sol workers. Repository implementation is authorized; P1(a)
-retains the lifecycle and production transition decision.
+**Now (@owner):** Resolve P1(a)'s refresh lifetime, legacy transition and exact
+production release authority. P0 and the P1 repository replay/revocation/UI
+implementation are complete with local regression proof and independent review;
+P1 remains open for its owner-gated child. No new lifetime enforcement or
+production invalidation occurred. See [decisions.md](decisions.md).
 
 ## Notes / open questions
 
-- Evidence: `src/oauth.ts` at reviewed commit `696c1d34` and the runnable
+- Original failure evidence: `src/oauth.ts` at the September review's code
+  source `696c1d34` and the runnable
   [OAuth reproducer](../../reviews/2026-09-app-review/evidence/oauth-consumption-repro.mjs).
   It exercises the actual Hono route with a synthetic D1 interleaving, not a
-  deployed service. No compromise or production exploitation was established.
+  deployed service. This is the pre-fix review baseline, not delivery evidence.
+  No compromise or production exploitation was established.
 - [RFC 9700](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.14) informs
   refresh replay protection. Do not expand this repair into an identity-provider
   migration, per-tool authorization redesign or blanket credential rotation.

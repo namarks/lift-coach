@@ -1,6 +1,6 @@
 # Training Data Trust
 
-Slug: training-data-trust · Status: active · Updated: 2026-09-07
+Slug: training-data-trust · Status: gated · Updated: 2026-09-07
 
 ## Objective
 

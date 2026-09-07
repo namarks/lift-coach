@@ -89,15 +89,23 @@ design and dictates how you mutate things:
   /api/days/:id/exercises` (add), `PATCH /api/days/:id/exercises/:teId`
   (edit), and `DELETE /api/days/:id/exercises/:teId` (remove, detaching
   historical `set_logs.template_exercise_id`) each patch a single-field
-  allowlist or one slot and unconditionally bump `plans.version` with no
-  version check of their own — these give the iOS app direct, non-Claude
+  allowlist or one slot through a write-time version claim. Legacy slot
+  APIs retain their existing inputs without requiring an expected version;
+  bounded retries re-read and validate fresh state before applying only
+  supplied fields. These give the iOS app direct, non-Claude
   write access to a day's exercises (audited as `actor='ios'`), reusing the
   same `db.ts` functions MCP's `update_exercise` / `delete_exercise` call.
   `template_exercises.is_warmup` (migration `0026`) marks a slot a
   prescribed warm-up, excluded from working-set rollups; `cardio` is a
   `modality` for erg/treadmill/bike slots logged by duration via the same
   timed-set runner. Never mutate the plan tree without going through one of
-  these paths.
+  these paths. Migration `0040` adds full-document `plan_snapshots`. Shared
+  writers commit mutation/order, version, audit, required MCP note and snapshot
+  in one D1 batch using `preparePlanWriteStart` / `preparePlanWriteFinish`.
+  Keep the SQL/TypeScript writable-document serializers in parity. Return a
+  committed-version result; post-commit read failures must retain the successful
+  acknowledgement. Restore requires the reviewed plan ID/version, validates
+  prescriptions, rejects active workouts and creates a new version.
 - *Append-only log* — `set_logs` / `notes` / `sessions`. The row `id` is a
   **client-generated UUID = idempotency key**; writes dedup on it and are
   safe to retry. Logged data is **soft-deleted** (`deleted_at`), never hard
@@ -157,16 +165,27 @@ owner; an OAuth access token maps to the user it was bound to at
 - `POST /auth/dev` exists **only** when `DEV_AUTH_SECRET` is set (local + the
   vitest config) — never enabled in production.
 
-**Every MCP write** records an `audit_log` row and (for plan changes) a
+**Every accepted MCP mutation** records an `audit_log` row and (for plan changes) a
 Claude-authored `notes` row. This visible/reversible trail is the
 substitute for per-tool scopes (now recorded per user) — preserve it when
-adding write tools.
+adding write tools. Plan tools use `atomicWrite` so dispatcher attribution is
+not repeated after the service transaction. A no-op adjustment does not create
+a version or snapshot. `adjust_today` changes recurring template targets;
+omitting a day affects the whole plan.
+
+**Coach grant lineage (migration `0041`).** Validated code exchange and refresh
+rotation commit with one successor. Hashed consumed-refresh lineage detects
+bound-client replay and revokes only that grant family. Profile disconnect
+revokes caller-owned OAuth grants; changing a connect code does not. New grant
+timestamps are epoch-ms, while legacy OAuth token expiry remains epoch-seconds.
+Refresh inactivity/absolute lifetime fields remain unset pending owner policy.
 
 **MCP transport** (`src/mcp/server.ts`): stateless JSON-RPC 2.0 over
 Streamable HTTP, single `application/json` responses (no server-initiated
 streams). Natural-language exercise arguments are run through an alias
 resolver (`resolveExercise`) before hitting the catalog. Current tools:
-`get_current_plan`, `get_today_workout`, `get_current_session`,
+`get_current_plan`, `get_plan_history`, `compare_plan_versions`, `restore_plan`,
+`get_today_workout`, `get_current_session`,
 `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
 `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`, `log_set`,
 `correct_set`, `delete_set`, `log_activity`, `log_workout_complete`, `add_note`,
