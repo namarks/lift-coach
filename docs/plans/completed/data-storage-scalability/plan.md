@@ -1,6 +1,6 @@
 # Data Storage Scalability
 
-Slug: data-storage-scalability · Status: gated · Updated: 2026-09-06 · Theme: platform
+Slug: data-storage-scalability · Status: done · Archived: completed · Updated: 2026-09-07 · Theme: platform
 
 ## Goal
 
@@ -276,7 +276,7 @@ Done means:
     raw-only drift, and no real-response replay is claimed or fabricated. On
     2026-09-06 the owner amended acceptance to this authenticated empty-window
     evidence plus the existing synthetic raw-only-drift regressions.
-- [ ] **P3 — Filing-cabinet tabs (member-first indexes)**
+- [x] **P3 — Filing-cabinet tabs (member-first indexes)**
   - Migration: `audit_log(user_id, actor, created_at)` so the profile's
     latest-MCP-action lookup seeks directly instead of walking a member's
     audit history when the newest MCP row is old or absent;
@@ -310,11 +310,11 @@ Done means:
     the account had reached its usage limit; it is not represented as a
     completed GitHub review. Squash merge
     `db344e1c87d1b373530414b1fde1450b27258a67` has the identical tree, and
-    post-merge main CI run `34076609334` passed. This establishes repository
-    delivery only: migration `0036` has not been applied remotely, the merged
-    Worker has not been deployed, and no natural production tick has supplied
-    P3 evidence. P3 therefore remains unchecked and production-gated.
-- [ ] **P4 — A cron that finishes its route**
+    post-merge main CI run `34076609334` passed. Production completion followed
+    on 2026-09-07 through P4.7: migration `0036` is present in the authoritative
+    remote ledger, the exact combined Worker is live, and its first natural
+    tick passed the application, D1-usage, and aggregate postflight checks.
+- [x] **P4 — A cron that finishes its route**
   - Per-member isolation: a fetch failure already returns a value and the
     loop continues; the gap is an unexpected exception (for example a D1
     error), which today aborts every member after it. Catch and log per
@@ -359,11 +359,12 @@ Done means:
     `34081061290`, a local independent exact-head review, and GitHub Codex
     review with no findings and no review threads. Squash merge
     `94a73d62e3d0573a7a0cf1c76af9831cbe2141b9` has the identical tree, and
-    post-merge main CI run `34081856448` passed. This establishes repository
-    delivery only. Production is a separate owner-authorized boundary:
-    migration `0037`, a matching Worker deploy, and natural-tick evidence are
-    absent, so P4 remains unchecked and production-gated.
-- [ ] **P4.5 — Order overlapping same-generation cache syncs**
+    post-merge main CI run `34081856448` passed. Production completion followed
+    on 2026-09-07 through P4.7: migration `0037` is present in the authoritative
+    remote ledger, the exact combined Worker is live, and its first natural
+    tick reconciled every activated connection without a rate limit or member
+    failure.
+- [x] **P4.5 — Order overlapping same-generation cache syncs**
   - Add an independent monotonic attempt fence per user and per cache. Claim
     the attempt before provider I/O, then require the winning attempt at every
     reconcile, tombstone, dedup, and freshness write so a delayed older
@@ -394,12 +395,12 @@ Done means:
     attempt row; an executed successful no-change poll writes the attempt plus
     freshness rows. This established the local implementation evidence before
     publication.
-  - Migration `0038` is additive and remains compatible with the currently
-    deployed older Worker, but the P4.5 Worker requires the new counters before
-    it starts. That compatibility does not fence a P4 invocation already in
-    flight when P4.5 deploys because the older SQL never checks an attempt
-    counter. Do not use a gradual deployment for this transition because it
-    deliberately retains
+  - Before P4.7, migration `0038` was additive and compatible with the
+    then-deployed older Worker, while the P4.5 Worker required the new counters
+    before it started. That compatibility did not fence a P4 invocation already
+    in flight when P4.5 deployed because the older SQL never checked an attempt
+    counter. The transition therefore prohibited a gradual deployment because
+    it deliberately retains
     [version skew](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/).
     A 100% deployment is also not a drain barrier: HTTP requests have
     [no hard duration limit](https://developers.cloudflare.com/workers/platform/limits/)
@@ -410,21 +411,22 @@ Done means:
     read-only production preflight therefore failed this rollout gate closed
     and selected P4.6's source-bound transition instead of an elapsed-time,
     disconnect/reconnect, credential-rotation, or log-absence substitute.
-    After P4.6 activation, require a successful exact-P4.5 reconcile of both
-    caches before production may claim the ordering invariant. Rolling code
-    back to P4 after activation must leave Intervals disabled/read-only; retain
-    an exact P4.6-aware rollback artifact or forward-fix instead.
+    P4.7 consequently required—and obtained—a successful exact-P4.5 reconcile
+    of both caches before claiming the ordering invariant. Rolling code back to
+    P4 after activation must leave Intervals disabled/read-only; retain an exact
+    P4.6-aware rollback artifact or forward-fix instead.
   - Repository-only evidence on 2026-09-06: PR #134 exact head
     `e4c9a855b7010a0e05e87e5f9683e09442caa10c` (reviewed tree
     `82c8899d94ede0548e20f83909accd69fad09f31`) passed required CI run
     `34085532370`, two local independent exact-head reviews, and GitHub Codex
     review with no findings or review threads. Squash merge
     `2d106fab89891a4085461116d0cffc1f91206c48` has the identical tree, and
-    post-merge main CI run `34085846883` passed. This establishes repository
-    delivery only. Migration `0038`, a matching Worker deploy, proven
-    old-version quiescence, the connected-user generation epoch, both-cache
-    repair reconciliation, and natural-tick evidence are absent, so P4.5
-    remains unchecked and production-gated.
+    post-merge main CI run `34085846883` passed. Production completion followed
+    on 2026-09-07 through P4.7: migration `0038` is present in the authoritative
+    remote ledger; atomic source-fence activation advanced the generation and
+    attempt protocol; and the exact combined Worker reconciled both caches for
+    every activated connection before the aggregate freshness postflight
+    passed.
 - [x] **P4.6 — Build and publish the P4-to-P4.5 source fence**
   - Add an inert-until-enabled, additive D1 protocol fence and a shadow
     Intervals athlete identity that exact P4 cannot read. Before activation,
@@ -490,11 +492,10 @@ Done means:
     Codex review with no findings or review threads. Squash merge
     `faa43ff9bbebf6175f3a8ce1b56ec08fa18fda0a` has parent
     `2d106fab89891a4085461116d0cffc1f91206c48` and the identical tree;
-    post-merge main CI run `34091077616` passed. This completes P4.6's
-    repository build-and-publication scope only. No remote migration, Worker
-    deployment, fence activation, credential mutation, cache reconciliation,
-    provider write, or natural-tick evidence accompanies it.
-- [ ] **P4.7 — Activate the source fence in production**
+    post-merge main CI run `34091077616` passed. This completed P4.6's
+    repository build-and-publication scope; the later production activation
+    and reconciliation evidence is recorded in P4.7.
+- [x] **P4.7 — Activate the source fence in production**
   - Recheck the authoritative migration ledger, deployed Worker version, and
     exact connected/environment-seed state. Report only aggregate connection
     and OAuth-refresh-token presence; never read, retain, or log credential
@@ -514,76 +515,55 @@ Done means:
     Worker route was called. This evidence does not authorize release and does
     not remove the documented provider-rotation/reconnect risk or the required
     live recheck at the authorized maintenance window.
-  - With an exact P4.6-aware rollback artifact retained, apply additive
-    migrations `0036` through `0039` in order, deploy the exact reviewed
-    dual-mode Worker at 100%, and verify the deployed source before activation.
-    Migration `0039` is inert until the explicit fence update, so a failed
-    pre-activation deploy can roll back to P4 without changing Intervals
-    identity behavior.
-  - After the owner-approved maintenance and residual-risk gate, run the one
-    guarded activation update and retain its aggregate `RETURNING` evidence. If
-    the response is lost, query fence state instead of retrying blindly. Verify
-    that activation is enabled, the legacy athlete count is zero, the shadow
-    connected count matches the captured activation count, and both freshness
-    and attempt pairs were reset. Then reconcile both caches through the exact
-    P4.6 Worker and require natural-tick evidence before marking P3, P4, P4.5,
-    and P4.7 complete.
-  - Activation is a credential-state mutation and is not authorized by
-    repository delivery. It requires a separate owner-approved maintenance
-    window, exact-source rollback plan, status-only OAuth preflight, and
-    acceptance that an already-sent OAuth refresh may rotate provider state and
-    require reconnect. After activation, plain P4 is only a safe disconnected
-    holding state, not a functional rollback.
-- [ ] **P5 — Retention decision for the two unbounded tables**
-  - Using P0 numbers, the owner decides retention for `audit_log` (for
-    example keep `args` for twelve months, keep the row forever) and for the
-    `raw` source JSON on `external_activities` / `external_events` (keep, trim
-    to the stored columns, or move to R2). A recorded "keep everything, we are
-    on Paid" decision completes this phase with no implementation.
-  - Read-only analysis on 2026-09-06 recommends keeping both indefinitely in
-    D1 for now: the live database is 1,462,272 bytes (about 1.395 MiB), so
-    lifecycle and cross-store deletion complexity dominate storage cost.
-    Revisit at 1 GB or if the provider/compliance threat model changes. This is
-    a recommendation, not the missing owner retention decision.
-  - If trimming is selected: a scheduled prune that runs inside the existing
-    cron, bounded per tick, with a test that proves it never touches rows the
-    audit trail contract needs. Known consumers: the invite-redemption
-    `EXISTS (SELECT 1 FROM audit_log WHERE id = ?)` check, and
+  - Production release completed on 2026-09-07 under explicit owner authority.
+    Migrations `0036` through `0039` are present with no pending
+    migration, and exact source `696c1d34c98d956a3e1fddf78fcfd5eba168e874`
+    (tree `76ebcb0625b8579f9b009eefdacda6a12f67e821`) is Worker version
+    `571457ad-322b-4622-a22c-69963b330632` at 100% traffic. The trigger-heavy
+    `0039` migration hit Wrangler 4.129's remote command parser after `0036`–
+    `0038` succeeded; the release stopped, proved no partial `0039` state, then
+    used the independently reviewed atomic file-ingest path for the canonical
+    migration plus its ledger insert. Server-side postflight proved one ledger
+    row, every expected schema object, and an inert fence before deployment.
+  - The one guarded activation returned success and the immediate aggregate
+    readback proved the fence enabled, the legacy source empty, the shadow and
+    connected cardinalities equal to the captured activation cardinality,
+    protocol sequence advanced exactly once, freshness and attempts reset, and
+    no new authentication error. The first natural hourly tick ran on the exact
+    deployed version, reconciled both caches for every activated connection
+    with no rate limit, and reported application and D1 outcomes `ok`. Its D1
+    aggregate was 62 queries, 451 rows read, and 8 rows
+    written; the final readback proved both attempt and post-activation
+    freshness pairs for every connection with no reauthentication error.
+    Health remained HTTP 200. Exact personal/auth counts, identifiers,
+    credential values, and rollback bookmarks are intentionally absent from
+    the repository record. The owner explicitly accepted the residual risk
+    that an already-sent OAuth refresh might require reconnect; no such error
+    occurred during activation or reconciliation. Plain P4 remains only a safe
+    disconnected holding state, not a functional rollback.
+- [x] **P5 — Retention decision for the two unbounded tables**
+  - Using P0 numbers, the owner selected retention for `audit_log` and the
+    `raw` source JSON on `external_activities` / `external_events`. The recorded
+    keep-everything decision completes this phase with no implementation.
+  - Owner decision on 2026-09-07: retain every `audit_log` row including
+    `args`, and retain `external_events.raw` and `external_activities.raw`,
+    indefinitely in D1. Do not add pruning or R2 archival. Revisit this policy
+    when D1 reaches 1 GB or the provider/compliance threat model changes.
+  - If the policy is revisited and trimming is selected, use a scheduled prune
+    inside the existing cron, bounded per tick, with a test that proves it never
+    touches rows the audit trail contract needs. Known consumers: the
+    invite-redemption `EXISTS (SELECT 1 FROM audit_log WHERE id = ?)` check, and
     `userHasTouchedIntervalsCreds`, which reads the `set_intervals_creds`
     audit row to tell an intentional disconnect from a never-configured
     account; pruning that row would silently re-enable the env credential
     fallback for a member who deliberately disconnected.
 
-## Execution frontier
-
-- P4.7
-- P5
-
-## Dependencies
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P0.5 | coordinates_with | plan:activity-integration-integrity#P2 | Both exercise activity correction/deletion convergence and the existing intervals-to-HealthKit dedup regression boundary; preserve its semantics and do not edit the same reconcile path concurrently. |
-| P1 | coordinates_with | plan:activity-integration-integrity#P2 | Both change how tombstones ride `/api/state`; land the cursor rule once and share it. |
-| P2 | coordinates_with | plan:activity-integration-integrity#P2 | Both edit the intervals reconcile upsert; do not run concurrently. |
-| P4.7 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migrations `0036` through `0039`, a dual-mode Worker deploy, atomic fence activation, credential-state mutation, provider reconciliation, or natural-tick production evidence. |
-| P3 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0036`, a Worker deploy, or natural-tick production evidence. |
-| P4 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0037`, a Worker deploy, or natural-tick production evidence. |
-| P4.5 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0038`; production activation must include P4.6's source-bound transition before claiming the attempt-ordering invariant. |
-| P5 | gated_by | external:owner-retention-decision | Deleting or trimming audit and source data is an owner data-retention decision, not an inferred cleanup. |
-
 ## Next step
 
-**Now (@owner):** Decide separately whether to authorize the P4.7 production
-release and which P5 retention policy to record. P4.7 authorization must cover
-the exact reviewed source, maintenance window and rollback plan, remote
-migrations `0036` through `0039`, dual-mode Worker deployment, status-only
-OAuth preflight, atomic credential-state fence activation, both-cache
-reconciliation, natural-tick verification, and the documented possibility that
-an already-sent OAuth refresh may require reconnect. For P5, the current
-recommendation is to keep audit arguments and provider raw JSON indefinitely in
-D1 for now and revisit at 1 GB or on a provider/compliance threat-model change;
-that recommendation is not an owner decision and must not be inferred.
+No further executable step. The incremental-sync, change-aware reconciliation,
+member-first indexing, resilient-cron, source-fence, and retention outcomes are
+complete. Retention becomes an active decision again only at the recorded 1 GB
+or provider/compliance-change trigger.
 
 ## Notes / open questions
 
@@ -622,8 +602,8 @@ that recommendation is not an owner decision and must not be inferred.
   applied before P1's `0034`, then P2's `0035`, followed immediately by the
   freshly reviewed merged Worker. At that point the ledger had no pending
   migration through `0035`; the 2026-09-06 preflight recorded later migrations
-  `0036` through `0038` as pending, and merged-but-unreleased P4.6 adds
-  migration `0039` to the same production gate.
+  `0036` through `0039` as pending. The 2026-09-07 P4.7 release then applied
+  all four and closed the production gate.
 - Apply `0034` only with the P1 Worker ready to deploy immediately. If Worker
   deployment fails after the migration commits, roll forward with the P1-aware
   Worker rather than attempting a migration rollback. For the entire gap, the

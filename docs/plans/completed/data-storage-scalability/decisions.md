@@ -3,6 +3,67 @@
 Supporting material for [`plan.md`](plan.md). This file records owner
 decisions and measured baselines; it carries no live checklist.
 
+## 2026-09-07 — P5 owner retention decision
+
+The owner chose to retain every `audit_log` row including `args`, and to retain
+`external_events.raw` and `external_activities.raw`, indefinitely in D1. No
+scheduled prune or R2 archival is authorized or needed. Revisit this policy
+when the D1 database reaches 1 GB or when the provider/compliance threat model
+changes. This owner decision completes P5 without an implementation change.
+
+## 2026-09-07 — P4.7 production activation and natural-tick proof
+
+The owner explicitly authorized the production maintenance window, migrations
+`0036` through `0039`, exact-source 100% deployment, atomic source-fence
+activation, both-cache reconciliation, natural-tick verification, and the
+residual possibility that an already-sent OAuth refresh could require a
+reconnect. The aggregate-only preflight was repeated immediately before the
+release and found no malformed, duplicate, exhausted, or unexpected
+environment-seed state. No credential value or user identifier was read or
+retained.
+
+Migrations `0036`, `0037`, and `0038` applied normally with pinned Wrangler
+4.129. Migration `0039` then failed closed at the remote command/query parser
+with `incomplete input`; the release stopped before deployment or activation.
+Server-side inspection proved exactly `0039` remained pending and that none of
+its columns, table, index, or triggers existed partially. The canonical merged
+migration had SHA-256
+`a849ef6593080efaf6bca1d8c1578b5be57b3bcea3ad160d967518801303253a`.
+An independently reviewed recovery sent that byte-identical migration plus
+Wrangler's normal name-only migration-ledger insert through D1's atomic file
+ingest. The 15-statement ingest reached terminal success; pre- and post-ingest
+Time Travel bookmarks were retained outside the repository. Authoritative
+postflight then found no pending migrations, exactly one `0039` ledger row,
+both new user columns, the singleton fence table, its effective-athlete index,
+all nine named triggers, and an inert fence with unchanged aggregate connection
+state. The database was 1,511,424 bytes after the migration. This was a remote
+parser/transport incident, not a migration-semantic failure, and no retry or
+hand-edited partial ledger was used.
+
+Exact source `696c1d34c98d956a3e1fddf78fcfd5eba168e874` with tree
+`76ebcb0625b8579f9b009eefdacda6a12f67e821` then deployed as Worker version
+`571457ad-322b-4622-a22c-69963b330632` at 100% traffic. Deployment metadata,
+the version record, and HTTP 200 health all matched before activation. The one
+guarded activation update returned success. Its immediate aggregate readback
+proved an enabled fence, no legacy identity, shadow and connected cardinalities
+equal to the captured activation cardinality, protocol sequence advanced once,
+freshness and attempts reset, and no authentication error. Exact personal and
+authentication counts remain intentionally omitted from this public record.
+
+The first natural `0 * * * *` tick after activation ran on that exact Worker
+version. The version-attributed trace had application outcome `ok`, polled both
+caches for every activated connection, and had zero rate-limited members. The
+same invocation's D1 aggregate reported outcome
+`ok`, 62 queries, 451 rows read, and 8 rows written; platform execution used
+42 ms CPU and 5,605 ms wall time. The final aggregate-only database read proved
+both attempt counters and both freshness stamps advanced after activation for
+every connected shadow identity, with no legacy identity or post-activation
+reauthentication error. Health remained HTTP 200, the exact version remained at
+100%, and the migration ledger remained complete. These results complete P3,
+P4, P4.5, and P4.7. Plain P4 remains only a safe disconnected holding state;
+the retained exact P4.6-aware version or a forward fix is the functional
+recovery boundary.
+
 ## 2026-09-06 — P4.7 privacy-safe read-only production preflight
 
 The current authoritative ledger reports migrations `0036` through `0039`
