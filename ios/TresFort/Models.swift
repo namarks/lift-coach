@@ -275,15 +275,46 @@ extension JSONValue {
         switch self {
         case let .string(value): return value
         case let .number(value):
-            return value.rounded() == value ? String(Int(value)) : String(value)
+            // JSON numbers decode as Double. Only bridge to Int inside the
+            // exactly representable integer range; Int(1e100) traps.
+            let largestExactInteger = 9_007_199_254_740_991.0
+            if value.isFinite, value.rounded() == value,
+               abs(value) <= largestExactInteger {
+                return String(Int(value))
+            }
+            return String(value)
         case let .bool(value): return value ? "Yes" : "No"
         case .null: return "None"
         case let .array(values): return values.map(\.displayText).joined(separator: ", ")
         case let .object(value):
-            return value.sorted { $0.key < $1.key }
-                .map { "\($0.key.replacingOccurrences(of: "_", with: " ")): \($0.value.displayText)" }
+            return value
+                .filter { !Self.isInternalIdentifier($0.key) && $0.value != .null }
+                .sorted { Self.displayOrder($0.key) < Self.displayOrder($1.key) }
+                .map { "\(Self.fieldLabel($0.key)): \($0.value.displayText)" }
                 .joined(separator: ", ")
         }
+    }
+
+    private static func isInternalIdentifier(_ key: String) -> Bool {
+        key == "id" || key.hasSuffix("_id")
+    }
+
+    private static func fieldLabel(_ key: String) -> String {
+        let labels = [
+            "day_name": "Workout", "day_label": "Label", "exercise_name": "Exercise",
+            "target_sets": "Sets", "target_reps": "Reps", "target_reps_max": "Maximum reps",
+            "target_rpe": "Effort", "target_weight": "Load", "target_duration_s": "Duration",
+            "rest_seconds": "Rest", "is_warmup": "Warm-up", "order_index": "Order",
+            "progression": "Progression", "cues": "Cues", "exercises": "Exercises",
+        ]
+        return labels[key] ?? key.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private static func displayOrder(_ key: String) -> Int {
+        let keys = ["day_name", "day_label", "exercise_name", "target_sets", "target_reps",
+                    "target_reps_max", "target_weight", "target_duration_s", "target_rpe",
+                    "rest_seconds", "is_warmup", "progression", "cues", "exercises", "order_index"]
+        return keys.firstIndex(of: key) ?? keys.count
     }
 }
 

@@ -3880,6 +3880,42 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(PlanHistoryPresentation.value(change.after), "5")
     }
 
+    func testPlanHistoryPresentationRendersSemanticComparisonObjectsWithoutIDs() {
+        let schedule = PlanVersionChange(
+            kind: "schedule", path: "Weekly schedule · tue",
+            before: .object([
+                "day_id": .string("7FC654CD-DA28-4FD8-94EE-596F72D1F1BC"),
+                "day_name": .string("Pull"), "day_label": .string("B"),
+            ]),
+            after: .object([
+                "day_id": .string("3B74C775-92DC-4E61-BC82-18E8AD640627"),
+                "day_name": .string("Legs"), "day_label": .string("C"),
+            ]))
+        XCTAssertEqual(PlanHistoryPresentation.fieldName(for: schedule), "Weekly schedule · tue")
+        XCTAssertEqual(PlanHistoryPresentation.value(schedule.before), "Workout: Pull, Label: B")
+        XCTAssertEqual(PlanHistoryPresentation.value(schedule.after), "Workout: Legs, Label: C")
+
+        let addedWorkout = JSONValue.object([
+            "day_id": .string("internal-day-id"), "day_name": .string("Conditioning"),
+            "exercises": .array([.object([
+                "id": .string("internal-slot-id"), "exercise_id": .string("internal-catalog-id"),
+                "exercise_name": .string("Stationary Bike"), "target_duration_s": .number(900),
+                "target_sets": .number(1),
+            ])]),
+        ])
+        let rendered = PlanHistoryPresentation.value(addedWorkout)
+        XCTAssertTrue(rendered.contains("Workout: Conditioning"))
+        XCTAssertTrue(rendered.contains("Exercise: Stationary Bike"))
+        XCTAssertTrue(rendered.contains("Duration: 900"))
+        XCTAssertFalse(rendered.contains("internal"))
+    }
+
+    func testPlanHistoryNumberFormattingDoesNotTrapOutsideSwiftIntRange() {
+        XCTAssertEqual(JSONValue.number(1e100).displayText, "1e+100")
+        XCTAssertEqual(JSONValue.number(-1e100).displayText, "-1e+100")
+        XCTAssertEqual(JSONValue.number(9_007_199_254_740_991).displayText, "9007199254740991")
+    }
+
     func testFirstManualDayPinsTheExactEnsuredPlanIdentityAndVersion() async {
         let defaults = defaults()
         let ex = exercise()

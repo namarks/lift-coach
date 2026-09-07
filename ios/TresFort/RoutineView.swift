@@ -379,6 +379,7 @@ struct RoutineView: View {
 
 enum PlanHistoryPresentation {
     static func fieldName(for change: PlanVersionChange) -> String {
+        if change.path.contains(" · ") { return change.path }
         let field = change.path.split(separator: ".").last.map(String.init) ?? change.kind
         let names = [
             "target_sets": "Target sets", "target_reps": "Target reps",
@@ -388,7 +389,13 @@ enum PlanHistoryPresentation {
             "name": change.kind == "day" ? "Workout name" : "Routine name",
             "cues": "Coaching cues", "order_index": "Order",
         ]
-        return names[field] ?? field.replacingOccurrences(of: "_", with: " ").capitalized
+        if let name = names[field] { return name }
+        // Older comparison responses used storage UUIDs as their last path
+        // component. Never expose those implementation identifiers in UI.
+        if UUID(uuidString: field) != nil || field.hasPrefix("slot-") || field.hasPrefix("day-") {
+            return change.kind == "day" ? "Workout" : "Exercise prescription"
+        }
+        return field.replacingOccurrences(of: "_", with: " ").capitalized
     }
 
     static func value(_ value: JSONValue?) -> String {
@@ -439,8 +446,12 @@ private struct PlanHistoryView: View {
                             comparison = nil
                             self.selected = nil
                         } else {
-                            errorMessage = sync.loadError ?? "The routine changed. Review the latest comparison before restoring."
-                            await loadInitialHistory()
+                            let conflictNotice = sync.loadError
+                                ?? "The routine changed. Review the latest comparison before restoring."
+                            comparison = nil
+                            self.selected = nil
+                            restoring = false
+                            await loadInitialHistory(preservingError: conflictNotice)
                         }
                     }
                 }
@@ -539,12 +550,14 @@ private struct PlanHistoryView: View {
         }
     }
 
-    private func loadInitialHistory() async {
+    private func loadInitialHistory(preservingError: String? = nil) async {
         loadingHistory = true
-        errorMessage = nil
+        errorMessage = preservingError
         history = await sync.loadPlanHistory()
         loadingHistory = false
-        if history == nil { errorMessage = sync.loadError ?? "Could not load routine history." }
+        if history == nil {
+            errorMessage = sync.loadError ?? preservingError ?? "Could not load routine history."
+        }
     }
 
     private func loadMore() async {
