@@ -30,7 +30,9 @@ beforeEach(async () => {
             intervals_auth_error_at = NULL,
             intervals_credential_generation = 0,
             intervals_events_synced_at = NULL,
-            intervals_activities_synced_at = NULL`,
+            intervals_activities_synced_at = NULL,
+            intervals_events_sync_attempt = 0,
+            intervals_activities_sync_attempt = 0`,
   ).run();
 });
 
@@ -129,6 +131,35 @@ async function freshness(userId: string): Promise<{
     .bind(userId)
     .first<{ events: number | null; activities: number | null }>();
   return row!;
+}
+
+async function syncAttempts(userId: string): Promise<{
+  events: number;
+  activities: number;
+}> {
+  const row = await env.DB.prepare(
+    `SELECT intervals_events_sync_attempt AS events,
+            intervals_activities_sync_attempt AS activities
+       FROM users WHERE id = ?1`,
+  )
+    .bind(userId)
+    .first<{ events: number; activities: number }>();
+  return row!;
+}
+
+async function intervalsUserState(userId: string): Promise<Record<string, unknown>> {
+  return (await env.DB.prepare('SELECT * FROM users WHERE id = ?1')
+    .bind(userId)
+    .first<Record<string, unknown>>())!;
+}
+
+async function authAuditCount(userId: string): Promise<number> {
+  const row = await env.DB.prepare(
+    "SELECT COUNT(*) AS c FROM audit_log WHERE user_id = ?1 AND tool = 'intervals_auth_error'",
+  )
+    .bind(userId)
+    .first<{ c: number }>();
+  return row?.c ?? 0;
 }
 
 /** Throw only when P4 tries to stamp one member's events success. */
@@ -277,6 +308,7 @@ describe('P4 intervals cron routing and freshness', () => {
       rate_limited_members: 1,
     });
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
+    expect(await syncAttempts(member.id)).toEqual({ events: 1, activities: 0 });
     const logged = JSON.stringify(warn.mock.calls);
     const allLogs = logged + JSON.stringify(info.mock.calls);
     expect(allLogs).not.toContain(member.id);
@@ -340,15 +372,22 @@ describe('P4 intervals cron routing and freshness', () => {
     expect(maximum).toBeLessThanOrEqual(4);
   });
 
-  it('writes one users row for an executed no-change poll and zero for a fully skipped tick', async () => {
+  it('charges claim plus freshness for success, claim only for failure, and nothing for a skip', async () => {
     const member = await connectedMember('billing', {
       events: null,
       activities: TICK,
     });
     const executed = createD1UsageObserver(env.DB);
     await runIntervalsCron(executed.db, testEnv(), TICK, { fetcher: emptySuccess });
-    expect(executed.usage.rows_written).toBe(1);
+    expect(executed.usage.rows_written).toBe(2);
     expect((await freshness(member.id)).events).not.toBeNull();
+
+    const failed = createD1UsageObserver(env.DB);
+    await syncExternalEvents(failed.db, testEnv(), {
+      userId: member.id,
+      fetcher: async () => new Response('upstream', { status: 500 }),
+    });
+    expect(failed.usage.rows_written).toBe(1);
 
     await env.DB.prepare(
       `UPDATE users
@@ -405,18 +444,35 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
   });
 
-  it('resets both stamps on identity change or disconnect and preserves same identity', async () => {
+  it('resets stamps and attempts on generation changes while preserving same identity', async () => {
     const member = await connectedMember('identity', { events: 10, activities: 20 });
+    await env.DB.prepare(
+      `UPDATE users SET intervals_events_sync_attempt = 7,
+                        intervals_activities_sync_attempt = 8
+        WHERE id = ?1`,
+    )
+      .bind(member.id)
+      .run();
 
     await setUserIntervalsCreds(env.DB, member.id, member.apiKey, member.athleteId);
     expect(await freshness(member.id)).toEqual({ events: 10, activities: 20 });
+    expect(await syncAttempts(member.id)).toEqual({ events: 7, activities: 8 });
     expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(0);
 
     await setUserIntervalsCreds(env.DB, member.id, 'replacement-key', member.athleteId);
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
+    expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 0 });
     expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(1);
 
+    await env.DB.prepare(
+      `UPDATE users SET intervals_events_sync_attempt = 3,
+                        intervals_activities_sync_attempt = 4
+        WHERE id = ?1`,
+    )
+      .bind(member.id)
+      .run();
     await setUserIntervalsCreds(env.DB, member.id, 'replacement-key', member.athleteId);
+    expect(await syncAttempts(member.id)).toEqual({ events: 3, activities: 4 });
     expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(1);
 
     await env.DB.prepare(
@@ -428,6 +484,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       .run();
     await setUserIntervalsCreds(env.DB, member.id, null, null);
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
+    expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 0 });
     expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(2);
 
     await setUserIntervalsCreds(env.DB, member.id, null, null);
@@ -496,7 +553,9 @@ describe('P4 shared success stamps and credential lifecycle', () => {
               intervals_auth_error_at = NULL,
               intervals_credential_generation = 0,
               intervals_events_synced_at = 10,
-              intervals_activities_synced_at = 20
+              intervals_activities_synced_at = 20,
+              intervals_events_sync_attempt = 7,
+              intervals_activities_sync_attempt = 8
         WHERE id = ?1`,
     )
       .bind(owner.id)
@@ -528,6 +587,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     };
     const fetcher: Fetcher = async () => {
       expect((await getUserIntervalsCreds(env.DB, owner.id)).credential_generation).toBe(1);
+      expect(await syncAttempts(owner.id)).toEqual({ events: 1, activities: 0 });
       await setUserIntervalsCreds(env.DB, owner.id, null, null);
       // Deliberately omit the route's later audit to model interruption in
       // that gap. Generation alone must make the disconnect durable.
@@ -563,7 +623,7 @@ describe('P4 shared success stamps and credential lifecycle', () => {
     expect(fallbackRetry).not.toHaveBeenCalled();
   });
 
-  it('preserves freshness during OAuth token refresh but resets an OAuth identity change', async () => {
+  it('preserves attempts during same-identity OAuth callback and refresh, then resets on change', async () => {
     const member = await connectedMember('oauth', { events: 10, activities: 20 });
     await setUserIntervalsOAuth(
       env.DB,
@@ -574,15 +634,27 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       member.athleteId,
     );
     expect(await freshness(member.id)).toEqual({ events: null, activities: null });
+    expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 0 });
     expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(1);
 
     await env.DB.prepare(
       `UPDATE users SET intervals_events_synced_at = 30,
-                        intervals_activities_synced_at = 40
+                        intervals_activities_synced_at = 40,
+                        intervals_events_sync_attempt = 5,
+                        intervals_activities_sync_attempt = 6
         WHERE id = ?1`,
     )
       .bind(member.id)
       .run();
+    await setUserIntervalsOAuth(
+      env.DB,
+      member.id,
+      'initial-token',
+      'refresh-token',
+      null,
+      member.athleteId,
+    );
+    expect(await syncAttempts(member.id)).toEqual({ events: 5, activities: 6 });
     let eventCalls = 0;
     const refreshFetcher: Fetcher = async (input) => {
       if (input.includes('/oauth/token')) {
@@ -607,6 +679,18 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       'rotated-token',
     );
     expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(1);
+    expect(await syncAttempts(member.id)).toEqual({ events: 6, activities: 6 });
+
+    await setUserIntervalsOAuth(
+      env.DB,
+      member.id,
+      'callback-replacement',
+      'callback-refresh',
+      null,
+      member.athleteId,
+    );
+    expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 0 });
+    expect((await getUserIntervalsCreds(env.DB, member.id)).credential_generation).toBe(2);
   });
 
   it('does not stamp a refreshed OAuth completion after that identity is replaced', async () => {
@@ -1028,5 +1112,625 @@ describe('P4 shared success stamps and credential lifecycle', () => {
       access_token: null,
       athlete_id: null,
     });
+  });
+});
+
+describe('P4.5 same-generation attempt ordering', () => {
+  it('keeps the newer event cache, tombstones, and freshness byte-exact', async () => {
+    const member = await connectedMember('attempt-events');
+    await syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 10,
+      fetcher: jsonSuccess([
+        plannedEvent('kept', 'baseline'),
+        plannedEvent('removed', 'will be tombstoned'),
+      ]),
+    });
+    let entered!: () => void;
+    const enteredProvider = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const older = syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 30,
+      fetcher: async () => {
+        entered();
+        await gate;
+        return new Response(
+          JSON.stringify([
+            plannedEvent('kept', 'stale overwrite'),
+            plannedEvent('stale-insert', 'must never land'),
+          ]),
+          { status: 200 },
+        );
+      },
+    });
+    await enteredProvider;
+
+    const newer = await syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 20,
+      fetcher: jsonSuccess([
+        plannedEvent('kept', 'newest result'),
+        plannedEvent('new-insert', 'newest insert'),
+      ]),
+    });
+    const cacheAfterNewer = await externalRows('external_events', member.id);
+    const freshnessAfterNewer = await freshness(member.id);
+    release();
+    const olderResult = await older;
+
+    expect(newer.status).toBe('ok');
+    expect(olderResult.status).toBe('superseded');
+    expect(await externalRows('external_events', member.id)).toEqual(cacheAfterNewer);
+    expect(await freshness(member.id)).toEqual(freshnessAfterNewer);
+    expect(cacheAfterNewer).toEqual([
+      expect.objectContaining({ external_id: 'kept', title: 'newest result', deleted_at: null }),
+      expect.objectContaining({ external_id: 'new-insert', deleted_at: null }),
+      expect.objectContaining({ external_id: 'removed', deleted_at: expect.any(Number) }),
+    ]);
+    expect(await syncAttempts(member.id)).toEqual({ events: 3, activities: 0 });
+  });
+
+  it('a newer failed attempt still supersedes an older successful response', async () => {
+    const member = await connectedMember('attempt-failure');
+    await syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 10,
+      fetcher: jsonSuccess([plannedEvent('preserved', 'baseline')]),
+    });
+    let entered!: () => void;
+    const enteredProvider = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const older = syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 30,
+      fetcher: async () => {
+        entered();
+        await gate;
+        return new Response(
+          JSON.stringify([plannedEvent('preserved', 'stale success')]),
+          { status: 200 },
+        );
+      },
+    });
+    await enteredProvider;
+    const newerFailure = await syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      fetcher: async () => new Response('upstream', { status: 500 }),
+    });
+    const cacheAfterFailure = await externalRows('external_events', member.id);
+    const freshnessAfterFailure = await freshness(member.id);
+    release();
+
+    expect(newerFailure.status).toBe('fetch_failed');
+    expect((await older).status).toBe('superseded');
+    expect(await externalRows('external_events', member.id)).toEqual(cacheAfterFailure);
+    expect(await freshness(member.id)).toEqual(freshnessAfterFailure);
+    expect(cacheAfterFailure).toEqual([
+      expect.objectContaining({ external_id: 'preserved', title: 'baseline' }),
+    ]);
+    expect(await syncAttempts(member.id)).toEqual({ events: 3, activities: 0 });
+  });
+
+  it('keeps the newer activity cache, tombstones, and freshness byte-exact', async () => {
+    const member = await connectedMember('attempt-activities');
+    await syncExternalActivities(env.DB, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 10,
+      fetcher: jsonSuccess([
+        completedActivity('kept', 'baseline'),
+        completedActivity('removed', 'will be tombstoned'),
+      ]),
+    });
+    let entered!: () => void;
+    const enteredProvider = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const older = syncExternalActivities(env.DB, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 30,
+      fetcher: async () => {
+        entered();
+        await gate;
+        return new Response(
+          JSON.stringify([
+            completedActivity('kept', 'stale overwrite'),
+            completedActivity('stale-insert', 'must never land'),
+          ]),
+          { status: 200 },
+        );
+      },
+    });
+    await enteredProvider;
+    const newer = await syncExternalActivities(env.DB, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 20,
+      fetcher: jsonSuccess([
+        completedActivity('kept', 'newest result'),
+        completedActivity('new-insert', 'newest insert'),
+      ]),
+    });
+    const cacheAfterNewer = await externalRows('external_activities', member.id);
+    const freshnessAfterNewer = await freshness(member.id);
+    release();
+    const olderResult = await older;
+
+    expect(newer.status).toBe('ok');
+    expect(olderResult.status).toBe('superseded');
+    expect(await externalRows('external_activities', member.id)).toEqual(cacheAfterNewer);
+    expect(await freshness(member.id)).toEqual(freshnessAfterNewer);
+    expect(cacheAfterNewer).toEqual([
+      expect.objectContaining({ external_id: 'kept', name: 'newest result', deleted_at: null }),
+      expect.objectContaining({ external_id: 'new-insert', deleted_at: null }),
+      expect.objectContaining({ external_id: 'removed', deleted_at: expect.any(Number) }),
+    ]);
+    expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 3 });
+  });
+
+  it('fences HealthKit retire, repoint, and restore after a newer activity claim', async () => {
+    const member = await connectedMember('attempt-healthkit');
+    const providerRows = [
+      completedActivity('retire-winner', 'retire winner'),
+      {
+        ...completedActivity('repoint-winner', 'repoint winner'),
+        start_date_local: '2036-05-18T09:00:30',
+      },
+    ];
+    await syncExternalActivities(env.DB, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 10,
+      fetcher: jsonSuccess(providerRows),
+    });
+    for (const row of [
+      { id: 'retire', start: '08:00:00', deleted: null, canonical: 1, duplicate: null },
+      {
+        id: 'repoint',
+        start: '09:00:00',
+        deleted: 11,
+        canonical: 0,
+        duplicate: 'intervals:activity:obsolete',
+      },
+      {
+        id: 'restore',
+        start: '10:00:00',
+        deleted: 12,
+        canonical: 0,
+        duplicate: 'intervals:activity:gone',
+      },
+    ]) {
+      await env.DB.prepare(
+        `INSERT INTO external_activities
+           (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
+            synced_at,deleted_at,canonical,duplicate_of)
+         VALUES (?1,?2,'healthkit',?3,'2036-05-18',?4,'ride',?3,10,?5,?6,?7)`,
+      )
+        .bind(
+          `healthkit:activity:${member.id}:${row.id}`,
+          member.id,
+          row.id,
+          Date.parse(`2036-05-18T${row.start}Z`),
+          row.deleted,
+          row.canonical,
+          row.duplicate,
+        )
+        .run();
+    }
+    const healthKitBefore = (await externalRows('external_activities', member.id)).filter(
+      (row) => row.source === 'healthkit',
+    );
+    const freshnessBefore = await freshness(member.id);
+    let newerResult: Awaited<ReturnType<typeof syncExternalActivities>> | undefined;
+    const racedDb = supersedeAfterHealthKitRead(env.DB, async () => {
+      newerResult = await syncExternalActivities(env.DB, testEnv(), {
+        userId: member.id,
+        fetcher: async () => new Response('upstream', { status: 500 }),
+      });
+    });
+
+    const olderResult = await syncExternalActivities(racedDb, testEnv(), {
+      userId: member.id,
+      today: '2036-05-18',
+      syncedAt: 20,
+      fetcher: jsonSuccess(providerRows),
+    });
+    const healthKitAfter = (await externalRows('external_activities', member.id)).filter(
+      (row) => row.source === 'healthkit',
+    );
+
+    expect(newerResult?.status).toBe('fetch_failed');
+    expect(olderResult.status).toBe('superseded');
+    expect(healthKitAfter).toEqual(healthKitBefore);
+    expect(await freshness(member.id)).toEqual(freshnessBefore);
+    expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 3 });
+  });
+
+  it('isolates attempts per cache and per user', async () => {
+    const memberA = await connectedMember('attempt-isolation-a');
+    const memberB = await connectedMember('attempt-isolation-b');
+    let entered!: () => void;
+    const enteredProvider = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const aEvents = syncExternalEvents(env.DB, testEnv(), {
+      userId: memberA.id,
+      fetcher: async () => {
+        entered();
+        await gate;
+        return new Response(JSON.stringify([plannedEvent('a-event', 'A')]), { status: 200 });
+      },
+    });
+    await enteredProvider;
+
+    const [aActivities, bEvents] = await Promise.all([
+      syncExternalActivities(env.DB, testEnv(), {
+        userId: memberA.id,
+        fetcher: jsonSuccess([completedActivity('a-activity', 'A')]),
+      }),
+      syncExternalEvents(env.DB, testEnv(), {
+        userId: memberB.id,
+        fetcher: jsonSuccess([plannedEvent('b-event', 'B')]),
+      }),
+    ]);
+    release();
+
+    expect((await aEvents).status).toBe('ok');
+    expect(aActivities.status).toBe('ok');
+    expect(bEvents.status).toBe('ok');
+    expect(await syncAttempts(memberA.id)).toEqual({ events: 1, activities: 1 });
+    expect(await syncAttempts(memberB.id)).toEqual({ events: 1, activities: 0 });
+  });
+
+  it('a newer same-cache attempt makes an older 401 a no-op', async () => {
+    const member = await connectedMember('attempt-stale-401');
+    let entered!: () => void;
+    const enteredProvider = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const older = syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      fetcher: async () => {
+        entered();
+        await gate;
+        return new Response('stale rejection', { status: 401 });
+      },
+    });
+    await enteredProvider;
+    const newer = await syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      syncedAt: 20,
+      fetcher: emptySuccess,
+    });
+    release();
+
+    expect(newer.status).toBe('ok');
+    expect((await older).status).toBe('superseded');
+    expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+      api_key: member.apiKey,
+      credential_generation: 0,
+      auth_error_at: null,
+    });
+    expect(await authAuditCount(member.id)).toBe(0);
+    expect(await syncAttempts(member.id)).toEqual({ events: 2, activities: 0 });
+  });
+
+  it('cross-cache claims supersede stale shared-auth mutation in both directions', async () => {
+    for (const oldCache of ['events', 'activities'] as const) {
+      const member = await connectedMember(`attempt-cross-${oldCache}`);
+      let entered!: () => void;
+      const enteredProvider = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const older = (oldCache === 'events' ? syncExternalEvents : syncExternalActivities)(
+        env.DB,
+        testEnv(),
+        {
+          userId: member.id,
+          fetcher: async () => {
+            entered();
+            await gate;
+            return new Response('stale rejection', { status: 401 });
+          },
+        },
+      );
+      await enteredProvider;
+      const newer = await (oldCache === 'events'
+        ? syncExternalActivities(env.DB, testEnv(), {
+            userId: member.id,
+            fetcher: emptySuccess,
+          })
+        : syncExternalEvents(env.DB, testEnv(), {
+            userId: member.id,
+            fetcher: emptySuccess,
+          }));
+      release();
+
+      expect(newer.status).toBe('ok');
+      expect((await older).status).toBe('superseded');
+      expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+        api_key: member.apiKey,
+        credential_generation: 0,
+        auth_error_at: null,
+      });
+      expect(await authAuditCount(member.id)).toBe(0);
+      expect(await syncAttempts(member.id)).toEqual({ events: 1, activities: 1 });
+    }
+  });
+
+  it('a pending newer other-cache claim blocks an older 401 before it finishes', async () => {
+    const member = await connectedMember('attempt-cross-pending');
+    let oldEntered!: () => void;
+    const oldStarted = new Promise<void>((resolve) => {
+      oldEntered = resolve;
+    });
+    let releaseOld!: () => void;
+    const oldGate = new Promise<void>((resolve) => {
+      releaseOld = resolve;
+    });
+    const older = syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      fetcher: async () => {
+        oldEntered();
+        await oldGate;
+        return new Response('stale rejection', { status: 401 });
+      },
+    });
+    await oldStarted;
+
+    let newEntered!: () => void;
+    const newStarted = new Promise<void>((resolve) => {
+      newEntered = resolve;
+    });
+    let releaseNew!: () => void;
+    const newGate = new Promise<void>((resolve) => {
+      releaseNew = resolve;
+    });
+    const newer = syncExternalActivities(env.DB, testEnv(), {
+      userId: member.id,
+      fetcher: async () => {
+        newEntered();
+        await newGate;
+        return new Response(JSON.stringify([]), { status: 200 });
+      },
+    });
+    await newStarted;
+    releaseOld();
+
+    expect((await older).status).toBe('superseded');
+    expect(await authAuditCount(member.id)).toBe(0);
+    expect((await getUserIntervalsCreds(env.DB, member.id)).api_key).toBe(member.apiKey);
+    releaseNew();
+    expect((await newer).status).toBe('ok');
+  });
+
+  it('orders concurrent cross-cache OAuth refresh responses by the full claim tuple', async () => {
+    for (const oldCache of ['events', 'activities'] as const) {
+      for (const releaseOrder of ['older-first', 'newer-first'] as const) {
+        const member = await connectedMember(`refresh-${oldCache}-${releaseOrder}`);
+        await setUserIntervalsOAuth(
+          env.DB,
+          member.id,
+          'expired-token',
+          'refresh-token',
+          123,
+          member.athleteId,
+        );
+        let oldRefreshEntered!: () => void;
+        const oldRefreshStarted = new Promise<void>((resolve) => {
+          oldRefreshEntered = resolve;
+        });
+        let releaseOldRefresh!: () => void;
+        const oldRefreshGate = new Promise<void>((resolve) => {
+          releaseOldRefresh = resolve;
+        });
+        let oldProviderCalls = 0;
+        const oldFetcher: Fetcher = async (input) => {
+          if (input.includes('/oauth/token')) {
+            oldRefreshEntered();
+            await oldRefreshGate;
+            return new Response(JSON.stringify({ access_token: 'stale-rotated-token' }), {
+              status: 200,
+            });
+          }
+          oldProviderCalls += 1;
+          return new Response('expired', { status: 401 });
+        };
+        const older = (oldCache === 'events' ? syncExternalEvents : syncExternalActivities)(
+          env.DB,
+          testEnv(),
+          { userId: member.id, fetcher: oldFetcher },
+        );
+        await oldRefreshStarted;
+
+        let newRefreshEntered!: () => void;
+        const newRefreshStarted = new Promise<void>((resolve) => {
+          newRefreshEntered = resolve;
+        });
+        let releaseNewRefresh!: () => void;
+        const newRefreshGate = new Promise<void>((resolve) => {
+          releaseNewRefresh = resolve;
+        });
+        let newProviderCalls = 0;
+        const newestToken = `newest-${oldCache}-${releaseOrder}`;
+        const newFetcher: Fetcher = async (input) => {
+          if (input.includes('/oauth/token')) {
+            newRefreshEntered();
+            await newRefreshGate;
+            return new Response(JSON.stringify({ access_token: newestToken }), {
+              status: 200,
+            });
+          }
+          newProviderCalls += 1;
+          return newProviderCalls === 1
+            ? new Response('expired', { status: 401 })
+            : new Response(JSON.stringify([]), { status: 200 });
+        };
+        const newer = oldCache === 'events'
+          ? syncExternalActivities(env.DB, testEnv(), {
+              userId: member.id,
+              fetcher: newFetcher,
+            })
+          : syncExternalEvents(env.DB, testEnv(), {
+              userId: member.id,
+              fetcher: newFetcher,
+            });
+        await newRefreshStarted;
+
+        if (releaseOrder === 'older-first') {
+          releaseOldRefresh();
+          expect((await older).status).toBe('superseded');
+          releaseNewRefresh();
+          expect((await newer).status).toBe('ok');
+        } else {
+          releaseNewRefresh();
+          expect((await newer).status).toBe('ok');
+          releaseOldRefresh();
+          expect((await older).status).toBe('superseded');
+        }
+        expect(oldProviderCalls).toBe(1);
+        expect(newProviderCalls).toBe(2);
+        expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+          access_token: newestToken,
+          credential_generation: 1,
+          auth_error_at: null,
+        });
+        expect(await authAuditCount(member.id)).toBe(0);
+        expect(await syncAttempts(member.id)).toEqual({ events: 1, activities: 1 });
+      }
+    }
+  });
+
+  it('lets only the newest same-cache 401 clear credentials and audit once', async () => {
+    const member = await connectedMember('attempt-winning-401', {
+      events: 10,
+      activities: 20,
+    });
+    let entered!: () => void;
+    const enteredProvider = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const older = syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      fetcher: async () => {
+        entered();
+        await gate;
+        return new Response('old rejection', { status: 401 });
+      },
+    });
+    await enteredProvider;
+    const newest = await syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      fetcher: async () => new Response('new rejection', { status: 401 }),
+    });
+    release();
+
+    expect(newest).toMatchObject({
+      status: 'fetch_failed',
+      detail: 'http:401:reauth_required',
+    });
+    expect((await older).status).toBe('superseded');
+    expect(await authAuditCount(member.id)).toBe(1);
+    expect(await getUserIntervalsCreds(env.DB, member.id)).toMatchObject({
+      api_key: null,
+      athlete_id: null,
+      credential_generation: 1,
+      auth_error_at: expect.any(Number),
+    });
+    expect(await syncAttempts(member.id)).toEqual({ events: 0, activities: 0 });
+    expect(await freshness(member.id)).toEqual({ events: null, activities: null });
+  });
+
+  it('fails closed at the safe-integer attempt limit without provider I/O or mutation', async () => {
+    const member = await connectedMember('attempt-overflow', { events: 10, activities: 20 });
+    await env.DB.prepare(
+      `UPDATE users SET intervals_events_sync_attempt = 9007199254740991,
+                        intervals_activities_sync_attempt = 17
+        WHERE id = ?1`,
+    )
+      .bind(member.id)
+      .run();
+    const stateBefore = await intervalsUserState(member.id);
+    const cacheBefore = await externalRows('external_events', member.id);
+    const fetcher = vi.fn(emptySuccess);
+
+    const result = await syncExternalEvents(env.DB, testEnv(), {
+      userId: member.id,
+      fetcher,
+    });
+
+    expect(result).toEqual({
+      status: 'fetch_failed',
+      synced: 0,
+      detail: 'attempt_exhausted',
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(await intervalsUserState(member.id)).toEqual(stateBefore);
+    expect(await externalRows('external_events', member.id)).toEqual(cacheBefore);
+  });
+
+  it('keeps migration defaults old-writer compatible and enforces unindexed bounds', async () => {
+    const id = crypto.randomUUID();
+    await env.DB.prepare(
+      'INSERT INTO users (id,apple_sub,email,display_name,created_at) VALUES (?1,?2,NULL,NULL,?3)',
+    )
+      .bind(id, `p4-5-old-writer-${id}`, TICK)
+      .run();
+    expect(await syncAttempts(id)).toEqual({ events: 0, activities: 0 });
+
+    await expect(
+      env.DB.prepare('UPDATE users SET intervals_events_sync_attempt = -1 WHERE id = ?1')
+        .bind(id)
+        .run(),
+    ).rejects.toThrow(/CHECK constraint failed/);
+    await expect(
+      env.DB.prepare(
+        'UPDATE users SET intervals_activities_sync_attempt = 9007199254740992 WHERE id = ?1',
+      )
+        .bind(id)
+        .run(),
+    ).rejects.toThrow(/CHECK constraint failed/);
+
+    const indexes = await env.DB.prepare(
+      "SELECT sql FROM sqlite_schema WHERE type = 'index' AND tbl_name = 'users'",
+    ).all<{ sql: string | null }>();
+    expect(JSON.stringify(indexes.results)).not.toContain('sync_attempt');
   });
 });

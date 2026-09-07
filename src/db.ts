@@ -537,6 +537,8 @@ export async function upsertUser(
     intervals_credential_generation: 0,
     intervals_events_synced_at: null,
     intervals_activities_synced_at: null,
+    intervals_events_sync_attempt: 0,
+    intervals_activities_sync_attempt: 0,
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
@@ -618,6 +620,8 @@ async function insertOwnerUnlessTombstoned(
     intervals_credential_generation: 0,
     intervals_events_synced_at: null,
     intervals_activities_synced_at: null,
+    intervals_events_sync_attempt: 0,
+    intervals_activities_sync_attempt: 0,
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
@@ -1391,6 +1395,8 @@ export interface IntervalsUserCreds {
   user_id: string;
   api_key: string | null;
   access_token: string | null;
+  refresh_token: string | null;
+  expires_at: number | null;
   athlete_id: string;
   credential_generation: number;
   events_synced_at: number | null;
@@ -1409,7 +1415,9 @@ export async function listUsersWithIntervalsCreds(
 ): Promise<IntervalsUserCreds[]> {
   const r = await db
     .prepare(
-      `SELECT id, intervals_api_key, intervals_oauth_access_token, intervals_athlete_id,
+      `SELECT id, intervals_api_key, intervals_oauth_access_token,
+              intervals_oauth_refresh_token, intervals_oauth_expires_at,
+              intervals_athlete_id,
               intervals_credential_generation,
               intervals_events_synced_at, intervals_activities_synced_at
          FROM users
@@ -1421,6 +1429,8 @@ export async function listUsersWithIntervalsCreds(
       id: string;
       intervals_api_key: string | null;
       intervals_oauth_access_token: string | null;
+      intervals_oauth_refresh_token: string | null;
+      intervals_oauth_expires_at: number | null;
       intervals_athlete_id: string;
       intervals_credential_generation: number;
       intervals_events_synced_at: number | null;
@@ -1430,6 +1440,8 @@ export async function listUsersWithIntervalsCreds(
     user_id: row.id,
     api_key: row.intervals_api_key,
     access_token: row.intervals_oauth_access_token,
+    refresh_token: row.intervals_oauth_refresh_token,
+    expires_at: row.intervals_oauth_expires_at,
     athlete_id: row.intervals_athlete_id,
     credential_generation: row.intervals_credential_generation,
     events_synced_at: row.intervals_events_synced_at,
@@ -1444,6 +1456,8 @@ export async function getUserIntervalsCreds(
 ): Promise<{
   api_key: string | null;
   access_token: string | null;
+  refresh_token: string | null;
+  expires_at: number | null;
   athlete_id: string | null;
   auth_error_at: number | null;
   credential_generation: number;
@@ -1452,6 +1466,8 @@ export async function getUserIntervalsCreds(
     .prepare(
       `SELECT intervals_api_key AS api_key,
               intervals_oauth_access_token AS access_token,
+              intervals_oauth_refresh_token AS refresh_token,
+              intervals_oauth_expires_at AS expires_at,
               intervals_athlete_id AS athlete_id,
               intervals_auth_error_at AS auth_error_at,
               intervals_credential_generation AS credential_generation
@@ -1461,6 +1477,8 @@ export async function getUserIntervalsCreds(
     .first<{
       api_key: string | null;
       access_token: string | null;
+      refresh_token: string | null;
+      expires_at: number | null;
       athlete_id: string | null;
       auth_error_at: number | null;
       credential_generation: number;
@@ -1468,6 +1486,8 @@ export async function getUserIntervalsCreds(
   return {
     api_key: r?.api_key ?? null,
     access_token: r?.access_token ?? null,
+    refresh_token: r?.refresh_token ?? null,
+    expires_at: r?.expires_at ?? null,
     athlete_id: r?.athlete_id ?? null,
     auth_error_at: r?.auth_error_at ?? null,
     credential_generation: r?.credential_generation ?? 0,
@@ -1570,9 +1590,13 @@ export async function seedOwnerIntervalsCredsFromEnv(
       `UPDATE users
           SET intervals_api_key = ?2,
               intervals_athlete_id = ?3,
+              intervals_oauth_refresh_token = NULL,
+              intervals_oauth_expires_at = NULL,
               intervals_credential_generation = intervals_credential_generation + 1,
               intervals_events_synced_at = NULL,
-              intervals_activities_synced_at = NULL
+              intervals_activities_synced_at = NULL,
+              intervals_events_sync_attempt = 0,
+              intervals_activities_sync_attempt = 0
         WHERE id = ?1
           AND intervals_api_key IS NULL
           AND intervals_oauth_access_token IS NULL
@@ -1634,7 +1658,19 @@ export async function setUserIntervalsCreds(
                  AND intervals_api_key IS ?2
                  AND intervals_athlete_id IS ?3
                  AND intervals_oauth_access_token IS NULL
-                THEN intervals_activities_synced_at ELSE NULL END
+                THEN intervals_activities_synced_at ELSE NULL END,
+              intervals_events_sync_attempt = CASE
+                WHEN ?4 = 1
+                 AND intervals_api_key IS ?2
+                 AND intervals_athlete_id IS ?3
+                 AND intervals_oauth_access_token IS NULL
+                THEN intervals_events_sync_attempt ELSE 0 END,
+              intervals_activities_sync_attempt = CASE
+                WHEN ?4 = 1
+                 AND intervals_api_key IS ?2
+                 AND intervals_athlete_id IS ?3
+                 AND intervals_oauth_access_token IS NULL
+                THEN intervals_activities_sync_attempt ELSE 0 END
         WHERE id = ?1`,
     )
     .bind(userId, connect ? apiKey : null, connect ? athleteId : null, connect ? 1 : 0)
@@ -1683,7 +1719,17 @@ async function writeUserIntervalsOAuth(
                 WHEN intervals_oauth_access_token IS ?2
                   AND intervals_athlete_id IS ?5
                   AND intervals_api_key IS NULL
-                THEN intervals_activities_synced_at ELSE NULL END
+                THEN intervals_activities_synced_at ELSE NULL END,
+              intervals_events_sync_attempt = CASE
+                WHEN intervals_oauth_access_token IS ?2
+                  AND intervals_athlete_id IS ?5
+                  AND intervals_api_key IS NULL
+                THEN intervals_events_sync_attempt ELSE 0 END,
+              intervals_activities_sync_attempt = CASE
+                WHEN intervals_oauth_access_token IS ?2
+                  AND intervals_athlete_id IS ?5
+                  AND intervals_api_key IS NULL
+                THEN intervals_activities_sync_attempt ELSE 0 END
         WHERE id = ?1`,
     )
     .bind(
@@ -7339,7 +7385,7 @@ export async function getResolvedScheduleNames(
 export type SyncStatus =
   | 'disabled' // INTERVALS_ICU_API_KEY/ATHLETE_ID unset — dormant no-op
   | 'ok' // 2xx + parse: cache reconciled
-  | 'superseded' // credentials changed while provider/cache work was in flight
+  | 'superseded' // a newer attempt or credential identity won while work was in flight
   | 'fetch_failed'; // non-2xx/timeout/parse: cache left COMPLETELY untouched
 
 export interface SyncResult {
@@ -7365,18 +7411,176 @@ type IntervalsCache = 'events' | 'activities';
 
 type IntervalsCredentialIdentity =
   | { kind: 'api_key'; apiKey: string; athleteId: string; generation: number }
-  | { kind: 'oauth'; accessToken: string; athleteId: string; generation: number };
+  | {
+      kind: 'oauth';
+      accessToken: string;
+      refreshToken: string | null;
+      expiresAt: number | null;
+      athleteId: string;
+      generation: number;
+    };
+
+interface IntervalsSyncAttemptTuple {
+  eventsAttempt: number;
+  activitiesAttempt: number;
+}
+
+const MAX_INTERVALS_SYNC_ATTEMPT = Number.MAX_SAFE_INTEGER;
+
+function intervalsSyncAttemptColumn(cache: IntervalsCache): string {
+  return cache === 'events'
+    ? 'intervals_events_sync_attempt'
+    : 'intervals_activities_sync_attempt';
+}
 
 function usedIntervalsCredentialIdentity(
   apiKey: string | null | undefined,
   athleteId: string | null | undefined,
   accessToken: string | null | undefined,
+  refreshToken: string | null | undefined,
+  expiresAt: number | null | undefined,
   generation: number,
 ): IntervalsCredentialIdentity | null {
   if (!athleteId) return null;
-  if (accessToken) return { kind: 'oauth', accessToken, athleteId, generation };
+  if (accessToken) {
+    return {
+      kind: 'oauth',
+      accessToken,
+      refreshToken: refreshToken ?? null,
+      expiresAt: expiresAt ?? null,
+      athleteId,
+      generation,
+    };
+  }
   if (!apiKey) return null;
   return { kind: 'api_key', apiKey, athleteId, generation };
+}
+
+/**
+ * Atomically start one cache poll. The UPDATE both verifies the exact durable
+ * credential identity and advances only that cache's counter; RETURNING
+ * captures the full cross-cache attempt tuple used by every later auth CAS.
+ * A post-failure read only distinguishes exhaustion from supersession and is
+ * never used to choose the value written by a claim.
+ */
+async function claimIntervalsSyncAttempt(
+  db: D1Database,
+  userId: string,
+  cache: IntervalsCache,
+  credential: IntervalsCredentialIdentity,
+): Promise<
+  | { status: 'claimed'; attempts: IntervalsSyncAttemptTuple }
+  | { status: 'superseded' }
+  | { status: 'attempt_exhausted' }
+> {
+  const column = intervalsSyncAttemptColumn(cache);
+  const returning = `RETURNING intervals_events_sync_attempt AS eventsAttempt,
+                               intervals_activities_sync_attempt AS activitiesAttempt`;
+  const statement =
+    credential.kind === 'oauth'
+      ? db.prepare(
+          `UPDATE users
+              SET ${column} = ${column} + 1
+            WHERE id = ?1
+              AND intervals_credential_generation = ?2
+              AND intervals_oauth_access_token = ?3
+              AND intervals_oauth_refresh_token IS ?4
+              AND intervals_oauth_expires_at IS ?5
+              AND intervals_athlete_id = ?6
+              AND intervals_api_key IS NULL
+              AND ${column} < ${MAX_INTERVALS_SYNC_ATTEMPT}
+            ${returning}`,
+        )
+      : db.prepare(
+          `UPDATE users
+              SET ${column} = ${column} + 1
+            WHERE id = ?1
+              AND intervals_credential_generation = ?2
+              AND intervals_api_key = ?3
+              AND intervals_athlete_id = ?4
+              AND intervals_oauth_access_token IS NULL
+              AND intervals_oauth_refresh_token IS NULL
+              AND intervals_oauth_expires_at IS NULL
+              AND ${column} < ${MAX_INTERVALS_SYNC_ATTEMPT}
+            ${returning}`,
+        );
+  const claimed = await (credential.kind === 'oauth'
+    ? statement
+        .bind(
+          userId,
+          credential.generation,
+          credential.accessToken,
+          credential.refreshToken,
+          credential.expiresAt,
+          credential.athleteId,
+        )
+        .first<IntervalsSyncAttemptTuple>()
+    : statement
+        .bind(userId, credential.generation, credential.apiKey, credential.athleteId)
+        .first<IntervalsSyncAttemptTuple>());
+  if (claimed) return { status: 'claimed', attempts: claimed };
+
+  const diagnostic =
+    credential.kind === 'oauth'
+      ? await db
+          .prepare(
+            `SELECT ${column} AS attempt FROM users
+              WHERE id = ?1
+                AND intervals_credential_generation = ?2
+                AND intervals_oauth_access_token = ?3
+                AND intervals_oauth_refresh_token IS ?4
+                AND intervals_oauth_expires_at IS ?5
+                AND intervals_athlete_id = ?6
+                AND intervals_api_key IS NULL`,
+          )
+          .bind(
+            userId,
+            credential.generation,
+            credential.accessToken,
+            credential.refreshToken,
+            credential.expiresAt,
+            credential.athleteId,
+          )
+          .first<{ attempt: number }>()
+      : await db
+          .prepare(
+            `SELECT ${column} AS attempt FROM users
+              WHERE id = ?1
+                AND intervals_credential_generation = ?2
+                AND intervals_api_key = ?3
+                AND intervals_athlete_id = ?4
+                AND intervals_oauth_access_token IS NULL
+                AND intervals_oauth_refresh_token IS NULL
+                AND intervals_oauth_expires_at IS NULL`,
+          )
+          .bind(userId, credential.generation, credential.apiKey, credential.athleteId)
+          .first<{ attempt: number }>();
+  return diagnostic?.attempt === MAX_INTERVALS_SYNC_ATTEMPT
+    ? { status: 'attempt_exhausted' }
+    : { status: 'superseded' };
+}
+
+async function isCurrentIntervalsSyncAttempt(
+  db: D1Database,
+  userId: string,
+  cache: IntervalsCache,
+  credential: IntervalsCredentialIdentity,
+  attempts: IntervalsSyncAttemptTuple,
+): Promise<boolean> {
+  const column = intervalsSyncAttemptColumn(cache);
+  const ownAttempt = cache === 'events' ? attempts.eventsAttempt : attempts.activitiesAttempt;
+  const row = await db
+    .prepare(
+      `SELECT EXISTS(
+                SELECT 1 FROM users
+                 WHERE id = ?1
+                   AND intervals_credential_generation = ?2
+                   AND ${column} = ?3
+              ) AS current_attempt`,
+    )
+    .bind(userId, credential.generation, ownAttempt)
+    .first<{ current_attempt: number }>();
+  return row?.current_attempt === 1;
 }
 
 /**
@@ -7384,7 +7588,8 @@ function usedIntervalsCredentialIdentity(
  * The CASE keeps the stamp strictly monotonic when two webhook/manual/cron
  * calls finish in the same millisecond. This intentional users-row write is
  * separate from P2's cache-change cursor: an executed no-change poll writes
- * this one freshness row, while a skipped cron poll writes nothing.
+ * its attempt claim plus this freshness row, while a skipped cron poll writes
+ * nothing.
  * The credential predicate is part of the same UPDATE: a completion racing a
  * replacement/disconnect changes zero rows and leaves the reset stamp NULL so
  * a later cron repairs the cache with the current identity.
@@ -7395,39 +7600,69 @@ async function stampIntervalsSyncSuccess(
   cache: IntervalsCache,
   timestamp: number,
   credential: IntervalsCredentialIdentity,
+  attempts: IntervalsSyncAttemptTuple,
 ): Promise<boolean> {
-  const column =
+  const freshnessColumn =
     cache === 'events'
       ? 'intervals_events_synced_at'
       : 'intervals_activities_synced_at';
-  const identityPredicate =
+  const attemptColumn = intervalsSyncAttemptColumn(cache);
+  const ownAttempt = cache === 'events' ? attempts.eventsAttempt : attempts.activitiesAttempt;
+  const statement =
     credential.kind === 'oauth'
-      ? `intervals_credential_generation = ?3
-         AND intervals_oauth_access_token = ?4
-         AND intervals_athlete_id = ?5
-         AND intervals_api_key IS NULL`
-      : `intervals_credential_generation = ?3
-         AND intervals_api_key = ?4
-         AND intervals_athlete_id = ?5
-         AND intervals_oauth_access_token IS NULL`;
-  const statement = db.prepare(
-    `UPDATE users
-          SET ${column} = CASE
-                WHEN ${column} IS NULL OR ${column} < ?2 THEN ?2
-                ELSE ${column} + 1
+      ? db.prepare(
+          `UPDATE users
+          SET ${freshnessColumn} = CASE
+                WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
+                ELSE ${freshnessColumn} + 1
               END
         WHERE id = ?1
-          AND ${identityPredicate}`,
-  );
-  const stamped = await statement
-    .bind(
-      userId,
-      timestamp,
-      credential.generation,
-      credential.kind === 'oauth' ? credential.accessToken : credential.apiKey,
-      credential.athleteId,
-    )
-    .run();
+          AND intervals_credential_generation = ?3
+          AND intervals_oauth_access_token = ?4
+          AND intervals_oauth_refresh_token IS ?5
+          AND intervals_oauth_expires_at IS ?6
+          AND intervals_athlete_id = ?7
+          AND intervals_api_key IS NULL
+          AND ${attemptColumn} = ?8`,
+        )
+      : db.prepare(
+          `UPDATE users
+          SET ${freshnessColumn} = CASE
+                WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
+                ELSE ${freshnessColumn} + 1
+              END
+        WHERE id = ?1
+          AND intervals_credential_generation = ?3
+          AND intervals_api_key = ?4
+          AND intervals_athlete_id = ?5
+          AND intervals_oauth_access_token IS NULL
+          AND intervals_oauth_refresh_token IS NULL
+          AND intervals_oauth_expires_at IS NULL
+          AND ${attemptColumn} = ?6`,
+        );
+  const stamped = await (credential.kind === 'oauth'
+    ? statement
+        .bind(
+          userId,
+          timestamp,
+          credential.generation,
+          credential.accessToken,
+          credential.refreshToken,
+          credential.expiresAt,
+          credential.athleteId,
+          ownAttempt,
+        )
+        .run()
+    : statement
+        .bind(
+          userId,
+          timestamp,
+          credential.generation,
+          credential.apiKey,
+          credential.athleteId,
+          ownAttempt,
+        )
+        .run());
   return (stamped.meta.changes ?? 0) === 1;
 }
 
@@ -7483,20 +7718,13 @@ async function markIntervalsAuthError(
   db: D1Database,
   userId: string,
   credential: IntervalsCredentialIdentity,
+  attempts: IntervalsSyncAttemptTuple,
 ): Promise<boolean> {
   const ts = now();
-  const identityPredicate =
+  const clearStatement =
     credential.kind === 'oauth'
-      ? `intervals_credential_generation = ?3
-         AND intervals_oauth_access_token = ?4
-         AND intervals_athlete_id = ?5
-         AND intervals_api_key IS NULL`
-      : `intervals_credential_generation = ?3
-         AND intervals_api_key = ?4
-         AND intervals_athlete_id = ?5
-         AND intervals_oauth_access_token IS NULL`;
-  const clearStatement = db.prepare(
-    `UPDATE users
+      ? db.prepare(
+          `UPDATE users
             SET intervals_api_key = NULL,
                 intervals_oauth_access_token = NULL,
                 intervals_oauth_refresh_token = NULL,
@@ -7505,17 +7733,63 @@ async function markIntervalsAuthError(
                 intervals_auth_error_at = ?2,
                 intervals_credential_generation = intervals_credential_generation + 1,
                 intervals_events_synced_at = NULL,
-                intervals_activities_synced_at = NULL
+                intervals_activities_synced_at = NULL,
+                intervals_events_sync_attempt = 0,
+                intervals_activities_sync_attempt = 0
           WHERE id = ?1
-            AND ${identityPredicate}`,
-  );
-  const clear = clearStatement.bind(
-    userId,
-    ts,
-    credential.generation,
-    credential.kind === 'oauth' ? credential.accessToken : credential.apiKey,
-    credential.athleteId,
-  );
+            AND intervals_credential_generation = ?3
+            AND intervals_oauth_access_token = ?4
+            AND intervals_oauth_refresh_token IS ?5
+            AND intervals_oauth_expires_at IS ?6
+            AND intervals_athlete_id = ?7
+            AND intervals_api_key IS NULL
+            AND intervals_events_sync_attempt = ?8
+            AND intervals_activities_sync_attempt = ?9`,
+        )
+      : db.prepare(
+          `UPDATE users
+            SET intervals_api_key = NULL,
+                intervals_oauth_access_token = NULL,
+                intervals_oauth_refresh_token = NULL,
+                intervals_oauth_expires_at = NULL,
+                intervals_athlete_id = NULL,
+                intervals_auth_error_at = ?2,
+                intervals_credential_generation = intervals_credential_generation + 1,
+                intervals_events_synced_at = NULL,
+                intervals_activities_synced_at = NULL,
+                intervals_events_sync_attempt = 0,
+                intervals_activities_sync_attempt = 0
+          WHERE id = ?1
+            AND intervals_credential_generation = ?3
+            AND intervals_api_key = ?4
+            AND intervals_athlete_id = ?5
+            AND intervals_oauth_access_token IS NULL
+            AND intervals_oauth_refresh_token IS NULL
+            AND intervals_oauth_expires_at IS NULL
+            AND intervals_events_sync_attempt = ?6
+            AND intervals_activities_sync_attempt = ?7`,
+        );
+  const clear = credential.kind === 'oauth'
+    ? clearStatement.bind(
+        userId,
+        ts,
+        credential.generation,
+        credential.accessToken,
+        credential.refreshToken,
+        credential.expiresAt,
+        credential.athleteId,
+        attempts.eventsAttempt,
+        attempts.activitiesAttempt,
+      )
+    : clearStatement.bind(
+        userId,
+        ts,
+        credential.generation,
+        credential.apiKey,
+        credential.athleteId,
+        attempts.eventsAttempt,
+        attempts.activitiesAttempt,
+      );
   const [cleared] = await db.batch([
     clear,
     db
@@ -7558,26 +7832,40 @@ async function tryRefreshIntervalsOAuth(
   env: Env,
   userId: string,
   credential: IntervalsOAuthCredential,
+  attempts: IntervalsSyncAttemptTuple,
   fetcher?: Fetcher,
 ): Promise<IntervalsOAuthRefreshResult> {
   const clientId = env.INTERVALS_OAUTH_CLIENT_ID;
   const clientSecret = env.INTERVALS_OAUTH_CLIENT_SECRET;
   if (!clientId || !clientSecret) return { status: 'unavailable' };
+  if (!credential.refreshToken) return { status: 'unavailable' };
   const row = await db
     .prepare(
-      `SELECT intervals_oauth_refresh_token AS refresh_token
+      `SELECT 1 AS current_credential
          FROM users
         WHERE id = ?1
           AND intervals_credential_generation = ?2
           AND intervals_oauth_access_token = ?3
-          AND intervals_athlete_id = ?4
-          AND intervals_api_key IS NULL`,
+          AND intervals_oauth_refresh_token IS ?4
+          AND intervals_oauth_expires_at IS ?5
+          AND intervals_athlete_id = ?6
+          AND intervals_api_key IS NULL
+          AND intervals_events_sync_attempt = ?7
+          AND intervals_activities_sync_attempt = ?8`,
     )
-    .bind(userId, credential.generation, credential.accessToken, credential.athleteId)
-    .first<{ refresh_token: string | null }>();
+    .bind(
+      userId,
+      credential.generation,
+      credential.accessToken,
+      credential.refreshToken,
+      credential.expiresAt,
+      credential.athleteId,
+      attempts.eventsAttempt,
+      attempts.activitiesAttempt,
+    )
+    .first<{ current_credential: number }>();
   if (!row) return { status: 'superseded' };
-  const refreshToken = row.refresh_token;
-  if (!refreshToken) return { status: 'unavailable' };
+  const refreshToken = credential.refreshToken;
 
   const f: Fetcher = fetcher ?? ((input, init) => globalThis.fetch(input, init));
   let res: { ok: boolean; status: number; json: () => Promise<unknown> };
@@ -7613,23 +7901,29 @@ async function tryRefreshIntervalsOAuth(
   const stored = await db
     .prepare(
       `UPDATE users
-          SET intervals_oauth_access_token = ?6,
-              intervals_oauth_refresh_token = ?7,
-              intervals_oauth_expires_at = ?8,
+          SET intervals_oauth_access_token = ?9,
+              intervals_oauth_refresh_token = ?10,
+              intervals_oauth_expires_at = ?11,
               intervals_auth_error_at = NULL
         WHERE id = ?1
           AND intervals_credential_generation = ?2
           AND intervals_oauth_access_token = ?3
           AND intervals_oauth_refresh_token IS ?4
-          AND intervals_athlete_id = ?5
-          AND intervals_api_key IS NULL`,
+          AND intervals_oauth_expires_at IS ?5
+          AND intervals_athlete_id = ?6
+          AND intervals_api_key IS NULL
+          AND intervals_events_sync_attempt = ?7
+          AND intervals_activities_sync_attempt = ?8`,
     )
     .bind(
       userId,
       credential.generation,
       credential.accessToken,
       refreshToken,
+      credential.expiresAt,
       credential.athleteId,
+      attempts.eventsAttempt,
+      attempts.activitiesAttempt,
       accessToken,
       newRefresh,
       expiresAt,
@@ -7638,7 +7932,12 @@ async function tryRefreshIntervalsOAuth(
   if ((stored.meta.changes ?? 0) !== 1) return { status: 'superseded' };
   return {
     status: 'refreshed',
-    credential: { ...credential, accessToken },
+    credential: {
+      ...credential,
+      accessToken,
+      refreshToken: newRefresh,
+      expiresAt,
+    },
   };
 }
 
@@ -7655,14 +7954,15 @@ async function fetchIntervalsWithAuthRecovery<
   db: D1Database,
   env: Env,
   userId: string,
-  credential: IntervalsCredentialIdentity | null,
+  credential: IntervalsCredentialIdentity,
+  attempts: IntervalsSyncAttemptTuple,
   fetcher: Fetcher | undefined,
   run: (token: string | null | undefined) => Promise<T>,
 ): Promise<{
   result: T;
   reauthRequired: boolean;
   superseded: boolean;
-  effectiveCredential: IntervalsCredentialIdentity | null;
+  effectiveCredential: IntervalsCredentialIdentity;
 }> {
   let effectiveCredential = credential;
   let result = await run(
@@ -7677,6 +7977,7 @@ async function fetchIntervalsWithAuthRecovery<
       env,
       userId,
       effectiveCredential,
+      attempts,
       fetcher,
     );
     if (refreshed.status === 'superseded') {
@@ -7690,10 +7991,12 @@ async function fetchIntervalsWithAuthRecovery<
       return { result, reauthRequired: false, superseded: false, effectiveCredential };
     }
   }
-  if (!effectiveCredential) {
-    return { result, reauthRequired: false, superseded: false, effectiveCredential };
-  }
-  const cleared = await markIntervalsAuthError(db, userId, effectiveCredential);
+  const cleared = await markIntervalsAuthError(
+    db,
+    userId,
+    effectiveCredential,
+    attempts,
+  );
   return {
     result,
     reauthRequired: cleared,
@@ -7742,6 +8045,8 @@ export async function syncExternalEvents(
   let apiKey: string | null | undefined;
   let athleteId: string | null | undefined;
   let accessToken: string | null | undefined;
+  let refreshToken: string | null | undefined;
+  let expiresAt: number | null | undefined;
   let credentialGeneration = 0;
   if (deps.userId) {
     userId = deps.userId;
@@ -7775,6 +8080,8 @@ export async function syncExternalEvents(
     // OAuth bearer token rides alongside (no env fallback — env is the
     // legacy API-key path only). intervals.ts prefers it over the API key.
     accessToken = creds.access_token;
+    refreshToken = creds.refresh_token;
+    expiresAt = creds.expires_at;
   } else {
     const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
     const seeded = await seedOwnerIntervalsCredsFromEnv(
@@ -7792,6 +8099,8 @@ export async function syncExternalEvents(
       apiKey = seeded[0]!.api_key;
       athleteId = seeded[0]!.athlete_id;
       accessToken = seeded[0]!.access_token;
+      refreshToken = seeded[0]!.refresh_token;
+      expiresAt = seeded[0]!.expires_at;
       credentialGeneration = seeded[0]!.credential_generation;
     } else {
       // Multi-user fan-out. Sync each user's cache against THEIR creds; tag
@@ -7830,8 +8139,21 @@ export async function syncExternalEvents(
     apiKey,
     athleteId,
     accessToken,
+    refreshToken,
+    expiresAt,
     credentialGeneration,
   );
+  if (!initialCredential) {
+    return { status: 'disabled', synced: 0, detail: 'disabled' };
+  }
+  const claim = await claimIntervalsSyncAttempt(db, userId, 'events', initialCredential);
+  if (claim.status === 'attempt_exhausted') {
+    return { status: 'fetch_failed', synced: 0, detail: 'attempt_exhausted' };
+  }
+  if (claim.status === 'superseded') {
+    return { status: 'superseded', synced: 0, detail: 'superseded' };
+  }
+  const attempts = claim.attempts;
   const {
     result: fetched,
     reauthRequired,
@@ -7842,6 +8164,7 @@ export async function syncExternalEvents(
     env,
     userId,
     initialCredential,
+    attempts,
     deps.fetcher,
     (token) =>
       fetchPlannedEvents(apiKey, athleteId, { ...deps, today, windowDays, accessToken: token }),
@@ -7850,6 +8173,18 @@ export async function syncExternalEvents(
     return { status: 'superseded', synced: 0, detail: 'superseded' };
   }
   if (!fetched.ok) {
+    if (
+      !reauthRequired &&
+      !(await isCurrentIntervalsSyncAttempt(
+        db,
+        userId,
+        'events',
+        effectiveCredential,
+        attempts,
+      ))
+    ) {
+      return { status: 'superseded', synced: 0, detail: 'superseded' };
+    }
     // Disabled OR transient failure → DO NOT TOUCH the cache at all. A dead
     // credential (401/403) was just disconnected inside the recovery helper;
     // `reauthRequired` tags the operator detail so the reconnect is visible.
@@ -7865,10 +8200,6 @@ export async function syncExternalEvents(
         : {}),
     };
   }
-  if (!effectiveCredential) {
-    return { status: 'superseded', synced: 0, detail: 'superseded' };
-  }
-
   // Window upper bound, inclusive, as a YYYY-MM-DD string (string compare is
   // valid for zero-padded ISO dates).
   const newest = addDays(today, windowDays);
@@ -7895,6 +8226,7 @@ export async function syncExternalEvents(
             WHERE EXISTS (
                   SELECT 1 FROM users
                    WHERE id = ?2 AND intervals_credential_generation = ?14
+                     AND intervals_events_sync_attempt = ?15
                 )
            ON CONFLICT(id) DO UPDATE SET
              date=excluded.date,
@@ -7923,6 +8255,7 @@ export async function syncExternalEvents(
            WHERE EXISTS (
                    SELECT 1 FROM users
                     WHERE id = ?2 AND intervals_credential_generation = ?14
+                      AND intervals_events_sync_attempt = ?15
                  )
              AND (
                external_events.deleted_at IS NOT NULL OR
@@ -7951,6 +8284,7 @@ export async function syncExternalEvents(
           ev.raw,
           ts,
           effectiveCredential.generation,
+          attempts.eventsAttempt,
         ),
     );
   }
@@ -7978,6 +8312,7 @@ export async function syncExternalEvents(
             AND EXISTS (
                   SELECT 1 FROM users
                    WHERE id = ?1 AND intervals_credential_generation = ?6
+                     AND intervals_events_sync_attempt = ?7
                 )`,
       )
       .bind(
@@ -7987,6 +8322,7 @@ export async function syncExternalEvents(
         JSON.stringify(seenIds),
         newest,
         effectiveCredential.generation,
+        attempts.eventsAttempt,
       ),
   );
   stmts.push(
@@ -7995,9 +8331,10 @@ export async function syncExternalEvents(
         `SELECT EXISTS(
                   SELECT 1 FROM users
                    WHERE id = ?1 AND intervals_credential_generation = ?2
+                     AND intervals_events_sync_attempt = ?3
                 ) AS current_identity`,
       )
-      .bind(userId, effectiveCredential.generation),
+      .bind(userId, effectiveCredential.generation, attempts.eventsAttempt),
   );
 
   const reconcileResults = await db.batch(stmts);
@@ -8022,6 +8359,7 @@ export async function syncExternalEvents(
     'events',
     deps.syncedAt ?? now(),
     effectiveCredential,
+    attempts,
   );
   if (!stamped) return { status: 'superseded', synced: 0, detail: 'superseded' };
   return { status: 'ok', synced: cnt?.c ?? 0 };
@@ -8092,6 +8430,8 @@ export async function syncExternalActivities(
   let apiKey: string | null | undefined;
   let athleteId: string | null | undefined;
   let accessToken: string | null | undefined;
+  let refreshToken: string | null | undefined;
+  let expiresAt: number | null | undefined;
   let credentialGeneration = 0;
   if (deps.userId) {
     userId = deps.userId;
@@ -8117,6 +8457,8 @@ export async function syncExternalActivities(
     // OAuth bearer token rides alongside (no env fallback — env is the
     // legacy API-key path only). intervals.ts prefers it over the API key.
     accessToken = creds.access_token;
+    refreshToken = creds.refresh_token;
+    expiresAt = creds.expires_at;
   } else {
     const owner = await ensureOwnerUser(db, deps.ownerSub ?? env.OWNER_APPLE_SUB);
     const seeded = await seedOwnerIntervalsCredsFromEnv(
@@ -8133,6 +8475,8 @@ export async function syncExternalActivities(
       apiKey = seeded[0]!.api_key;
       athleteId = seeded[0]!.athlete_id;
       accessToken = seeded[0]!.access_token;
+      refreshToken = seeded[0]!.refresh_token;
+      expiresAt = seeded[0]!.expires_at;
       credentialGeneration = seeded[0]!.credential_generation;
     } else {
       let total = 0;
@@ -8164,8 +8508,26 @@ export async function syncExternalActivities(
     apiKey,
     athleteId,
     accessToken,
+    refreshToken,
+    expiresAt,
     credentialGeneration,
   );
+  if (!initialCredential) {
+    return { status: 'disabled', synced: 0, detail: 'disabled' };
+  }
+  const claim = await claimIntervalsSyncAttempt(
+    db,
+    userId,
+    'activities',
+    initialCredential,
+  );
+  if (claim.status === 'attempt_exhausted') {
+    return { status: 'fetch_failed', synced: 0, detail: 'attempt_exhausted' };
+  }
+  if (claim.status === 'superseded') {
+    return { status: 'superseded', synced: 0, detail: 'superseded' };
+  }
+  const attempts = claim.attempts;
   const {
     result: fetched,
     reauthRequired,
@@ -8176,6 +8538,7 @@ export async function syncExternalActivities(
     env,
     userId,
     initialCredential,
+    attempts,
     deps.fetcher,
     (token) =>
       fetchCompletedActivities(apiKey, athleteId, { ...deps, today, pastDays, accessToken: token }),
@@ -8184,6 +8547,18 @@ export async function syncExternalActivities(
     return { status: 'superseded', synced: 0, detail: 'superseded' };
   }
   if (!fetched.ok) {
+    if (
+      !reauthRequired &&
+      !(await isCurrentIntervalsSyncAttempt(
+        db,
+        userId,
+        'activities',
+        effectiveCredential,
+        attempts,
+      ))
+    ) {
+      return { status: 'superseded', synced: 0, detail: 'superseded' };
+    }
     // Same guard as syncExternalEvents: transient/disabled leaves the cache
     // untouched; a 401/403 was just disconnected inside the recovery helper.
     return {
@@ -8198,10 +8573,6 @@ export async function syncExternalActivities(
         : {}),
     };
   }
-  if (!effectiveCredential) {
-    return { status: 'superseded', synced: 0, detail: 'superseded' };
-  }
-
   const oldest = addDays(today, -pastDays);
   const ts = now();
   const seen = new Set<string>();
@@ -8224,6 +8595,7 @@ export async function syncExternalActivities(
             WHERE EXISTS (
                   SELECT 1 FROM users
                    WHERE id = ?2 AND intervals_credential_generation = ?21
+                     AND intervals_activities_sync_attempt = ?22
                 )
            ON CONFLICT(id) DO UPDATE SET
              date=excluded.date,
@@ -8266,6 +8638,7 @@ export async function syncExternalActivities(
            WHERE EXISTS (
                    SELECT 1 FROM users
                     WHERE id = ?2 AND intervals_credential_generation = ?21
+                      AND intervals_activities_sync_attempt = ?22
                  )
              AND (
                external_activities.deleted_at IS NOT NULL OR
@@ -8308,6 +8681,7 @@ export async function syncExternalActivities(
           a.raw,
           ts,
           effectiveCredential.generation,
+          attempts.activitiesAttempt,
         ),
     );
   }
@@ -8334,6 +8708,7 @@ export async function syncExternalActivities(
             AND EXISTS (
                   SELECT 1 FROM users
                    WHERE id = ?1 AND intervals_credential_generation = ?6
+                     AND intervals_activities_sync_attempt = ?7
                 )`,
       )
       .bind(
@@ -8343,6 +8718,7 @@ export async function syncExternalActivities(
         JSON.stringify(seenIds),
         today,
         effectiveCredential.generation,
+        attempts.activitiesAttempt,
       ),
   );
   stmts.push(
@@ -8351,9 +8727,10 @@ export async function syncExternalActivities(
         `SELECT EXISTS(
                   SELECT 1 FROM users
                    WHERE id = ?1 AND intervals_credential_generation = ?2
+                     AND intervals_activities_sync_attempt = ?3
                 ) AS current_identity`,
       )
-      .bind(userId, effectiveCredential.generation),
+      .bind(userId, effectiveCredential.generation, attempts.activitiesAttempt),
   );
 
   const reconcileResults = await db.batch(stmts);
@@ -8383,7 +8760,10 @@ export async function syncExternalActivities(
       intervalsFromDate: addDays(oldest, -2),
       intervalsToDate: addDays(today, 2),
     },
-    effectiveCredential.generation,
+    {
+      generation: effectiveCredential.generation,
+      attempt: attempts.activitiesAttempt,
+    },
   );
 
   const cnt = await db
@@ -8400,6 +8780,7 @@ export async function syncExternalActivities(
     'activities',
     deps.syncedAt ?? now(),
     effectiveCredential,
+    attempts,
   );
   if (!stamped) return { status: 'superseded', synced: 0, detail: 'superseded' };
   return { status: 'ok', synced: cnt?.c ?? 0 };
@@ -8623,7 +9004,7 @@ export async function dedupeHealthKitAgainstIntervals(
   db: D1Database,
   userId: string,
   window?: ActivityDedupeWindow,
-  expectedIntervalsGeneration?: number,
+  expectedIntervalsFence?: { generation: number; attempt: number },
 ): Promise<number> {
   const dateClause = window ? ' AND date >= ?2 AND date <= ?3' : '';
   // HealthKit rows we manage: currently live (candidates to retire) OR
@@ -8724,18 +9105,26 @@ export async function dedupeHealthKitAgainstIntervals(
                     canonical = 0,
                     duplicate_of = ?3
               WHERE id = ?1${
-                expectedIntervalsGeneration === undefined
+                expectedIntervalsFence === undefined
                   ? ''
                   : ` AND EXISTS (
                           SELECT 1 FROM users
                            WHERE id = ?4 AND intervals_credential_generation = ?5
+                             AND intervals_activities_sync_attempt = ?6
                         )`
               }`,
       );
       stmts.push(
-        expectedIntervalsGeneration === undefined
+        expectedIntervalsFence === undefined
           ? statement.bind(h.id, ts, best.id)
-          : statement.bind(h.id, ts, best.id, userId, expectedIntervalsGeneration),
+          : statement.bind(
+              h.id,
+              ts,
+              best.id,
+              userId,
+              expectedIntervalsFence.generation,
+              expectedIntervalsFence.attempt,
+            ),
       );
     } else if (best && h.duplicate_of !== best.id) {
       // The row is already retired, but the deterministic winner changed.
@@ -8748,18 +9137,26 @@ export async function dedupeHealthKitAgainstIntervals(
                     END,
                     duplicate_of = ?3
               WHERE id = ?1${
-                expectedIntervalsGeneration === undefined
+                expectedIntervalsFence === undefined
                   ? ''
                   : ` AND EXISTS (
                           SELECT 1 FROM users
                            WHERE id = ?4 AND intervals_credential_generation = ?5
+                             AND intervals_activities_sync_attempt = ?6
                         )`
               }`,
       );
       stmts.push(
-        expectedIntervalsGeneration === undefined
+        expectedIntervalsFence === undefined
           ? statement.bind(h.id, ts, best.id)
-          : statement.bind(h.id, ts, best.id, userId, expectedIntervalsGeneration),
+          : statement.bind(
+              h.id,
+              ts,
+              best.id,
+              userId,
+              expectedIntervalsFence.generation,
+              expectedIntervalsFence.attempt,
+            ),
       );
     } else if (!best && isRetiredDup) {
       // We retired this as a dup but its intervals winner is gone → restore it
@@ -8773,18 +9170,25 @@ export async function dedupeHealthKitAgainstIntervals(
                     canonical = 1,
                     duplicate_of = NULL
               WHERE id = ?1${
-                expectedIntervalsGeneration === undefined
+                expectedIntervalsFence === undefined
                   ? ''
                   : ` AND EXISTS (
                           SELECT 1 FROM users
                            WHERE id = ?3 AND intervals_credential_generation = ?4
+                             AND intervals_activities_sync_attempt = ?5
                         )`
               }`,
       );
       stmts.push(
-        expectedIntervalsGeneration === undefined
+        expectedIntervalsFence === undefined
           ? statement.bind(h.id, ts)
-          : statement.bind(h.id, ts, userId, expectedIntervalsGeneration),
+          : statement.bind(
+              h.id,
+              ts,
+              userId,
+              expectedIntervalsFence.generation,
+              expectedIntervalsFence.attempt,
+            ),
       );
     }
     // else: already correct (live with no match, or retired with winner still

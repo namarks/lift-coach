@@ -353,9 +353,15 @@ Done means:
     full Vitest tests plus 5 uploader tests, TypeScript, 5 query-plan
     assertions, Wrangler v4 dry-run, the planning compiler, the offline
     production dependency audit, and diff hygiene.
-  - This coherent branch and its future pull request remain the repository
-    delivery boundary until merge. Production is a separate owner-authorized
-    boundary: migration `0037`, a Worker deploy, and natural-tick evidence are
+  - Repository-only evidence on 2026-09-06: PR #133 exact head
+    `bf7047ad582294153e3c29ed8a50f25ccc630591` (reviewed tree
+    `a4711f83728121a97ae89afa7ae3888ff16ed805`) passed required CI run
+    `34081061290`, a local independent exact-head review, and GitHub Codex
+    review with no findings and no review threads. Squash merge
+    `94a73d62e3d0573a7a0cf1c76af9831cbe2141b9` has the identical tree, and
+    post-merge main CI run `34081856448` passed. This establishes repository
+    delivery only. Production is a separate owner-authorized boundary:
+    migration `0037`, a matching Worker deploy, and natural-tick evidence are
     absent, so P4 remains unchecked and production-gated.
 - [ ] **P4.5 — Order overlapping same-generation cache syncs**
   - Add an independent monotonic attempt fence per user and per cache. Claim
@@ -369,6 +375,52 @@ Done means:
   - This is a real pre-existing concurrency follow-up. It does not show that
     P4's credential-generation fencing failed, and it is not a blocker to
     publishing P4's coherent repository slice.
+  - Local implementation on 2026-09-06 adds migration `0038` with bounded,
+    unindexed events and activities attempt counters. Cache reconciliation
+    uses its own counter; shared OAuth refresh and auth-error disconnects use
+    the exact full two-counter tuple so an older response from either cache
+    cannot rotate or clear credentials after newer work starts. Credential
+    replacement resets both counters; same-identity writes and OAuth refresh
+    preserve them; counters never wrap.
+  - Exact code commit `0221989268641521d2964da0e8fa7d13b5e004e0`
+    (tree `7402f1327c2340c25fcfad78abe0dded3866bb2b`) is based directly on merged
+    P4 main `94a73d62e3d0573a7a0cf1c76af9831cbe2141b9` and preserves the original
+    implementation patch id
+    `49ef616488a63540e0bd9b3204024cecc57749aa`. Verification passed 154 focused
+    Workers/D1 tests, all 641 backend tests plus 5 uploader tests, all 5 query
+    plan assertions, TypeScript, the planning compiler, Wrangler 4.129 dry-run,
+    the offline production dependency audit, and diff hygiene. Fresh cron
+    skips still write zero rows; an executed transient failure writes one
+    attempt row; an executed successful no-change poll writes the attempt plus
+    freshness rows. Independent exact-head review and repository publication
+    remain before this slice is delivered.
+  - Rollout is migration-first: `0038` is additive and remains compatible with
+    the currently deployed older Worker, but the P4.5 Worker requires the new
+    counters before it starts. That compatibility does not fence a P4
+    invocation already in flight when P4.5 deploys because the older SQL never
+    checks an attempt counter. Treat migration-through-deploy as a degraded
+    mixed-version window. Do not use a gradual deployment for this transition
+    because it deliberately retains
+    [version skew](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/).
+    After the 100% deployment, fifteen minutes establishes only that older
+    scheduled invocations reached Cloudflare's wall-time bound; HTTP requests
+    have [no hard duration limit](https://developers.cloudflare.com/workers/platform/limits/)
+    while their client remains connected. Require positive, version-attributed
+    platform evidence that no P4 sync invocation remains. Absence of a new
+    old-version log or elapsed time alone is not proof; if the available
+    observability cannot establish quiescence, stop the release and first add a
+    separately reviewed quiescence or source-bound transition. After proven
+    quiescence, preflight the exact connected-user set, atomically advance each
+    connected user's credential generation while resetting both attempt and
+    freshness fields, and verify the returned count without retaining member
+    identifiers. Exclude disconnected users so the generation-zero owner env
+    seed gate remains intact, and fail closed before the sweep if any generation
+    cannot advance safely. Then require a successful exact-P4.5 reconcile of
+    both caches before production may claim the ordering invariant. This sweep
+    is defense in depth after quiescence; it is not a substitute for quiescence.
+    After activation, a code rollback to the P4 Worker would remain
+    schema-compatible but would reopen the same-generation race; retain an
+    exact P4.5-aware rollback artifact or forward-fix instead.
 - [ ] **P5 — Retention decision for the two unbounded tables**
   - Using P0 numbers, the owner decides retention for `audit_log` (for
     example keep `args` for twelve months, keep the row forever) and for the
@@ -399,13 +451,15 @@ Done means:
 | P2 | coordinates_with | plan:activity-integration-integrity#P2 | Both edit the intervals reconcile upsert; do not run concurrently. |
 | P3 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0036`, a Worker deploy, or natural-tick production evidence. |
 | P4 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0037`, a Worker deploy, or natural-tick production evidence. |
+| P4.5 | gated_by | external:owner-storage-production-release | Repository delivery does not authorize remote migration `0038`, a Worker deploy, or natural-tick production evidence. |
 | P5 | gated_by | external:owner-retention-decision | Deleting or trimming audit and source data is an owner data-retention decision, not an inferred cleanup. |
 
 ## Next step
 
-**Now (@agent):** Implement and independently verify P4.5. Keep P3 and P4
-production preparation read-only. Do not apply remote migrations, deploy a
-Worker, manually trigger production cron, or infer the P5 retention decision.
+**Now (@agent):** Independently review and publish the P4.5 repository slice.
+Keep P3, P4, and P4.5 production preparation read-only. Do not apply remote
+migrations, deploy a Worker, manually trigger production cron, or infer the P5
+retention decision.
 
 ## Notes / open questions
 

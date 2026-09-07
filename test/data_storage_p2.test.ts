@@ -160,9 +160,9 @@ describe('P2 intervals cache write elision', () => {
       fetcher: payload([secondResponse]),
     });
     expect(result).toMatchObject({ status: 'ok', synced: 1 });
-    // P2 cache rows remain untouched; P4 records one successful-poll
-    // freshness write on users so a later cron can skip this cache.
-    expect(observed.usage.rows_written).toBe(1);
+    // P2 cache rows remain untouched; P4.5 records the attempt claim plus one
+    // successful-poll freshness write so a later cron can skip this cache.
+    expect(observed.usage.rows_written).toBe(2);
 
     const after = await env.DB.prepare(
       'SELECT raw, synced_at FROM external_events WHERE id = ?1',
@@ -198,8 +198,8 @@ describe('P2 intervals cache write elision', () => {
       fetcher: payload([changedResponse]),
     });
     // One logical cache mutation maintains the date and P2 cursor indexes,
-    // plus P4's one users-row successful-poll freshness write.
-    expect(changed.usage.rows_written).toBe(4);
+    // plus P4.5's attempt claim and users-row successful-poll freshness write.
+    expect(changed.usage.rows_written).toBe(5);
     const changedRow = await env.DB.prepare(
       'SELECT description, raw, synced_at FROM external_events WHERE id = ?1',
     )
@@ -235,7 +235,7 @@ describe('P2 intervals cache write elision', () => {
       today: TODAY,
       fetcher: payload([resurrectionResponse]),
     });
-    expect(resurrected.usage.rows_written).toBe(4);
+    expect(resurrected.usage.rows_written).toBe(5);
     const liveAgain = await env.DB.prepare(
       'SELECT raw, synced_at, deleted_at FROM external_events WHERE id = ?1',
     )
@@ -281,7 +281,7 @@ describe('P2 intervals cache write elision', () => {
       fetcher: payload([secondResponse]),
     });
     expect(result).toMatchObject({ status: 'ok', synced: 1 });
-    expect(observed.usage.rows_written).toBe(1);
+    expect(observed.usage.rows_written).toBe(2);
 
     const after = await env.DB.prepare(
       'SELECT raw, synced_at FROM external_activities WHERE id = ?1',
@@ -316,7 +316,7 @@ describe('P2 intervals cache write elision', () => {
       today: TODAY,
       fetcher: payload([changedResponse]),
     });
-    expect(changed.usage.rows_written).toBe(4);
+    expect(changed.usage.rows_written).toBe(5);
     const changedRow = await env.DB.prepare(
       'SELECT average_watts, raw, synced_at FROM external_activities WHERE id = ?1',
     )
@@ -352,7 +352,7 @@ describe('P2 intervals cache write elision', () => {
       today: TODAY,
       fetcher: payload([resurrectionResponse]),
     });
-    expect(resurrected.usage.rows_written).toBe(4);
+    expect(resurrected.usage.rows_written).toBe(5);
     const liveAgain = await env.DB.prepare(
       'SELECT raw, synced_at, deleted_at FROM external_activities WHERE id = ?1',
     )

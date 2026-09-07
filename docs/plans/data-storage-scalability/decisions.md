@@ -18,7 +18,7 @@ migration `0036`, a production Worker deployment, a manual production cron
 trigger, or a natural production tick. No production authority was granted by
 this delivery record.
 
-## 2026-09-06 — P4 local implementation, replay, and remaining race
+## 2026-09-06 — P4 repository delivery and remaining production gate
 
 The original reviewed P4 source
 `32868e38e292266b44dd9c79413a2280a28d45c8` had tree
@@ -37,9 +37,12 @@ as `b2fe8834fbda83463af5e824acf5b229c5c3b4ca`, tree
 `0037`. That rebased tree passed 142 focused tests, 629 full Vitest tests plus 5
 uploader tests, TypeScript, 5 query-plan assertions, Wrangler v4 dry-run, the
 planning compiler, the offline production dependency audit, and diff hygiene.
-The coherent branch and its future pull request remain the repository delivery
-boundary until merge; this narrative claims neither a pull-request number nor a
-merge for P4.
+PR #133 exact head `bf7047ad582294153e3c29ed8a50f25ccc630591`
+had reviewed tree `a4711f83728121a97ae89afa7ae3888ff16ed805`, passed
+required CI run `34081061290`, and received both a local independent exact-head
+review and a completed GitHub Codex review with no findings or review threads.
+Squash merge `94a73d62e3d0573a7a0cf1c76af9831cbe2141b9` has the
+identical tree, and post-merge main CI run `34081856448` passed.
 
 Credential-generation fencing remains valid: stale responses from replaced or
 disconnected credentials cannot mutate cache rows, tombstones, dedup state,
@@ -55,6 +58,63 @@ No production authority accompanies this local or rebased evidence. Remote
 migrations, a Worker deploy, a manual production cron trigger, and natural-tick
 evidence remain outside this record. The owner has not made a P5 retention
 decision.
+
+## 2026-09-06 — P4.5 same-generation attempt ordering
+
+Migration `0038` adds bounded, unindexed events and activities attempt counters
+to each user. A sync atomically claims its cache counter before provider I/O and
+fences every cache, tombstone, dedup, and freshness mutation on the winning
+generation and counter. Shared OAuth refresh and authentication-error clear
+paths use the exact full events-plus-activities attempt tuple, so an older
+response from either cache cannot rotate or disconnect credentials after newer
+work starts in the other cache. Credential replacement resets both counters;
+same-identity updates and a successful OAuth refresh preserve them; exhaustion
+fails closed without provider I/O rather than wrapping.
+
+Exact code commit `0221989268641521d2964da0e8fa7d13b5e004e0`, tree
+`7402f1327c2340c25fcfad78abe0dded3866bb2b`, is based directly on merged P4
+main `94a73d62e3d0573a7a0cf1c76af9831cbe2141b9` and preserves implementation
+patch id `49ef616488a63540e0bd9b3204024cecc57749aa`. Verification passed 154 focused
+Workers/D1 tests, all 641 backend tests plus 5 uploader tests, all 5 query-plan
+assertions, TypeScript, the planning compiler, Wrangler 4.129 dry-run, the
+offline production dependency audit, and diff hygiene. The write-accounting
+contract is zero rows for a fresh cron skip, one attempt-row write for an
+executed transient failure, and two user-row writes for an executed successful
+no-change poll.
+
+This is local repository evidence awaiting independent exact-head review and
+publication. It does not authorize or establish remote migration `0038`, a
+Worker deploy, a manual production cron trigger, or natural-tick evidence.
+
+Rollout must apply additive migration `0038` before starting the P4.5 Worker.
+The older P4 Worker remains schema-compatible during that migration-first gap,
+but an old P4 invocation already in flight when P4.5 deploys never claimed an
+attempt and can still finish with generation-only writes. Treat
+migration-through-deploy as a degraded mixed-version window: deploy P4.5 to
+100% rather than running old and new versions gradually. A
+[gradual deployment](https://developers.cloudflare.com/workers/versions-and-deployments/gradual-deployments/)
+is unsafe for this transition because it deliberately retains version skew. A
+15-minute wait establishes only that old scheduled invocations reached
+Cloudflare's wall-time bound; HTTP requests have
+[no hard duration limit](https://developers.cloudflare.com/workers/platform/limits/)
+while their client remains connected. Before the final P4.5 reconciliations,
+require positive platform evidence tied to the deployed version that no P4 sync
+invocation remains. Cloudflare traces expose
+[`cloudflare.script_version.id`](https://developers.cloudflare.com/workers/observability/traces/spans-and-attributes/),
+but a missing new old-version log or elapsed time alone is not evidence that an
+older HTTP request has terminated. If current observability cannot establish
+quiescence, stop the release and first add a separately reviewed quiescence or
+source-bound transition. After proven quiescence, compare an exact connected-user
+preflight with one atomic update that advances each connected user's credential
+generation and resets both attempt and freshness fields. Exclude disconnected
+users so the generation-zero owner env-seed gate remains intact; verify only
+the returned count in retained evidence and fail closed before mutation if any
+generation cannot advance safely. This explicit epoch is defense in depth, not
+a substitute for quiescence. Only the subsequent successful exact-P4.5
+reconciliations of both caches establish the production invariant. Once P4.5
+is active, rolling code back to P4 would remain schema-compatible but would
+reopen the same-generation race, so release preparation must retain an exact
+P4.5-aware rollback artifact or use a forward-fix.
 
 ## 2026-09-06 — Owner acceptance of replacement evidence
 
