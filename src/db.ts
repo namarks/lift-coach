@@ -10747,6 +10747,26 @@ export async function rotateOAuthRefreshToken(
   };
 }
 
+/**
+ * Complete refresh behavior for one validated snapshot. A clean CAS loss may
+ * mean another contender just consumed the same credential, so check history
+ * before returning invalid_grant and revoke that family's surviving token.
+ */
+export async function refreshOAuthGrant(
+  db: D1Database,
+  rotation: OAuthRefreshRotation,
+): Promise<OAuthTokenPair | null> {
+  const tokens = await rotateOAuthRefreshToken(db, rotation);
+  if (tokens) return tokens;
+  await revokeOAuthGrantOnRefreshReplay(
+    db,
+    rotation.consumed_refresh_sha256,
+    rotation.presented_client_id,
+    rotation.owner_apple_sub,
+  );
+  return null;
+}
+
 export interface OAuthGrantSummary {
   id: string;
   client_id: string;
@@ -10878,6 +10898,10 @@ export async function revokeOAuthGrant(
   if (!grant) return false;
   await db.batch([
     db.prepare(
+      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+       VALUES (?1,?2,'ios','revoke_coach_grant',?3,'revoked',?4)`,
+    ).bind(uuid(), userId, JSON.stringify({ grant_id: grantId }), now()),
+    db.prepare(
       'UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?2) WHERE id = ?1',
     ).bind(grantId, now()),
     db.prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1').bind(grantId),
@@ -10893,7 +10917,11 @@ export async function revokeAllOAuthGrants(
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = owner?.id === userId;
   await adoptUntrackedOAuthGrants(db, userId, isOwner);
-  const [revoked] = await db.batch([
+  const [, revoked] = await db.batch([
+    db.prepare(
+      `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
+       VALUES (?1,?2,'ios','revoke_coach_grants',?3,'revoked',?4)`,
+    ).bind(uuid(), userId, JSON.stringify({ scope: 'all' }), now()),
     db.prepare(
       `UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?3)
         WHERE revoked_at IS NULL

@@ -10,8 +10,8 @@ import {
   findUserByMcpPassphrase,
   isAccountDeletionInProgress,
   redeemOAuthAuthorizationCode,
+  refreshOAuthGrant,
   revokeOAuthGrantOnRefreshReplay,
-  rotateOAuthRefreshToken,
 } from './db';
 
 const ACCESS_TTL = 60 * 60 * 24 * 30; // 30 days
@@ -345,7 +345,7 @@ oauthRoutes.post('/oauth/token', async (c) => {
     if (!f('client_id') || row.client_id !== f('client_id')) {
       return c.json({ error: 'invalid_grant' }, 400);
     }
-    const tokens = await rotateOAuthRefreshToken(c.env.DB, {
+    const tokens = await refreshOAuthGrant(c.env.DB, {
       ...row,
       presented_refresh_token: f('refresh_token'),
       presented_client_id: f('client_id'),

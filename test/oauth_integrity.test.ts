@@ -4,6 +4,7 @@ import { issueAppJwt } from '../src/auth';
 import {
   listOAuthGrants,
   redeemOAuthAuthorizationCode,
+  refreshOAuthGrant,
   rotateOAuthRefreshToken,
 } from '../src/db';
 import { validateBearer } from '../src/oauth';
@@ -113,12 +114,7 @@ describe('atomic OAuth grant transitions', () => {
     const row = await env.DB.prepare(
       'SELECT client_id, scope, user_id FROM oauth_tokens WHERE user_id = ?1',
     ).bind(grant.userId).first<{ client_id: string; scope: string; user_id: string }>();
-    // If the losing request observes the rotation, it is a replay and may
-    // revoke the winner's successor. If both observed the old row, one CAS
-    // loses without revoking; either way only one pair was ever issued.
-    if (row) {
-      expect(row).toEqual({ client_id: grant.clientId, scope: 'mcp', user_id: grant.userId });
-    }
+    expect(row).toBeNull();
   });
 
   it('does not consume a code for a wrong client, verifier, redirect, or expiry', async () => {
@@ -291,6 +287,32 @@ describe('OAuth grant families and caller revocation', () => {
     expect(await validateBearer(env, successor.access_token)).toBe(grant.userId);
   });
 
+  it('revokes the winner after two refresh contenders share the same pre-read snapshot', async () => {
+    const grant = await seedRefresh();
+    const snapshot = await env.DB.prepare('SELECT * FROM oauth_tokens WHERE refresh_token = ?1')
+      .bind(grant.refresh).first<any>();
+    const makeRotation = () => ({
+      ...snapshot,
+      presented_refresh_token: grant.refresh,
+      presented_client_id: grant.clientId,
+      access_token: `shared-access-${crypto.randomUUID()}`,
+      refresh_token: `shared-refresh-${crypto.randomUUID()}`,
+      access_expires_at: Math.floor(Date.now() / 1000) + 600,
+      grant_id: null,
+      consumed_refresh_sha256: '',
+    });
+    const digest = await hexDigest(grant.refresh);
+    const first = makeRotation(); first.consumed_refresh_sha256 = digest;
+    const second = makeRotation(); second.consumed_refresh_sha256 = digest;
+    const results = await Promise.all([
+      refreshOAuthGrant(env.DB, first),
+      refreshOAuthGrant(env.DB, second),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM oauth_tokens WHERE user_id = ?1')
+      .bind(grant.userId).first<number>('n')).toBe(0);
+  });
+
   it('lists no credentials and revokes only caller-scoped grants idempotently', async () => {
     const caller = await seedRefresh();
     const other = await seedRefresh();
@@ -340,5 +362,27 @@ describe('OAuth grant families and caller revocation', () => {
     expect(await listOAuthGrants(env.DB, grant.userId, undefined)).toEqual([]);
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM oauth_grants WHERE user_id = ?1')
       .bind(grant.userId).first<number>('n')).toBe(0);
+  });
+
+  it('rolls revocation back when its required audit insertion fails', async () => {
+    const grant = await seedRefresh();
+    const jwt = await issueAppJwt(grant.userId, 'test-secret');
+    await SELF.fetch(`${BASE}/api/me/coach-grants`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    await env.DB.prepare(
+      `CREATE TRIGGER oauth_integrity_fail_revoke_audit
+       BEFORE INSERT ON audit_log WHEN NEW.tool = 'revoke_coach_grants'
+       BEGIN SELECT RAISE(ABORT, 'synthetic_audit_failure'); END`,
+    ).run();
+    try {
+      const response = await SELF.fetch(`${BASE}/api/me/coach-grants`, {
+        method: 'DELETE', headers: { Authorization: `Bearer ${jwt}` },
+      });
+      expect(response.status).toBe(500);
+      expect(await validateBearer(env, grant.access)).toBe(grant.userId);
+    } finally {
+      await env.DB.prepare('DROP TRIGGER oauth_integrity_fail_revoke_audit').run();
+    }
   });
 });

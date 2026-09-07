@@ -1307,9 +1307,9 @@ apiRoutes.delete('/me/coach-grants/:grantId', async (c) => {
     c.get('userId'),
     grantId,
     c.env.OWNER_APPLE_SUB,
-  );
+  ).catch(() => undefined);
+  if (revoked === undefined) return c.json({ error: 'server_error' }, 500);
   if (!revoked) return c.json({ error: 'not_found' }, 404);
-  await writeAudit(c.env.DB, c.get('userId'), 'revoke_coach_grant', { grant_id: grantId }, 'revoked', 'ios');
   return c.json({ ok: true });
 });
 
@@ -1318,8 +1318,8 @@ apiRoutes.delete('/me/coach-grants', async (c) => {
     c.env.DB,
     c.get('userId'),
     c.env.OWNER_APPLE_SUB,
-  );
-  await writeAudit(c.env.DB, c.get('userId'), 'revoke_coach_grants', { count: revoked }, 'revoked', 'ios');
+  ).catch(() => undefined);
+  if (revoked === undefined) return c.json({ error: 'server_error' }, 500);
   return c.json({ ok: true, revoked });
 });
 
