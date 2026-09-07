@@ -978,7 +978,7 @@ const TOOLS: Record<string, Tool> = {
   },
   adjust_today: {
     description:
-      "\"I'm beat — adjust.\" Scales target sets (reduce_volume/deload) or weight (reduce_intensity) for a day (day_label) or the whole plan, and records why.",
+      'Persistently changes recurring workout-template targets. With day_label it changes every future use of that named workout; when omitted it changes every workout in the plan. This is not a one-date override. Reduces sets (reduce_volume/deload) or load/assistance (reduce_intensity), reports before/after changes, and may be a no-op when no supported reduction exists.',
     inputSchema: obj(
       {
         intent: { type: 'string', enum: ['deload', 'reduce_volume', 'reduce_intensity'] },
