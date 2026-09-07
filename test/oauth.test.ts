@@ -185,7 +185,11 @@ describe('oauth full PKCE flow', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(mcp.status).toBe(200);
-    expect((await mcp.json<any>()).result.tools.length).toBe(34);
+    const tools = (await mcp.json<any>()).result.tools as Array<{ name: string }>;
+    expect(tools).toHaveLength(37);
+    expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
+      'get_plan_history', 'compare_plan_versions', 'restore_plan',
+    ]));
 
     // 5. refresh rotates the token
     const rf = new FormData();
