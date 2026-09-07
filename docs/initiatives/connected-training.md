@@ -1,6 +1,6 @@
 # Connected Training
 
-Slug: connected-training · Status: planned · Updated: 2026-08-28
+Slug: connected-training · Status: planned · Updated: 2026-09-07
 
 ## Objective
 
@@ -13,6 +13,7 @@ authoring platform or general social network.
 - plan:activity-integration-integrity#P0
 - plan:activity-integration-integrity#P1
 - plan:activity-integration-integrity#P2
+- plan:coaching-feedback-loop#P2
 - plan:group-experience-and-governance
 
 ## Priority policy
@@ -23,6 +24,9 @@ authoring platform or general social network.
    engagement features.
 3. Add the bounded reaction and notification slice only after the core feed and
    join path are reliable.
+4. Keep source truth distinct from interpretation: missing load/duration stays
+   unknown and conflict labels explain their scheduling heuristic through the
+   shared coaching context, not a new physiology engine.
 
 ## Completion condition
 
@@ -31,6 +35,8 @@ correction, and deletion; the private-group feed, invites, reactions,
 notifications, and essential controls pass their multi-user behavioral
 contracts. Optional HealthKit write-back is decided separately and is not
 required for this initiative.
+Calendar and coaching views also preserve the same unknown/incomplete input
+state instead of turning missing endurance data into a known easy workout.
 
 ## Stop rules
 

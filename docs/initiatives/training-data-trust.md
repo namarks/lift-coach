@@ -1,6 +1,6 @@
 # Training Data Trust
 
-Slug: training-data-trust · Status: active · Updated: 2026-09-03
+Slug: training-data-trust · Status: active · Updated: 2026-09-07
 
 ## Objective
 
@@ -11,12 +11,15 @@ not erase local data, and plan changes can be inspected and restored.
 
 ## Scope
 
+- plan:coach-access-integrity
+- plan:prescription-integrity
 - plan:reversible-plan-management
 
 ## Priority policy
 
-1. Activate the remaining reversible-plan-management workstream only under
-   explicit planned-work authority; serialize only real collisions.
+1. Prioritize confirmed grant-consumption, invalid-prescription and lost-edit
+   failures from the September review. Activate member plans only under explicit
+   planned-work authority; serialize only real collisions.
 2. Fix confirmed snapshot, revert-history, and invalid-write failures before
    adjacent cleanup. Each slice carries its own focused regression proof instead
    of waiting for a portfolio-wide audit.
@@ -25,9 +28,12 @@ not erase local data, and plan changes can be inspected and restored.
 
 ## Completion condition
 
-Server mutation integrity, workout write reliability, and Apple-backed account
-lifecycle are complete. The remaining member plan reaches its stated outcome
-when AI or manual plan edits share a readable snapshot-and-revert history.
+The completed server-set/session, workout-write and Apple account-lifecycle
+work remains the foundation. Completion now also requires concurrent coach
+exchanges to have one successor, prescriptions to be valid and atomically
+audited, reductions to respect their stated scope/direction, and AI/manual
+edits to share readable snapshot-and-revert history. Repository proof and
+owner-approved production/lifecycle transition evidence remain distinct.
 
 ## Stop rules
 

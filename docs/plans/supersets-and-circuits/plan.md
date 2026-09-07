@@ -1,6 +1,6 @@
 # Supersets and Circuits
 
-Slug: supersets-and-circuits · Status: planned · Updated: 2026-09-06 · Theme: gym-floor
+Slug: supersets-and-circuits · Status: planned · Updated: 2026-09-07 · Theme: gym-floor
 
 ## Goal
 
@@ -29,6 +29,18 @@ workout is sequenced inside the runner.
 ## Phases
 
 - [ ] **P0 — Group model, serialization, and coach authoring**
+  - Use prescription-integrity's runtime validation and atomic version/audit
+    boundary. Group create/rewrite/clear take the current expected plan version;
+    concurrent membership or reorder edits conflict explicitly. Creation-key
+    idempotency does not substitute for concurrency control on later rewrites.
+    Validate integer counts, rest values and all merged member prescriptions
+    through the common service contract.
+    Recognize a caller-scoped exact acknowledged retry before rejecting its
+    now-stale expected version: create at vN, lose the response, retry the same
+    id/payload at vN after the server reaches vN+1 must return the committed
+    result without another bump. A different payload at stale vN conflicts;
+    replay after a newer rewrite never restores old membership. Cover these
+    cases and repeat clear behavior in the mutation contract tests.
   - Add three nullable columns to `template_exercises` in one additive
     migration: `group_id` (TEXT UUID), `group_rest_seconds` (INTEGER, rest
     after a full round), and `group_transition_seconds` (INTEGER, rest
@@ -57,10 +69,10 @@ workout is sequenced inside the runner.
     its group is rejected; moving the whole group is a reorder of all
     members in one call.
   - All group writes are atomic and go through one service operation:
-    `setGroup(dayId, groupId, memberIds, { round_rest, transition_rest,
-    target_sets? })` creates or rewrites a group under a caller-generated
+    `setGroup(dayId, groupId, memberIds, { expected_version, round_rest,
+    transition_rest, target_sets? })` creates or rewrites a group under a caller-generated
     `groupId` (the shared creation-idempotency rule), and
-    `clearGroup(groupId)` nulls the three columns on every member. An exact
+    `clearGroup(groupId, expected_version)` nulls the three columns on every member. An exact
     retry of `setGroup` whose members and values already match returns the
     existing group without a version bump or audit row; a different member
     list under the same id rewrites it. Both validate, bump `plans.version`
@@ -68,11 +80,13 @@ workout is sequenced inside the runner.
     single-slot routes and `update_exercise` reject the three group fields
     with `unknown_fields`, so no path can change one member in isolation.
     Expose `setGroup`/`clearGroup` as `PUT /api/days/{id}/groups` (audited
-    `actor='ios'`) and as the MCP `group_exercises({day, group_id,
+    `actor='ios'`) and as the MCP `group_exercises({day, group_id, expected_version,
     exercises: [...], round_rest, transition_rest?, target_sets?})` and
-    `ungroup_exercises({group_id})` tools, thin wrappers over the same
+    `ungroup_exercises({group_id, expected_version})` tools, thin wrappers over the same
     functions; `group_id` is required and passed through unchanged so a
-    retried call carries the same idempotency key. `get_current_plan`,
+    retried call carries the same idempotency key. Group authoring REST/MCP
+    requests also carry `expected_version`, including `group_exercises`;
+    exact-retry recognition follows the rule above. `get_current_plan`,
     `get_today_workout`, and the coach brief render groups in A1/A2 notation
     with both rest values.
   - Released-client compatibility (see the shared rule in
@@ -126,6 +140,7 @@ workout is sequenced inside the runner.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P0 | blocked_by | plan:prescription-integrity#P1 | Group invariants cannot rely on existing slot writers that can lose concurrent edits or partially commit. |
 | P0 | coordinates_with | plan:workouts-and-multi-session#P0 | Both add or rename columns on the same plan-tree tables; whichever lands second rebases onto the other's migration and serializer. |
 | P0 | coordinates_with | plan:reversible-plan-management#P0 | Snapshots must serialize `group_id` or a revert silently ungroups a workout. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's exercise flow and correction path; share the slice rather than fork the runner. |

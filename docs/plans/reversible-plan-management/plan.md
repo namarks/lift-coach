@@ -1,6 +1,6 @@
 # Reversible Plan Management
 
-Slug: reversible-plan-management · Status: planned · Updated: 2026-08-28 · Theme: training-trust
+Slug: reversible-plan-management · Status: planned · Updated: 2026-09-07 · Theme: training-trust
 
 ## Goal
 
@@ -14,8 +14,10 @@ audit trail rather than rewriting them.
 - [ ] **P0 — Atomic plan snapshots**
   - Store the canonical plan tree, schedule, and plan metadata alongside the
     resulting version for each successful plan mutation.
-  - Reuse the existing plan serializer and transaction boundary so a failed
-    mutation produces neither a new version nor a misleading snapshot.
+  - Reuse the canonical serializer and the commit boundary established for all
+    writers by prescription-integrity P1. Current slot updates and audit calls
+    are not universally atomic. A failed mutation must produce neither a
+    partial edit, new version nor a misleading snapshot.
   - Prove snapshot round trips for representative MCP and iOS edit paths.
 - [ ] **P1 — Conflict-safe revert**
   - Add one user-scoped service operation and MCP tool that restore a selected
@@ -38,8 +40,15 @@ audit trail rather than rewriting them.
 
 ## Next step
 
-Activate this plan after the active data-loss and authentication P0 slices are
-under control; that is priority sequencing, not a hard technical dependency.
+**Now (@owner):** Activate P0 after prescription-integrity P1 establishes the
+writer boundary snapshots require. Serializer design can be prepared alongside
+that work, but snapshot delivery must prove atomicity for every covered writer.
+
+## Dependencies
+
+| Local phase | Relationship | Target | Reason |
+|---|---|---|---|
+| P0 | blocked_by | plan:prescription-integrity#P1 | A snapshot cannot repair partial or lost edits; mutation/version/audit must share a proven boundary first. |
 
 ## Notes / open questions
 

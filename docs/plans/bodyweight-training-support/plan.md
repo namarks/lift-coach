@@ -1,6 +1,6 @@
 # Bodyweight Training Support
 
-Slug: bodyweight-training-support · Status: active · Updated: 2026-09-03 · Theme: gym-floor
+Slug: bodyweight-training-support · Status: active · Updated: 2026-09-07 · Theme: gym-floor
 
 ## Goal
 
@@ -96,22 +96,54 @@ gymnastic-strength movements.
     than propagating an inert parameter.
   - Record the swap in the same audit trail and version bump as other plan
     edits so Claude can see that the member advanced a progression.
+  - Validate carried targets for the destination modality and reuse the shared
+    prescription writer. Coordinate with prescription-integrity P0/P1 so the
+    REST exposure does not entrench malformed values or a non-atomic swap.
+- [ ] **P3 — Compare like-for-like progress**
+  - Supersede P1's positive-added-load Epley policy: added load alone is not
+    system load, so suppress bodyweight e1RM until an exercise-specific model
+    with required inputs has been justified. Keep the completed P1 delivery as
+    history; do not relabel it as unimplemented or invent body mass.
+  - Separate strict, assisted and added-load rep/hold cohorts. Compare PRs only
+    within a compatible exercise/variation, execution mode and external-load
+    condition. Show load next to rep/duration summaries; pooled rep totals may
+    describe work but cannot imply like-for-like strength progress.
+  - Share fixture expectations across backend history/volume, group-feed
+    DTOs/rendering, iOS history, runner completion and MCP. Cases include strict
+    8 reps versus heavily
+    assisted 15; BW+10 by 5 with no body mass; lighter versus heavier holds;
+    per-hand/per-side work; warm-ups, deleted rows and mixed rep/timed history.
+  - Preserve historical raw records, nullable tonnage for unsupported work and
+    the ability to inspect all sets. Label positive-load volume as external
+    load, not total bodyweight tonnage. Do not create arbitrary normalization
+    across equipment or progression variations.
+
+## Execution frontier
+
+- P2
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P2 | blocked_by | plan:prescription-integrity#P1 | Exposing swap must not entrench invalid carried targets or a non-atomic writer; reuse the repaired boundary. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's value-entry controls; serialize the shared surface. |
 | P1 | feeds | plan:coaching-feedback-loop#P2 | Rep-based and hold-based history gives the coach usable bodyweight progress signals; it does not block coaching work. |
 
 ## Next step
 
-**Now (@agent):** P2 is ready once this P1 evidence is integrated: expose the
-existing swap service through the authenticated REST editor path, keep its plan
-version/audit semantics intact, and let iOS replace a slot without rebuilding
-its targets or order.
+**Now (@agent):** P2 remains the selected frontier and now waits on the shared
+validation and atomic-writer contract in prescription-integrity P1. P3 records the
+review's new metric-policy correction for subsequent scheduling; the review
+does not reopen completed P0/P1 or silently expand the current execution frontier.
 
 ## Notes / open questions
+
+- P3 responds to the [September app review](../../reviews/2026-09-app-review/report.md):
+  the shipped implementation followed P1, but a positive-added-load Epley
+  estimate and highest-reps comparison across assistance levels are not
+  supported strength claims. The correction preserves P1's signed-load and
+  timed-work improvements.
 
 - Source: [research/calisthenics-readiness-review-2026-09.md](research/calisthenics-readiness-review-2026-09.md),
   a static review at commit `c71e3f9` plus the corrections from the two

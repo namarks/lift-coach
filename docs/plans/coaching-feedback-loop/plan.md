@@ -1,6 +1,6 @@
 # Coaching Feedback Loop
 
-Slug: coaching-feedback-loop · Status: planned · Updated: 2026-08-28 · Theme: coaching
+Slug: coaching-feedback-loop · Status: planned · Updated: 2026-09-07 · Theme: coaching
 
 ## Goal
 
@@ -22,6 +22,15 @@ surfaces without adding AI to the Worker or creating a second coaching record.
     a schema change.
   - Verify one end-to-end path from iOS capture to MCP read, including an edit
     made before the session is finalized.
+  - Decode the stored feedback into iOS session models and carry optional
+    fatigue/notes through the durable finish envelope, retries, relaunch and
+    final-set review. Missing feedback stays absent rather than becoming a
+    zero score. Preserve member-authored discomfort/constraints verbatim as
+    data for the coach; keep these private fields out of group projections.
+  - Include session notes in both recent-session and last-completed-session
+    brief paths. Verify a skipped/in-progress latest session does not hide the
+    prior completed session's feedback and that delayed acknowledgments cannot
+    overwrite a newer feedback edit.
 - [ ] **P1 — Coaching changes are visible and correctable**
   - Show recent plan changes in iOS with actor, time, concise rationale, and the
     affected day or exercise, using the canonical audit, note, and plan-history
@@ -35,12 +44,31 @@ surfaces without adding AI to the Worker or creating a second coaching record.
     trips, and stress settings in one compact coaching context where relevant.
   - Correct misleading trend labels and pair simple load or volume trends with
     the feedback that explains them; retain raw session history as the source.
+  - Represent key sets with exercise identity, units, timed duration, signed
+    assistance/added load, per-hand/per-side semantics and optional effort.
+    A 45-second hold must not become an unexplained `0x45` in the brief. Reuse
+    one semantic projection for recent and last-completed sessions and preserve
+    relevant authored schedule/race/periodization/trip/stress metadata.
+  - Describe counted non-warm-up sets as logged working sets, with primary-muscle
+    attribution and effort coverage stated explicitly. If legacy wire fields
+    retain `hard_sets`, document their limited meaning and provide compatible
+    clearer labels; do not claim measured stimulus or complete muscle volume.
+  - Use bodyweight P3's comparable cohorts; label positive-load tonnage as
+    external-load volume, with unsupported measures absent. No automatic
+    readiness score, fabricated body mass or unvalidated strength conversion.
+  - Mark lift/endurance conflict output as a scheduling heuristic. Missing
+    load/duration must yield unknown/incomplete context instead of an easy-work
+    judgment. Keep TypeScript and Swift projection fixtures in parity and name
+    the available source data; thresholds are not individualized safety or
+    interference advice.
   - Verify that iOS and MCP describe the same recent sessions and plan state.
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P2 | blocked_by | plan:bodyweight-training-support#P3 | Coaching metrics must use the corrected comparability policy. |
+| P2 | coordinates_with | plan:activity-integration-integrity#P0 | Identity/civil-date fixes and unknown-load labels need consistent source context. |
 | P1 | coordinates_with | plan:reversible-plan-management#P2 | Reuse one plan-history projection for visibility and reversion rather than building a second change feed. |
 
 ## Next step
@@ -49,6 +77,11 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 executable backlog; it does not require the later change-history work to start.
 
 ## Notes / open questions
+
+- The [September app review](../../reviews/2026-09-app-review/report.md)
+  found that current compact strings omit timed/load semantics and session
+  notes. These are projection gaps even though fuller tools expose much of
+  the underlying data. P0 remains independent of later metrics/history work.
 
 - The first slice captures only feedback a coach can act on. Readiness scores,
   questionnaires, automated recommendations, and model-generated diagnoses are
