@@ -1217,6 +1217,7 @@ export async function deleteUserAccount(
     db.prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
     db.prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
+    db.prepare('DELETE FROM oauth_grants WHERE user_id = ?1').bind(userId),
   );
 
   // Tokens issued before multi-user MCP have a NULL principal and resolve to
@@ -1225,6 +1226,7 @@ export async function deleteUserAccount(
     statements.push(
       db.prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
       db.prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
+      db.prepare('DELETE FROM oauth_grants WHERE user_id IS NULL'),
     );
   }
 
@@ -10463,11 +10465,13 @@ export interface OAuthCodeRedemption {
   code_challenge: string;
   code_challenge_method: string;
   scope: string | null;
+  resource: string | null;
   expires_at: number;
   user_id: string | null;
   access_token: string;
   refresh_token: string;
   access_expires_at: number;
+  grant_id: string;
   owner_apple_sub?: string;
 }
 
@@ -10481,6 +10485,8 @@ export interface OAuthRefreshRotation {
   access_token: string;
   refresh_token: string;
   access_expires_at: number;
+  grant_id: string | null;
+  consumed_refresh_sha256: string;
   owner_apple_sub?: string;
 }
 
@@ -10488,6 +10494,7 @@ export interface OAuthTokenPair {
   access_token: string;
   refresh_token: string;
   scope: string;
+  grant_id: string;
 }
 
 /**
@@ -10510,11 +10517,46 @@ export async function redeemOAuthAuthorizationCode(
   const nowMs = now();
   const createdAt = Math.floor(nowMs / 1000);
   const legacy = redemption.user_id === null;
-  const [inserted, consumed] = await db.batch([
+  const [family, inserted, consumed] = await db.batch([
+    db.prepare(
+      `INSERT INTO oauth_grants
+         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
+       SELECT ?1, ?2, client_id, COALESCE(scope, 'mcp'), ?3, ?3, ?15
+         FROM oauth_codes
+        WHERE code = ?4
+          AND client_id = ?5
+          AND redirect_uri = ?6
+          AND code_challenge = ?7
+          AND code_challenge_method = ?8
+          AND expires_at = ?9
+          AND expires_at >= ?10
+          AND scope IS ?11
+          AND resource IS ?12
+          AND (user_id = ?13 OR (?14 = 1 AND user_id IS NULL))
+          AND EXISTS (SELECT 1 FROM users WHERE id = ?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?2)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?2)`,
+    ).bind(
+      redemption.grant_id,
+      principal.id,
+      createdAt,
+      redemption.code,
+      redemption.client_id,
+      redemption.redirect_uri,
+      redemption.code_challenge,
+      redemption.code_challenge_method,
+      redemption.expires_at,
+      nowMs,
+      redemption.scope,
+      redemption.resource,
+      redemption.user_id,
+      legacy ? 1 : 0,
+      legacy ? 1 : 0,
+    ),
     db.prepare(
       `INSERT INTO oauth_tokens
-         (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id)
-       SELECT ?1, ?2, client_id, COALESCE(scope, 'mcp'), ?3, ?4, ?5
+         (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id, grant_id)
+       SELECT ?1, ?2, client_id, COALESCE(scope, 'mcp'), ?3, ?4, ?5, ?17
          FROM oauth_codes
         WHERE code = ?6
           AND client_id = ?7
@@ -10523,10 +10565,14 @@ export async function redeemOAuthAuthorizationCode(
           AND code_challenge_method = ?10
           AND expires_at = ?11
           AND expires_at >= ?12
-          AND (user_id = ?13 OR (?14 = 1 AND user_id IS NULL))
+          AND scope IS ?13
+          AND resource IS ?14
+          AND (user_id = ?15 OR (?16 = 1 AND user_id IS NULL))
           AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
           AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
-          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)`,
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)
+          AND EXISTS (SELECT 1 FROM oauth_grants WHERE id = ?17)
+          AND changes() = 1`,
     ).bind(
       redemption.access_token,
       redemption.refresh_token,
@@ -10540,8 +10586,11 @@ export async function redeemOAuthAuthorizationCode(
       redemption.code_challenge_method,
       redemption.expires_at,
       nowMs,
+      redemption.scope,
+      redemption.resource,
       redemption.user_id,
       legacy ? 1 : 0,
+      redemption.grant_id,
     ),
     db.prepare(
       `DELETE FROM oauth_codes
@@ -10552,7 +10601,9 @@ export async function redeemOAuthAuthorizationCode(
           AND code_challenge_method = ?5
           AND expires_at = ?6
           AND expires_at >= ?7
-          AND (user_id = ?8 OR (?9 = 1 AND user_id IS NULL))
+          AND scope IS ?8
+          AND resource IS ?9
+          AND (user_id = ?10 OR (?11 = 1 AND user_id IS NULL))
           AND changes() = 1`,
     ).bind(
       redemption.code,
@@ -10562,15 +10613,22 @@ export async function redeemOAuthAuthorizationCode(
       redemption.code_challenge_method,
       redemption.expires_at,
       nowMs,
+      redemption.scope,
+      redemption.resource,
       redemption.user_id,
       legacy ? 1 : 0,
     ),
   ]);
-  if (inserted?.meta.changes !== 1 || consumed?.meta.changes !== 1) return null;
+  if (
+    family?.meta.changes !== 1 ||
+    inserted?.meta.changes !== 1 ||
+    consumed?.meta.changes !== 1
+  ) return null;
   return {
     access_token: redemption.access_token,
     refresh_token: redemption.refresh_token,
     scope: redemption.scope ?? 'mcp',
+    grant_id: redemption.grant_id,
   };
 }
 
@@ -10589,20 +10647,55 @@ export async function rotateOAuthRefreshToken(
 
   const createdAt = Math.floor(now() / 1000);
   const legacy = rotation.user_id === null;
-  const result = await db.prepare(
+  const grantId = rotation.grant_id ?? crypto.randomUUID();
+  const [adopted, archived, result, touched] = await db.batch([
+    db.prepare(
+      `INSERT INTO oauth_grants
+         (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
+       SELECT ?1, ?2, client_id, scope, created_at, ?3, 1
+         FROM oauth_tokens
+        WHERE refresh_token = ?4 AND grant_id IS NULL
+       ON CONFLICT(id) DO NOTHING`,
+    ).bind(grantId, principal.id, createdAt, rotation.presented_refresh_token),
+    db.prepare(
+      `INSERT INTO oauth_refresh_history (token_sha256, grant_id, client_id, consumed_at)
+       SELECT ?1, ?2, client_id, ?3 FROM oauth_tokens
+        WHERE refresh_token = ?4
+          AND client_id = ?5
+          AND (grant_id = ?2 OR grant_id IS NULL)
+          AND (user_id = ?6 OR (?7 = 1 AND user_id IS NULL))
+          AND EXISTS (SELECT 1 FROM users WHERE id = ?8)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?8)
+          AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?8)
+       ON CONFLICT(token_sha256) DO NOTHING`,
+    ).bind(
+      rotation.consumed_refresh_sha256,
+      grantId,
+      createdAt,
+      rotation.presented_refresh_token,
+      rotation.client_id,
+      rotation.user_id,
+      legacy ? 1 : 0,
+      principal.id,
+    ),
+    db.prepare(
     `UPDATE oauth_tokens
         SET access_token = ?1,
             refresh_token = ?2,
             expires_at = ?3,
             created_at = ?4,
-            user_id = ?5
+            user_id = ?5,
+            grant_id = ?12
       WHERE refresh_token = ?6
         AND client_id = ?7
         AND expires_at = ?8
         AND (user_id = ?9 OR (?10 = 1 AND user_id IS NULL))
         AND EXISTS (SELECT 1 FROM users WHERE id = ?5)
         AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?5)
-        AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)`,
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_receipts WHERE user_id = ?5)
+        AND scope IS ?11
+        AND (grant_id = ?12 OR grant_id IS NULL)
+        AND changes() = 1`,
   ).bind(
     rotation.access_token,
     rotation.refresh_token,
@@ -10614,11 +10707,177 @@ export async function rotateOAuthRefreshToken(
     rotation.expires_at,
     rotation.user_id,
     legacy ? 1 : 0,
-  ).run();
-  if (result.meta.changes !== 1) return null;
+    rotation.scope,
+    grantId,
+  ),
+    db.prepare(
+      `UPDATE oauth_grants SET last_refreshed_at = ?2
+        WHERE id = ?1 AND revoked_at IS NULL AND changes() = 1`,
+    ).bind(grantId, createdAt),
+  ]);
+  if (archived?.meta.changes !== 1 || result?.meta.changes !== 1 || touched?.meta.changes !== 1) {
+    return null;
+  }
+  if (rotation.grant_id === null && adopted?.meta.changes !== 1) return null;
   return {
     access_token: rotation.access_token,
     refresh_token: rotation.refresh_token,
     scope: rotation.scope ?? 'mcp',
+    grant_id: grantId,
   };
+}
+
+export interface OAuthGrantSummary {
+  id: string;
+  client_id: string;
+  scope: string;
+  created_at: number;
+  last_refreshed_at: number | null;
+  legacy: boolean;
+}
+
+/**
+ * A matching replay of a consumed refresh credential invalidates only its
+ * family. A wrong client id has no effect: public client ids bind requests but
+ * do not authenticate whoever presented the stale credential.
+ */
+export async function revokeOAuthGrantOnRefreshReplay(
+  db: D1Database,
+  tokenSha256: string,
+  clientId: string,
+  ownerAppleSub: string | undefined,
+): Promise<boolean> {
+  const replay = await db.prepare(
+    `SELECT g.id, g.user_id FROM oauth_refresh_history h
+       JOIN oauth_grants g ON g.id = h.grant_id
+      WHERE h.token_sha256 = ?1
+        AND h.client_id = ?2
+        AND g.client_id = ?2`,
+  ).bind(tokenSha256, clientId).first<{ id: string; user_id: string | null }>();
+  if (!replay) return false;
+  const principal = replay.user_id
+    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(replay.user_id).first<{ id: string }>()
+    : await findOwnerRow(db, ownerAppleSub);
+  if (!principal) return false;
+  const revokedAt = now();
+  const [revoked, removed] = await db.batch([
+    db.prepare(
+      `UPDATE oauth_grants SET revoked_at = ?2
+        WHERE id = ?1 AND revoked_at IS NULL
+          AND (user_id = ?3 OR (?4 = 1 AND user_id IS NULL))`,
+    ).bind(replay.id, revokedAt, replay.user_id, replay.user_id === null ? 1 : 0),
+    db.prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1 AND changes() = 1')
+      .bind(replay.id),
+  ]);
+  return revoked?.meta.changes === 1 && (removed?.meta.changes ?? 0) <= 1;
+}
+
+async function adoptUntrackedOAuthGrants(
+  db: D1Database,
+  userId: string,
+  includeLegacyOwner: boolean,
+): Promise<void> {
+  const rows = await db.prepare(
+    `SELECT access_token, user_id, client_id, scope, created_at
+       FROM oauth_tokens
+      WHERE grant_id IS NULL
+        AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))`,
+  ).bind(userId, includeLegacyOwner ? 1 : 0).all<{
+    access_token: string;
+    user_id: string | null;
+    client_id: string;
+    scope: string | null;
+    created_at: number;
+  }>();
+  for (const row of rows.results) {
+    const grantId = crypto.randomUUID();
+    await db.batch([
+      db.prepare(
+        `INSERT INTO oauth_grants
+           (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy)
+         SELECT ?1, ?2, client_id, scope, created_at, created_at, 1
+           FROM oauth_tokens
+          WHERE access_token = ?3 AND grant_id IS NULL`,
+      ).bind(grantId, row.user_id ?? userId, row.access_token),
+      db.prepare(
+        `UPDATE oauth_tokens SET grant_id = ?2
+          WHERE access_token = ?1 AND grant_id IS NULL AND changes() = 1`,
+      ).bind(row.access_token, grantId),
+    ]);
+  }
+}
+
+export async function listOAuthGrants(
+  db: D1Database,
+  userId: string,
+  ownerAppleSub: string | undefined,
+): Promise<OAuthGrantSummary[]> {
+  const owner = await findOwnerRow(db, ownerAppleSub);
+  const isOwner = owner?.id === userId;
+  await adoptUntrackedOAuthGrants(db, userId, isOwner);
+  const rows = await db.prepare(
+    `SELECT id, client_id, COALESCE(scope, 'mcp') AS scope, created_at,
+            last_refreshed_at, legacy
+       FROM oauth_grants
+      WHERE revoked_at IS NULL
+        AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))
+      ORDER BY created_at DESC, id`,
+  ).bind(userId, isOwner ? 1 : 0).all<{
+    id: string;
+    client_id: string;
+    scope: string;
+    created_at: number;
+    last_refreshed_at: number | null;
+    legacy: number;
+  }>();
+  return rows.results.map((row) => ({ ...row, legacy: row.legacy === 1 }));
+}
+
+/** Caller-scoped and idempotent; never returns or audits credential values. */
+export async function revokeOAuthGrant(
+  db: D1Database,
+  userId: string,
+  grantId: string,
+  ownerAppleSub: string | undefined,
+): Promise<boolean> {
+  const owner = await findOwnerRow(db, ownerAppleSub);
+  const isOwner = owner?.id === userId;
+  const grant = await db.prepare(
+    `SELECT id FROM oauth_grants
+      WHERE id = ?1 AND (user_id = ?2 OR (?3 = 1 AND user_id IS NULL))`,
+  ).bind(grantId, userId, isOwner ? 1 : 0).first<{ id: string }>();
+  if (!grant) return false;
+  await db.batch([
+    db.prepare(
+      'UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?2) WHERE id = ?1',
+    ).bind(grantId, now()),
+    db.prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1').bind(grantId),
+  ]);
+  return true;
+}
+
+export async function revokeAllOAuthGrants(
+  db: D1Database,
+  userId: string,
+  ownerAppleSub: string | undefined,
+): Promise<number> {
+  const owner = await findOwnerRow(db, ownerAppleSub);
+  const isOwner = owner?.id === userId;
+  await adoptUntrackedOAuthGrants(db, userId, isOwner);
+  const [revoked] = await db.batch([
+    db.prepare(
+      `UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?3)
+        WHERE revoked_at IS NULL
+          AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))`,
+    ).bind(userId, isOwner ? 1 : 0, now()),
+    db.prepare(
+      `DELETE FROM oauth_tokens
+        WHERE grant_id IN (
+          SELECT id FROM oauth_grants
+           WHERE revoked_at IS NOT NULL
+             AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))
+        )`,
+    ).bind(userId, isOwner ? 1 : 0),
+  ]);
+  return revoked?.meta.changes ?? 0;
 }

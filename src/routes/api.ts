@@ -36,6 +36,7 @@ import {
   isAccountDeletionKey,
   leaveGroup,
   listGroupsForUser,
+  listOAuthGrants,
   logActivity,
   logSet,
   nextDayOrderIndex,
@@ -44,6 +45,8 @@ import {
   patchSession,
   patchSet,
   redeemInvite,
+  revokeAllOAuthGrants,
+  revokeOAuthGrant,
   resolveExercise,
   setPlanSchedule,
   setPlannedSession,
@@ -1284,6 +1287,40 @@ apiRoutes.post('/me/mcp-passphrase', async (c) => {
   }
   await writeAudit(c.env.DB, c.get('userId'), 'set_mcp_passphrase', {}, 'ok', 'ios');
   return c.json({ ok: true });
+});
+
+// Caller-scoped coach grants. Listing exposes only opaque family and client
+// metadata; credentials never cross this REST boundary.
+apiRoutes.get('/me/coach-grants', async (c) => {
+  const grants = await listOAuthGrants(
+    c.env.DB,
+    c.get('userId'),
+    c.env.OWNER_APPLE_SUB,
+  );
+  return c.json({ grants });
+});
+
+apiRoutes.delete('/me/coach-grants/:grantId', async (c) => {
+  const grantId = c.req.param('grantId');
+  const revoked = await revokeOAuthGrant(
+    c.env.DB,
+    c.get('userId'),
+    grantId,
+    c.env.OWNER_APPLE_SUB,
+  );
+  if (!revoked) return c.json({ error: 'not_found' }, 404);
+  await writeAudit(c.env.DB, c.get('userId'), 'revoke_coach_grant', { grant_id: grantId }, 'revoked', 'ios');
+  return c.json({ ok: true });
+});
+
+apiRoutes.delete('/me/coach-grants', async (c) => {
+  const revoked = await revokeAllOAuthGrants(
+    c.env.DB,
+    c.get('userId'),
+    c.env.OWNER_APPLE_SUB,
+  );
+  await writeAudit(c.env.DB, c.get('userId'), 'revoke_coach_grants', { count: revoked }, 'revoked', 'ios');
+  return c.json({ ok: true, revoked });
 });
 
 // ---- groups (M2 — friends/family invite-gated containers) ----------------

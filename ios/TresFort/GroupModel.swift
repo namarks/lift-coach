@@ -771,6 +771,36 @@ final class GroupModel: ObservableObject {
         return code
     }
 
+    /// Returns true when the post-revocation profile refresh also succeeded.
+    /// A false result still means revocation committed; callers must not retry
+    /// the destructive request merely because the follow-up read failed.
+    func disconnectClaude() async throws -> Bool {
+        guard let jwt = currentJWT else {
+            throw APIError.http(401, "not_signed_in")
+        }
+        _ = try await api.disconnectClaude(jwt: jwt)
+        guard isCurrentBearer(jwt) else { return true }
+        if let current = me {
+            me = MeProfile(
+                display_name: current.display_name,
+                email: current.email,
+                intervals: current.intervals,
+                claude: .init(
+                    is_owner: current.claude.is_owner,
+                    connected: false,
+                    last_active: current.claude.last_active),
+                health: current.health)
+        }
+        do {
+            me = try await loadProfile(jwt: jwt)
+            lastError = nil
+            return true
+        } catch {
+            handle(error, jwt: jwt)
+            return false
+        }
+    }
+
     /// 16 chars of an unambiguous base-32 alphabet (no I/L/O/0/1), grouped
     /// 4×4 with dashes for legibility — e.g. `K7M4-PQ2R-9XTW-6NBV`. ~78 bits of
     /// entropy: far above the server's 8-char minimum and collision-safe

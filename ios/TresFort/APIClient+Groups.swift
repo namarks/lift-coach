@@ -55,6 +55,16 @@ extension APIClient {
             "api/me/mcp-passphrase", body: ["passphrase": code], jwt: jwt)
     }
 
+    struct CoachDisconnectResult: Decodable, Equatable {
+        let ok: Bool
+        let revoked: Int
+    }
+
+    /// Revoke every active Claude grant owned by this signed-in account.
+    func disconnectClaude(jwt: String) async throws -> CoachDisconnectResult {
+        try await delete("api/me/coach-grants", jwt: jwt)
+    }
+
     // MARK: - M2: Groups CRUD
 
     /// POST /api/groups — create a new group, auto-add the creator as the

@@ -10,6 +10,7 @@ import {
   findUserByMcpPassphrase,
   isAccountDeletionInProgress,
   redeemOAuthAuthorizationCode,
+  revokeOAuthGrantOnRefreshReplay,
   rotateOAuthRefreshToken,
 } from './db';
 
@@ -28,6 +29,13 @@ async function s256(verifier: string): Promise<string> {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/, '');
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 /**
@@ -303,11 +311,18 @@ oauthRoutes.post('/oauth/token', async (c) => {
       access_token: rand(),
       refresh_token: rand(),
       access_expires_at: Math.floor(Date.now() / 1000) + ACCESS_TTL,
+      grant_id: crypto.randomUUID(),
       owner_apple_sub: c.env.OWNER_APPLE_SUB,
     }).catch(() => undefined);
     if (tokens === undefined) return c.json({ error: 'server_error' }, 500);
     if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
-    return c.json({ ...tokens, token_type: 'Bearer', expires_in: ACCESS_TTL });
+    return c.json({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      scope: tokens.scope,
+      token_type: 'Bearer',
+      expires_in: ACCESS_TTL,
+    });
   }
 
   if (grant === 'refresh_token') {
@@ -316,7 +331,17 @@ oauthRoutes.post('/oauth/token', async (c) => {
     )
       .bind(f('refresh_token'))
       .first<any>();
-    if (!row) return c.json({ error: 'invalid_grant' }, 400);
+    if (!row) {
+      if (f('client_id')) {
+        await revokeOAuthGrantOnRefreshReplay(
+          c.env.DB,
+          await sha256Hex(f('refresh_token')),
+          f('client_id'),
+          c.env.OWNER_APPLE_SUB,
+        );
+      }
+      return c.json({ error: 'invalid_grant' }, 400);
+    }
     if (!f('client_id') || row.client_id !== f('client_id')) {
       return c.json({ error: 'invalid_grant' }, 400);
     }
@@ -327,10 +352,19 @@ oauthRoutes.post('/oauth/token', async (c) => {
       access_token: rand(),
       refresh_token: rand(),
       access_expires_at: Math.floor(Date.now() / 1000) + ACCESS_TTL,
+      grant_id: row.grant_id ?? null,
+      consumed_refresh_sha256: await sha256Hex(f('refresh_token')),
       owner_apple_sub: c.env.OWNER_APPLE_SUB,
-    });
+    }).catch(() => undefined);
+    if (tokens === undefined) return c.json({ error: 'server_error' }, 500);
     if (!tokens) return c.json({ error: 'invalid_grant' }, 400);
-    return c.json({ ...tokens, token_type: 'Bearer', expires_in: ACCESS_TTL });
+    return c.json({
+      access_token: tokens.access_token,
+      refresh_token: tokens.refresh_token,
+      scope: tokens.scope,
+      token_type: 'Bearer',
+      expires_in: ACCESS_TTL,
+    });
   }
 
   return c.json({ error: 'unsupported_grant_type' }, 400);

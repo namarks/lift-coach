@@ -46,6 +46,9 @@ struct ProfileView: View {
     @State private var isDeletingAccount = false
     @State private var showDeletionError = false
     @State private var deletionErrorMessage = ""
+    @State private var showCoachDisconnectConfirmation = false
+    @State private var isDisconnectingCoach = false
+    @State private var coachDisconnectMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -88,6 +91,28 @@ struct ProfileView: View {
             Button("OK", role: .cancel) {}
         } message: {
             Text(exportErrorMessage)
+        }
+        .confirmationDialog(
+            "Disconnect Claude?",
+            isPresented: $showCoachDisconnectConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Disconnect Claude", role: .destructive) {
+                Task { await disconnectCoach() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This revokes Claude’s access to your training. Your workouts and plan stay in Très Fort.")
+        }
+        .alert(
+            "Coach connection",
+            isPresented: Binding(
+                get: { coachDisconnectMessage != nil },
+                set: { if !$0 { coachDisconnectMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) { coachDisconnectMessage = nil }
+        } message: {
+            Text(coachDisconnectMessage ?? "")
         }
         .fileExporter(
             isPresented: $showAccountExporter,
@@ -212,6 +237,10 @@ struct ProfileView: View {
                 }
                 Text("Ask Claude to review your training, explain your numbers, or adjust your plan — in the Claude app with the Très Fort connector.")
                     .font(.footnote).foregroundStyle(.secondary)
+                Button("Disconnect Claude", role: .destructive) {
+                    showCoachDisconnectConfirmation = true
+                }
+                .disabled(isDisconnectingCoach)
             } else if groupModel.me?.claude.is_owner == true {
                 HStack(spacing: 10) {
                     Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary)
@@ -239,6 +268,20 @@ struct ProfileView: View {
             }
         } header: {
             Text("Coach (Claude)")
+        }
+    }
+
+    private func disconnectCoach() async {
+        guard !isDisconnectingCoach else { return }
+        isDisconnectingCoach = true
+        defer { isDisconnectingCoach = false }
+        do {
+            let refreshed = try await groupModel.disconnectClaude()
+            if !refreshed {
+                coachDisconnectMessage = "Claude was disconnected. The latest profile status couldn’t be refreshed; pull to refresh when you’re online."
+            }
+        } catch {
+            coachDisconnectMessage = "Claude wasn’t disconnected: \(error.localizedDescription)"
         }
     }
 

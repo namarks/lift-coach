@@ -1,5 +1,8 @@
 import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { issueAppJwt } from '../src/auth';
+import { redeemOAuthAuthorizationCode } from '../src/db';
+import { validateBearer } from '../src/oauth';
 
 const BASE = 'https://tres-fort.test';
 
@@ -99,7 +102,12 @@ describe('atomic OAuth grant transitions', () => {
     const row = await env.DB.prepare(
       'SELECT client_id, scope, user_id FROM oauth_tokens WHERE user_id = ?1',
     ).bind(grant.userId).first<{ client_id: string; scope: string; user_id: string }>();
-    expect(row).toEqual({ client_id: grant.clientId, scope: 'mcp', user_id: grant.userId });
+    // If the losing request observes the rotation, it is a replay and may
+    // revoke the winner's successor. If both observed the old row, one CAS
+    // loses without revoking; either way only one pair was ever issued.
+    if (row) {
+      expect(row).toEqual({ client_id: grant.clientId, scope: 'mcp', user_id: grant.userId });
+    }
   });
 
   it('does not consume a code for a wrong client, verifier, redirect, or expiry', async () => {
@@ -185,5 +193,103 @@ describe('atomic OAuth grant transitions', () => {
     expect((await codeRequest(grant)).status).toBe(400);
     expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM oauth_tokens WHERE user_id = ?1')
       .bind(grant.userId).first<number>('n')).toBe(1);
+  });
+
+  it('rechecks deletion after stale code validation and preserves the code', async () => {
+    const grant = await seedCode();
+    const row = await env.DB.prepare('SELECT * FROM oauth_codes WHERE code = ?1')
+      .bind(grant.code).first<any>();
+    await env.DB.prepare(
+      `INSERT INTO account_deletion_intents
+         (user_id, idempotency_key_sha256, apple_revocation, created_at)
+       VALUES (?1, 'stale-validation', NULL, ?2)`,
+    ).bind(grant.userId, Date.now()).run();
+    const result = await redeemOAuthAuthorizationCode(env.DB, {
+      ...row,
+      access_token: `stale-access-${crypto.randomUUID()}`,
+      refresh_token: `stale-refresh-${crypto.randomUUID()}`,
+      access_expires_at: Math.floor(Date.now() / 1000) + 600,
+      grant_id: crypto.randomUUID(),
+    });
+    expect(result).toBeNull();
+    expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM oauth_codes WHERE code = ?1')
+      .bind(grant.code).first<number>('n')).toBe(1);
+  });
+
+  it('rolls back a failed refresh update and preserves the original pair', async () => {
+    const grant = await seedRefresh();
+    await env.DB.prepare(
+      `CREATE TRIGGER oauth_integrity_fail_update
+       BEFORE UPDATE ON oauth_tokens WHEN OLD.client_id = '${grant.clientId}'
+       BEGIN SELECT RAISE(ABORT, 'synthetic_update_failure'); END`,
+    ).run();
+    try {
+      expect((await refreshRequest(grant)).status).toBe(500);
+      expect(await validateBearer(env, grant.access)).toBe(grant.userId);
+      expect(await env.DB.prepare('SELECT COUNT(*) AS n FROM oauth_tokens WHERE refresh_token = ?1')
+        .bind(grant.refresh).first<number>('n')).toBe(1);
+    } finally {
+      await env.DB.prepare('DROP TRIGGER oauth_integrity_fail_update').run();
+    }
+  });
+});
+
+describe('OAuth grant families and caller revocation', () => {
+  it('revokes only the matching family successor when a consumed refresh token is replayed', async () => {
+    const first = await seedRefresh();
+    const independent = await seedRefresh({ userId: first.userId });
+    const rotated = await refreshRequest(first);
+    expect(rotated.status).toBe(200);
+    const successor = await rotated.json<{ access_token: string; refresh_token: string }>();
+    expect((await refreshRequest(first)).status).toBe(400);
+    expect(await validateBearer(env, successor.access_token)).toBeNull();
+    expect(await validateBearer(env, independent.access)).toBe(first.userId);
+  });
+
+  it('does not revoke a family when replay uses the wrong client binding', async () => {
+    const grant = await seedRefresh();
+    const rotated = await refreshRequest(grant);
+    const successor = await rotated.json<{ access_token: string }>();
+    expect((await refreshRequest(grant, 'wrong-client')).status).toBe(400);
+    expect(await validateBearer(env, successor.access_token)).toBe(grant.userId);
+  });
+
+  it('lists no credentials and revokes only caller-scoped grants idempotently', async () => {
+    const caller = await seedRefresh();
+    const other = await seedRefresh();
+    const jwt = await issueAppJwt(caller.userId, 'test-secret');
+    const listed = await SELF.fetch(`${BASE}/api/me/coach-grants`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    expect(listed.status).toBe(200);
+    const body = await listed.json<{ grants: Array<{ id: string }> }>();
+    expect(body.grants).toHaveLength(1);
+    expect(JSON.stringify(body)).not.toContain(caller.access);
+    expect(JSON.stringify(body)).not.toContain(caller.refresh);
+    expect(JSON.stringify(body)).not.toContain(other.refresh);
+
+    const grantId = body.grants[0]!.id;
+    const remove = () => SELF.fetch(`${BASE}/api/me/coach-grants/${grantId}`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${jwt}` },
+    });
+    expect((await remove()).status).toBe(200);
+    expect((await remove()).status).toBe(200);
+    expect(await validateBearer(env, caller.access)).toBeNull();
+    expect(await validateBearer(env, other.access)).toBe(other.userId);
+  });
+
+  it('adopts a grant_id-null row inserted after migration and disconnects it', async () => {
+    const grant = await seedRefresh();
+    const jwt = await issueAppJwt(grant.userId, 'test-secret');
+    const listed = await SELF.fetch(`${BASE}/api/me/coach-grants`, {
+      headers: { Authorization: `Bearer ${jwt}` },
+    });
+    const body = await listed.json<{ grants: Array<{ id: string; legacy: boolean }> }>();
+    expect(body.grants).toHaveLength(1);
+    expect(body.grants[0]!.legacy).toBe(true);
+    expect((await SELF.fetch(`${BASE}/api/me/coach-grants`, {
+      method: 'DELETE', headers: { Authorization: `Bearer ${jwt}` },
+    })).status).toBe(200);
+    expect(await validateBearer(env, grant.access)).toBeNull();
   });
 });
