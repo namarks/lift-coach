@@ -1,6 +1,6 @@
 # Workouts and Multi-Session Days
 
-Slug: workouts-and-multi-session · Status: planned · Updated: 2026-09-05 · Theme: gym-floor
+Slug: workouts-and-multi-session · Status: planned · Updated: 2026-09-07 · Theme: gym-floor
 
 ## Goal
 
@@ -179,8 +179,9 @@ Two model corrections that the workout library exposed:
   - Group feed and stats: each session is one feed item; the daily
     consistency count still counts a date once.
   - Sync: `/api/state` session deltas already carry whole rows, so `slot`
-    rides along; `data-storage-scalability` incremental sync must include it
-    in its cursor shape if that lands first.
+    rides along. The completed
+    [data-storage-scalability](../completed/data-storage-scalability/plan.md)
+    cursor contract preserves that whole-row shape without a new cursor.
 
 ## Execution frontier
 
@@ -192,7 +193,6 @@ Two model corrections that the workout library exposed:
 |---|---|---|---|
 | P0 | coordinates_with | plan:reversible-plan-management#P0 | Snapshot serialization must use one set of names; agree on `workouts`/`workout_id` before either ships. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the Today runner surface; share the slice, do not fork the runner. |
-| P1 | coordinates_with | plan:data-storage-scalability#P0 | The `(user_id, date, slot)` index replaces the one incremental sync and the hot-path index work rely on. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step
