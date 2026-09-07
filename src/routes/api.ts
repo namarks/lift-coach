@@ -468,7 +468,7 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
   const ex = await resolveExercise(c.env.DB, b.exercise);
   if (!ex) return c.json({ error: 'unknown_exercise', query: b.exercise }, 400);
   const orderIndex =
-    typeof b.order_index === 'number'
+    b.order_index !== undefined
       ? b.order_index
       : await nextExerciseOrderIndex(c.env.DB, dayId);
   const row = await addTemplateExercise(c.env.DB, plan.id, {
@@ -479,12 +479,12 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
     target_reps: b.target_reps,
     target_reps_max: b.target_reps_max ?? null,
     target_rpe: b.target_rpe ?? null,
-    rest_seconds: b.rest_seconds ?? 120,
+    rest_seconds: b.rest_seconds === undefined ? 120 : b.rest_seconds,
     target_weight: b.target_weight ?? null,
     target_duration_s: b.target_duration_s ?? null,
     progression: b.progression == null ? null : JSON.stringify(b.progression),
     cues: b.cues ?? null,
-    is_warmup: b.is_warmup ? 1 : 0,
+    is_warmup: b.is_warmup === undefined ? 0 : b.is_warmup as unknown as number | boolean,
   });
   if ('error' in row) return c.json(row, 400);
   // Audit the in-app plan edit (actor='ios') so the trust/undo trail covers

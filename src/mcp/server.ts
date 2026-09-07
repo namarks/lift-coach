@@ -854,8 +854,8 @@ const TOOLS: Record<string, Tool> = {
       // instead of the old 99 sentinel, which stranded everything at the
       // bottom (P0 in the bug report).
       const orderIndex =
-        typeof a.order_index === 'number'
-          ? a.order_index
+        a.order_index !== undefined
+          ? a.order_index as number
           : await nextExerciseOrderIndex(env.DB, day.id);
       return addTemplateExercise(env.DB, plan.id, {
         day_template_id: day.id,
@@ -865,13 +865,13 @@ const TOOLS: Record<string, Tool> = {
         target_reps: a.target_reps as number,
         target_reps_max: a.target_reps_max == null ? null : a.target_reps_max as number,
         target_rpe: a.target_rpe == null ? null : a.target_rpe as number,
-        rest_seconds: typeof a.rest_seconds === 'number' ? a.rest_seconds : 120,
+        rest_seconds: a.rest_seconds === undefined ? 120 : a.rest_seconds as number,
         target_weight: a.target_weight == null ? null : a.target_weight as number,
         target_duration_s:
           a.target_duration_s == null ? null : a.target_duration_s as number,
         progression: a.progression == null ? null : JSON.stringify(a.progression),
         cues: null,
-        is_warmup: a.is_warmup === true ? 1 : 0,
+        is_warmup: a.is_warmup === undefined ? 0 : a.is_warmup as boolean,
       });
     },
     note: (a, r) => (r?.error ? null : `Added ${a.exercise} to ${a.day}.`),

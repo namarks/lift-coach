@@ -1,4 +1,4 @@
-import { applyD1Migrations, env } from 'cloudflare:test';
+import { applyD1Migrations, env, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   getActivePlan,
@@ -6,6 +6,8 @@ import {
   updateExercise,
   updatePlanTree,
 } from '../src/db';
+import { handleMcp } from '../src/mcp/server';
+import type { Env } from '../src/types';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
@@ -63,6 +65,52 @@ describe('prescription integrity', () => {
     });
     expect(result).toEqual({ error: 'invalid_fields', fields: ['days.0.exercises.0.target_weight'] });
     expect(await getActivePlan(env.DB, userId)).toBeNull();
+  });
+
+  it('rejects malformed values through MCP and REST wrappers without coercion', async () => {
+    const userId = await user('wrappers');
+    await updatePlanTree(env.DB, userId, { days: [{ name: 'A', day_label: 'A', exercises: [] }] });
+    const mcp = await handleMcp({
+      jsonrpc: '2.0', id: 1, method: 'tools/call',
+      params: { name: 'add_exercise', arguments: {
+        day: 'A', exercise: 'bench', target_sets: '3', target_reps: 5,
+        rest_seconds: '120', order_index: '0', is_warmup: 'false',
+      } },
+    }, env as Env, userId);
+    const mcpBody = mcp.json as { result: { content: { text: string }[] } };
+    expect(JSON.parse(mcpBody.result.content[0]!.text)).toEqual({
+      error: 'invalid_fields',
+      fields: ['is_warmup', 'order_index', 'rest_seconds', 'target_sets'],
+    });
+
+    const auth = await SELF.fetch('https://tres-fort.test/auth/dev', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ secret: 'test-dev' }),
+    });
+    const jwt = (await auth.json<{ jwt: string }>()).jwt;
+    const active = await SELF.fetch('https://tres-fort.test/api/plan', {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({ name: 'REST wrapper plan' }),
+    });
+    expect(active.status).toBe(201);
+    const day = await SELF.fetch('https://tres-fort.test/api/days', {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({ name: 'A' }),
+    });
+    const dayId = (await day.json<{ id: string }>()).id;
+    const before = (await SELF.fetch('https://tres-fort.test/api/plan/active', {
+      headers: { authorization: `Bearer ${jwt}` },
+    }).then((r) => r.json<{ version: number }>())).version;
+    const rejected = await SELF.fetch(`https://tres-fort.test/api/days/${dayId}/exercises`, {
+      method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({ exercise: 'bench', target_sets: 3, target_reps: 5, rest_seconds: '120', is_warmup: 'false' }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({ error: 'invalid_fields', fields: ['is_warmup', 'rest_seconds'] });
+    const after = await SELF.fetch('https://tres-fort.test/api/plan/active', {
+      headers: { authorization: `Bearer ${jwt}` },
+    }).then((r) => r.json<{ version: number }>());
+    expect(after.version).toBe(before);
   });
 
   it('composes disjoint legacy patches instead of restoring stale fields', async () => {

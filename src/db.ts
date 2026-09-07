@@ -3197,7 +3197,9 @@ export async function nextDayOrderIndex(
 export async function addTemplateExercise(
   db: D1Database,
   planId: string,
-  input: Omit<TemplateExerciseRow, 'id' | 'created_at' | 'updated_at'>,
+  input: Omit<TemplateExerciseRow, 'id' | 'created_at' | 'updated_at' | 'is_warmup'> & {
+    is_warmup: number | boolean;
+  },
 ): Promise<TemplateExerciseRow | PrescriptionValidationError> {
   const exercise = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
     .bind(input.exercise_id).first<{ modality: string }>();
@@ -3210,7 +3212,13 @@ export async function addTemplateExercise(
   const invalid = validateExercisePrescription(validationInput, { modality: exercise?.modality });
   if (invalid) return invalid;
   const ts = now();
-  const row: TemplateExerciseRow = { ...input, id: uuid(), created_at: ts, updated_at: ts };
+  const row: TemplateExerciseRow = {
+    ...input,
+    is_warmup: input.is_warmup ? 1 : 0,
+    id: uuid(),
+    created_at: ts,
+    updated_at: ts,
+  };
   await db
     .prepare(
       `INSERT INTO template_exercises
@@ -5245,10 +5253,17 @@ export async function updatePlanTree(
       (!Number.isInteger(input.expected_version) || input.expected_version < 1)) {
     return { error: 'invalid_fields', fields: ['expected_version'] };
   }
-  const malformedDays = input.days.flatMap((day, index) =>
-    !isPlainRecord(day) || !Array.isArray(day.exercises ?? []) ? [`days.${index}`] : [],
-  );
-  if (malformedDays.length > 0) return { error: 'invalid_fields', fields: malformedDays };
+  const malformedDays: string[] = [];
+  input.days.forEach((day, dayIndex) => {
+    if (!isPlainRecord(day) || !Array.isArray(day.exercises ?? [])) {
+      malformedDays.push(`days.${dayIndex}`);
+      return;
+    }
+    (day.exercises ?? []).forEach((exercise, exerciseIndex) => {
+      if (!isPlainRecord(exercise)) malformedDays.push(`days.${dayIndex}.exercises.${exerciseIndex}`);
+    });
+  });
+  if (malformedDays.length > 0) return { error: 'invalid_fields', fields: malformedDays.sort() };
   let plan = await getActivePlan(db, userId);
   if (
     plan &&
