@@ -1,6 +1,7 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
+  adjustToday,
   comparePlanVersions,
   createPlan,
   deleteUserAccount,
@@ -309,5 +310,38 @@ describe('plan snapshots', () => {
     console.log(JSON.stringify({ event: 'plan_snapshot_growth', days: 50, slots: 1000, bytes }));
     expect(bytes).toBeGreaterThan(100_000);
     expect(bytes).toBeLessThan(1_000_000);
+  });
+
+  it('rejects invalid legacy prescriptions and reports an adjustment write race as conflict', async () => {
+    const invalidFixture = await fixture('invalid adjustment');
+    const invalidSlot = invalidFixture.plan.days[0]!.exercises[0]!;
+    await env.DB.prepare('UPDATE template_exercises SET target_sets=?2 WHERE id=?1')
+      .bind(invalidSlot.id, 'bad').run();
+    expect(await adjustToday(env.DB, invalidFixture.userId, 'reduce_volume'))
+      .toMatchObject({ error: 'invalid_fields' });
+    expect((await getPlanTree(env.DB, invalidFixture.userId))?.version).toBe(invalidFixture.plan.version);
+
+    const raced = await fixture('adjustment race');
+    let injected = false;
+    const racingDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'batch') return async (statements: D1PreparedStatement[]) => {
+          if (!injected) {
+            injected = true;
+            const concurrent = await updatePlanTree(env.DB, raced.userId, {
+              expected_version: raced.plan.version,
+              name: 'Concurrent winner',
+              days: [{ name: 'Winner', exercises: [] }],
+            });
+            if (!('plan' in concurrent)) throw new Error('concurrent_write_failed');
+          }
+          return target.batch(statements);
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as D1Database;
+    expect(await adjustToday(racingDb, raced.userId, 'reduce_volume'))
+      .toMatchObject({ conflict: true, current_version: raced.plan.version + 1 });
   });
 });

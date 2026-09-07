@@ -6593,6 +6593,10 @@ export async function adjustToday(
   acknowledged?: true;
   refresh_required?: true;
   version?: number;
+  conflict?: true;
+  current_version?: number;
+  error?: 'invalid_fields';
+  fields?: string[];
 }> {
   if (!['deload', 'reduce_volume', 'reduce_intensity'].includes(intent)
       || !['light', 'moderate', 'heavy'].includes(magnitude)) {
@@ -6605,6 +6609,25 @@ export async function adjustToday(
   const days = dayLabel
     ? tree.days.filter((d) => d.day_label === dayLabel || d.name === dayLabel)
     : tree.days;
+  const invalidFields = new Set<string>();
+  for (const day of days) for (const slot of day.exercises) {
+    let progression: unknown = null;
+    try { progression = slot.progression == null ? null : JSON.parse(slot.progression); }
+    catch { invalidFields.add(`${day.day_label ?? day.name}/${slot.exercise_name}.progression`); }
+    const invalid = validateExercisePrescription({ ...slot, progression }, {
+      modality: slot.exercise_modality,
+    });
+    for (const field of invalid?.fields ?? []) {
+      invalidFields.add(`${day.day_label ?? day.name}/${slot.exercise_name}.${field}`);
+    }
+  }
+  if (invalidFields.size > 0) {
+    return {
+      error: 'invalid_fields', fields: [...invalidFields].sort(), plan: tree,
+      changes: [], recurring: true,
+      affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: true,
+    };
+  }
   const changes: string[] = [];
   const ts = now();
   const nonce = uuid();
@@ -6655,9 +6678,11 @@ export async function adjustToday(
     }, ts, nonce));
     const results = await runWorkoutWriteBatch<{ version: number }>(db, stmts);
     if ((results[0]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
+      const current = await getActivePlan(db, userId);
       return {
-        plan: await getPlanTree(db, userId), changes: [], recurring: true,
-        affected_workouts: [], no_op: true,
+        conflict: true, current_version: current?.version ?? tree.version,
+        plan: null, changes: [], recurring: true,
+        affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: false,
       };
     }
     const committedVersion = tree.version + 1;
