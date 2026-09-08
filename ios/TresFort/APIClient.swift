@@ -496,6 +496,13 @@ struct APIClient {
         let _: SlotIDRow = try await delete("api/days/\(dayID)/exercises/\(teID)", jwt: jwt)
     }
 
+    func replaceExerciseSlot(dayID: String, teID: String, exercise: String,
+                             expectedVersion: Int, jwt: String) async throws -> SlotIDRow {
+        try await post("api/days/\(dayID)/exercises/\(teID)/swap", body: [
+            "to_exercise": exercise, "expected_version": expectedVersion,
+        ], jwt: jwt)
+    }
+
     // MARK: - transport
     //
     // INTERNAL (not private) so extension files (APIClient+Groups.swift,
@@ -750,6 +757,10 @@ extension APIClient: ExerciseCatalogAPI {}
 /// feature-session replacement without exercising URLSession in unit tests.
 @MainActor
 protocol PlanEditingAPI {
+    func replaceExerciseSlot(
+        dayID: String, teID: String, exercise: String,
+        expectedVersion: Int, jwt: String
+    ) async throws -> APIClient.SlotIDRow
     func addExercise(
         dayID: String,
         exercise: String,

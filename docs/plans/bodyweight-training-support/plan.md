@@ -87,18 +87,26 @@ gymnastic-strength movements.
     iOS unit tests. The checked phase and this evidence land atomically with the
     reviewed PR; no remote migration, Worker deployment, or TestFlight
     publication is part of the merge.
-- [ ] **P2 — Progress by variation in the app**
-  - Expose the existing swap-exercise service over the authenticated REST
+- [x] **P2 — Progress by variation in the app**
+  - Expose the shared swap-exercise service over the authenticated REST
     editor path and add a "Replace with…" action in the iOS editor that keeps
-    the slot's targets, order, and warm-up flag. The service currently
-    ignores the `carry_targets` flag the MCP tool advertises and always
-    carries targets; honor it or remove it as part of the exposure rather
-    than propagating an inert parameter.
+    the slot's targets, order, and warm-up flag. Swaps always preserve saved
+    targets; remove the previously ignored `carry_targets` option from the
+    service interface and advertised MCP schema.
   - Record the swap in the same audit trail and version bump as other plan
     edits so Claude can see that the member advanced a progression.
   - Validate carried targets for the destination modality and reuse the shared
     prescription writer. Coordinate with prescription-integrity P0/P1 so the
     REST exposure does not entrench malformed values or a non-atomic swap.
+  - Completion evidence (2026-09-07): exact-slot REST replacement requires the
+    observed plan version, validates carried targets, and commits the swap,
+    version, audit, and snapshot through the shared writer. iOS provides a
+    searchable replacement picker, confirmation, conflict recovery, and
+    acknowledged-write handling when refresh fails. Logged exercise identities
+    and values remain unchanged. Local checks passed all 737 Worker tests,
+    TypeScript, and all 287 iOS tests, including seven new D1 regressions and
+    five new client tests. See [the P2 contract](decisions.md). Repository
+    delivery does not deploy the endpoint or publish an iOS build.
 - [ ] **P3 — Compare like-for-like progress**
   - Supersede P1's positive-added-load Epley policy: added load alone is not
     system load, so suppress bodyweight e1RM until an exercise-specific model
@@ -120,7 +128,7 @@ gymnastic-strength movements.
 
 ## Execution frontier
 
-- P2
+- P3
 
 ## Dependencies
 
@@ -132,10 +140,11 @@ gymnastic-strength movements.
 
 ## Next step
 
-**Now (@agent):** P2 remains the selected frontier and now waits on the shared
-validation and atomic-writer contract in prescription-integrity P1. P3 records the
-review's new metric-policy correction for subsequent scheduling; the review
-does not reopen completed P0/P1 or silently expand the current execution frontier.
+**Now (@agent):** P3 is the next repository slice: compare compatible
+bodyweight/load/hold cohorts and suppress unsupported bodyweight e1RM. P2
+implementation is complete; release of its new REST endpoint and iOS picker
+requires separate owner authority, with the Worker deployed before the app.
+The P2 execution request does not authorize P3 implementation or release.
 
 ## Notes / open questions
 

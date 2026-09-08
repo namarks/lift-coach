@@ -5,6 +5,12 @@ private struct ExerciseEditTarget: Identifiable {
     var id: String { exercise.id }
 }
 
+private struct ExerciseReplacementTarget: Identifiable {
+    let exercise: TemplateExercise
+    let version: Int
+    var id: String { exercise.id }
+}
+
 /// In-app workout editor (#1/#2). Lets you add / remove / reorder exercises in
 /// today's workout — including a prescribed warm-up (e.g. a 5-min erg) — without
 /// going to Claude. It edits the active plan's DAY TEMPLATE via the REST editor
@@ -21,6 +27,7 @@ struct EditWorkoutSheet: View {
     @State private var adding = false
     @State private var addPresetWarmup = false
     @State private var editingExercise: ExerciseEditTarget?
+    @State private var replacingExercise: ExerciseReplacementTarget?
     @State private var refreshing = false
 
     private var day: DayTemplate? { sync.dayTemplate(id: dayID) }
@@ -73,6 +80,9 @@ struct EditWorkoutSheet: View {
                         slot: target.exercise)
                 }
             }
+            .sheet(item: $replacingExercise) { target in
+                ReplaceExerciseSheet(sync: sync, dayID: dayID, target: target)
+            }
         }
         .preferredColorScheme(.dark)
     }
@@ -109,26 +119,41 @@ struct EditWorkoutSheet: View {
     private func list(_ day: DayTemplate) -> some View {
         List {
             ForEach(day.exercises) { ex in
-                Button {
-                    editingExercise = ExerciseEditTarget(exercise: ex)
-                } label: {
-                    HStack(spacing: 10) {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(ex.exercise_name)
-                                .font(Theme.mono(15, .bold))
-                                .foregroundStyle(Theme.text)
-                            Text("\(ex.targetLabel) · \(ex.rest_seconds)s rest")
-                                .font(Theme.mono(12))
-                                .foregroundStyle(Theme.muted)
+                HStack(spacing: 8) {
+                    Button {
+                        editingExercise = ExerciseEditTarget(exercise: ex)
+                    } label: {
+                        HStack(spacing: 10) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(ex.exercise_name)
+                                    .font(Theme.mono(15, .bold))
+                                    .foregroundStyle(Theme.text)
+                                Text("\(ex.targetLabel) · \(ex.rest_seconds)s rest")
+                                    .font(Theme.mono(12))
+                                    .foregroundStyle(Theme.muted)
+                            }
+                            Spacer()
+                            if ex.isWarmup { WarmupTag() }
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(Theme.dim)
                         }
-                        Spacer()
-                        if ex.isWarmup { WarmupTag() }
-                        Image(systemName: "chevron.right")
-                            .font(.system(size: 11, weight: .bold))
-                            .foregroundStyle(Theme.dim)
                     }
+                    .buttonStyle(.plain)
+                    Menu {
+                        Button("Replace with…", systemImage: "arrow.triangle.2.circlepath") {
+                            guard let plan = sync.plan,
+                                  let current = plan.days.first(where: { $0.id == dayID })?
+                                    .exercises.first(where: { $0.id == ex.id }) else { return }
+                            replacingExercise = ExerciseReplacementTarget(exercise: current, version: plan.version)
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .foregroundStyle(Theme.accent)
+                            .frame(width: 44, height: 44)
+                    }
+                    .accessibilityLabel("Options for \(ex.exercise_name)")
                 }
-                .buttonStyle(.plain)
                 .listRowBackground(Theme.surface)
             }
             .onDelete { offsets in
@@ -157,6 +182,98 @@ struct EditWorkoutSheet: View {
                 .font(Theme.mono(13)).foregroundStyle(Theme.muted)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+private struct ReplaceExerciseSheet: View {
+    @ObservedObject var sync: SyncModel
+    let dayID: String
+    let target: ExerciseReplacementTarget
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+    @State private var selected: ExerciseCatalog?
+    @State private var confirming = false
+    @State private var working = false
+
+    private var stale: Bool {
+        sync.plan?.version != target.version || sync.workoutEditorRefreshNeeded
+    }
+    private var choices: [ExerciseCatalog] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        return sync.catalog.filter {
+            $0.id != target.exercise.exercise_id &&
+            (q.isEmpty || $0.name.lowercased().contains(q) || $0.primary_muscle.lowercased().contains(q))
+        }.sorted { $0.name < $1.name }
+    }
+
+    var body: some View {
+        NavigationStack {
+            List {
+                Section {
+                    Text(target.exercise.exercise_name).font(Theme.mono(15, .bold))
+                    Text("\(target.exercise.targetLabel) · \(target.exercise.rest_seconds)s rest")
+                        .font(Theme.mono(12)).foregroundStyle(Theme.muted)
+                } footer: {
+                    Text("Replacement keeps this workout’s saved targets, position, and warm-up setting. Logged sets keep their original exercise.")
+                }
+                if stale {
+                    Section {
+                        Text("Workout changed. Close and reopen this picker to review the latest targets.")
+                            .foregroundStyle(Theme.danger)
+                    }
+                } else if let error = sync.loadError {
+                    Section { Text(error).foregroundStyle(Theme.danger) }
+                }
+                Section("Choose replacement") {
+                    ForEach(choices) { exercise in
+                        Button {
+                            selected = exercise
+                            confirming = true
+                        } label: {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(exercise.name).font(Theme.mono(14, .bold))
+                                Text("\(exercise.primary_muscle) · \(exercise.modality)")
+                                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                            }
+                        }
+                        .disabled(working || stale)
+                    }
+                    if choices.isEmpty { Text("No matching exercises.").foregroundStyle(Theme.muted) }
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Theme.background)
+            .searchable(text: $query, prompt: "Search exercises")
+            .navigationTitle(working ? "Replacing…" : "Replace with…")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }.disabled(working)
+                }
+            }
+            .confirmationDialog("Replace \(target.exercise.exercise_name)?",
+                                isPresented: $confirming, titleVisibility: .visible) {
+                if let selected {
+                    Button("Replace with \(selected.name)") {
+                        working = true
+                        Task {
+                            let saved = await sync.replaceSlot(
+                                dayID: dayID, teID: target.exercise.id, exercise: selected.id,
+                                expectedVersion: target.version)
+                            working = false
+                            if saved { dismiss() }
+                        }
+                    }
+                    .disabled(working || stale)
+                }
+            } message: {
+                Text("Saved targets carry over. Targets that are invalid for the new exercise will be rejected.")
+            }
+            .toolbarColorScheme(.dark, for: .navigationBar)
+        }
+        .interactiveDismissDisabled(working)
+        .preferredColorScheme(.dark)
+        .tint(Theme.accent)
     }
 }
 

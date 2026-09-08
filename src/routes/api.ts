@@ -64,6 +64,7 @@ import {
   SessionWriteConflictError,
   todayInTz,
   updateExercise,
+  swapExercise,
   upsertHealthKitActivity,
   writeAudit,
   ensureActivePlan,
@@ -533,12 +534,35 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
   return c.json(row, 201);
 });
 
+// Replace the exact slot using its saved prescription. New callers pin the
+// plan version so a stale picker cannot replace a coach's intervening edit.
+apiRoutes.post('/days/:id/exercises/:teId/swap', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const invalid = invalidMutationFields(b, {
+    to_exercise: isNonEmptyString,
+    expected_version: isPositiveInteger,
+  }, {});
+  invalid.push(...Object.keys(b).filter((key) => !['to_exercise', 'expected_version'].includes(key)));
+  if (invalid.length) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const ref = {
+    template_exercise_id: c.req.param('teId'),
+    day_template_id: c.req.param('id'),
+    to_exercise: b.to_exercise as string,
+    expected_version: b.expected_version as number,
+  };
+  const row = await swapExercise(c.env.DB, c.get('userId'), ref, {
+    actor: 'ios', operation: 'swap_exercise', args: ref,
+  });
+  if (!row) return c.json({ error: 'not_found' }, 404);
+  if ('conflict' in row) return c.json(row, 409);
+  if ('error' in row) return c.json(row, 400);
+  return c.json(row);
+});
+
 // Edit one exercise slot in place (targets / rest / warm-up flag / order).
-// Thin wrapper over the same updateExercise the MCP `update_exercise` tool
-// uses, scoped to this user. Version-bumped + audited (actor='ios'). The slot
-// is scoped to the URL :id day: a stale/mismatched client patching
-// /days/<dayA>/exercises/<slot-from-dayB> resolves to null → 404 instead of
-// mutating the wrong day's workout.
+// Shared with MCP, audited as iOS, and scoped to the URL's day and caller.
 apiRoutes.patch('/days/:id/exercises/:teId', async (c) => {
   const userId = c.get('userId');
   const dayId = c.req.param('id');
