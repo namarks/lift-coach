@@ -164,3 +164,49 @@ app UI. Diff hygiene and the plan compiler passed (12 plans, 40 edges, four
 initiatives). These are repository checks; signing/export, TestFlight processing,
 and the production canary remain separate evidence. The repair must pass fresh
 independent exact-head review and required CI before merge and release.
+
+
+## 2026-09-07: target-save repair merged and TestFlight delivery accepted
+
+PR #143 merged the independently reviewed target-save correction as
+`0d3965676c2d709a307cfbcfc16c215054068b4b`. The final reviewed head was
+`fd5bfdf5bd87d070ae89f7725a80b91db2a6cb45`; its tree
+`c0b26c00ef53e5f19bd4c2fb6607f3f6dd626cdd` exactly matches the fetched merge.
+Required PR CI `34175122206` passed, no unresolved review threads remained, and
+integration CI `34175427643` subsequently passed. The clean merged source was
+used for release, with iOS subtree
+`e931b368ff0618c653f425a75a8a8f5f992d98a0`.
+
+The approved release resumed through the normal execution approval path after
+a fresh App Store Connect read confirmed build 31 remained the latest upload.
+Xcode archive/export succeeded with explicit `BUILD_NUMBER=32`. Archive and IPA
+metadata both identify `com.nmarkspdx.tresfort`, marketing version `0.1.0`, build
+`32`; app and widget signing metadata identify team `8BA2RY6RCA`. The IPA is
+7,063,486 bytes with SHA-256
+`165f552ff3cc1bf457231b5a4aef8ca68de232324f6bbae968ee7fa186b3d259`. The artifact
+identity and source were independently checked before documenting release.
+
+At 2026-09-07 18:08:07 PDT (2026-09-08 01:08:07 UTC), altool returned
+`UPLOAD SUCCEEDED with no errors`, delivery UUID
+`93c6d7ee-dfb8-484d-bd33-69c8ab665b58`, and the wrapper exited zero. Upload
+acceptance is distinct from terminal processing and internal tester availability.
+Local exported-app `codesign --verify --deep --strict` returned
+`CSSMERR_TP_NOT_TRUSTED`, so local certificate-chain verification is not claimed.
+No signing configuration or signature was changed to bypass that result.
+Apple-side processing evidence is required separately.
+
+At 2026-09-07 18:10:44 PDT (2026-09-08 01:10:44 UTC), an independent App Store
+Connect read verified build `0.1.0 (32)`, build ID
+`93c6d7ee-dfb8-484d-bd33-69c8ab665b58`, `processingState=VALID`, and
+`internalBuildState=IN_BETA_TESTING`, assigned to the existing internal Testers
+group. Apple records uploadedDate `2026-09-07T18:08:42-07:00`. No group-assignment
+change or second upload was needed. This completes internal TestFlight delivery,
+not a physical-device install or production canary. No external Beta App Review
+or App Store submission occurred.
+
+The prior execution-availability block is resolved for this release. The
+production validation/edit/restore canary remains a separate owner decision, and
+no training plan or legacy prescription was changed. Release artifacts and
+verification scratch paths may be removed after this evidence is retained; the
+IPA hash, source identity, delivery ID, and Apple terminal result are the durable
+release record.

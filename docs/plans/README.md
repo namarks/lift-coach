@@ -92,8 +92,8 @@ Make every workout and plan mutation authorized, validated, durable, and
 recoverable before adding product depth.
 
 - [Reversible plan management](reversible-plan-management/plan.md) —
-  **gated**; service live; TestFlight authorized but execution blocked by Codex
-  usage availability, with the edit/restore canary still awaiting approval.
+  **gated**; service live and TestFlight `0.1.0 (32)` available; device
+  verification and production edit/restore canary approval remain pending.
 - [Prescription integrity](prescription-integrity/plan.md) — **gated**;
   service live; bounded aggregate checks passed, with the validation/attribution canary pending.
 
