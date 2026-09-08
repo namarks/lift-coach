@@ -4047,9 +4047,10 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(editor.updateCalls, 1)
         XCTAssertNotNil(model.loadError)
         XCTAssertTrue(model.loadError?.contains("write_failed") == true)
+        XCTAssertFalse(model.workoutEditorRefreshNeeded)
     }
 
-    func testTargetSaveStaysOpenWhenPostMutationRefreshFails() async {
+    func testAcknowledgedTargetSaveSucceedsWhenPostMutationRefreshFails() async {
         let defaults = defaults()
         let ex = exercise()
         let s = session(status: "planned", attempt: 0)
@@ -4075,10 +4076,75 @@ final class SetOutboxTests: XCTestCase {
             restSeconds: 90,
             targetDurationS: nil)
 
-        XCTAssertFalse(saved)
+        XCTAssertTrue(saved)
         XCTAssertEqual(editor.updateCalls, 1)
         XCTAssertNotNil(model.loadError)
+        XCTAssertTrue(model.workoutEditorRefreshNeeded)
         XCTAssertEqual(model.plan?.days[0].exercises[0].target_reps, ex.target_reps)
+    }
+
+    func testTargetSaveRefreshFailureCanReconcileNewerStateWithoutSecondWrite() async {
+        let defaults = defaults()
+        let original = exercise(targetSets: 3)
+        let coachUpdate = exercise(targetSets: 6)
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.updateHandler = { APIClient.SlotIDRow(id: original.id) }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            if stateAPI.stateCalls == 1 { throw URLError(.timedOut) }
+            return state(
+                session: s,
+                sets: [],
+                days: [day(with: [coachUpdate])],
+                planVersion: 3)
+        }
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: stateAPI,
+            planEditingAPI: editor,
+            defaults: defaults,
+            now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: original))
+
+        let saved = await model.updateSlot(
+            dayID: "day-a",
+            teID: original.id,
+            isWarmup: false,
+            targetSets: 4,
+            targetReps: 10,
+            targetRepsMax: nil,
+            restSeconds: 90,
+            targetDurationS: nil)
+
+        XCTAssertTrue(saved)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertTrue(model.workoutEditorRefreshNeeded)
+        XCTAssertEqual(editor.updateCalls, 1)
+        XCTAssertEqual(model.plan?.days[0].exercises[0].target_sets, 3)
+
+        await model.load()
+
+        XCTAssertNil(model.loadError)
+        XCTAssertFalse(model.workoutEditorRefreshNeeded)
+        XCTAssertEqual(stateAPI.stateCalls, 2)
+        XCTAssertEqual(editor.updateCalls, 1)
+        XCTAssertEqual(model.plan?.version, 3)
+        XCTAssertEqual(model.plan?.days[0].exercises[0].target_sets, 6)
+    }
+
+    func testUnrelatedErrorDoesNotRequireWorkoutEditorRefresh() {
+        let defaults = defaults()
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: SetWriteAPIStub(),
+            defaults: defaults,
+            now: { self.fixedDate })
+
+        model.loadError = "A different operation failed."
+
+        XCTAssertNotNil(model.loadError)
+        XCTAssertFalse(model.workoutEditorRefreshNeeded)
     }
 
     func testDeletingActiveWorkoutDayShowsActionableConflict() async {

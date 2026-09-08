@@ -39,9 +39,16 @@ audit trail rather than rewriting them.
       live. The source/schema were independently verified. Recovery must retain
       snapshot, lineage and active-fence guarantees.
   - [ ] **(b) Release and verify the app with an approved canary**
-    - Authorize TestFlight and a production edit/restore canary, then verify
-      shared app/coach history and conflict-safe restore. Do not infer app
-      release or production restore behavior from repository checks.
+    - TestFlight release was authorized on 2026-09-07. Fresh app and uploader
+      checks passed; automatic approval review blocked execution on the Codex
+      usage limit before archive/export/upload started. The release approval
+      persists. The local review also found and prompted correction of an
+      acknowledged target-save retry defect; the updated iOS candidate passed
+      focused regression checks. The release must include this fix after
+      exact-head review and required CI. A concrete production edit/restore canary still needs
+      approval.
+    - Verify shared app/coach history and conflict-safe restore after release.
+      Do not infer production behavior from repository checks.
 
 ## Execution frontier
 
@@ -49,18 +56,21 @@ audit trail rather than rewriting them.
 
 ## Next step
 
-**Now (@owner):** Authorize P3(b)'s reviewed TestFlight upload and a concrete
-production edit/restore canary. The service release and authenticated plan/history
-reads are verified; app release and production restore behavior remain
-unexercised. The [snapshot contract and release evidence](decisions.md)
-distinguish these boundaries.
+**Now (@external):** Restore Codex execution availability so the already-approved
+TestFlight release can resume after the target-save fix passes review and
+verification. Recheck Apple's latest build before selecting
+the number; 32 was unused at the recorded preflight. After release, obtain the
+separate concrete production edit/restore canary approval. The service release
+and authenticated reads are verified; app release and production restore remain
+unexercised. See the [release handoff](decisions.md).
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | blocked_by | plan:prescription-integrity#P1 | A snapshot cannot repair partial or lost edits; mutation/version/audit must share a proven boundary first. |
-| P3(b) | gated_by | external:owner-training-trust-app-canary-release | The service is deployed; TestFlight and a production edit/restore canary still need explicit owner authority. |
+| P3(b) | gated_by | external:codex-release-execution-availability | TestFlight is authorized, but automatic approval review rejected execution because the Codex usage limit was reached. |
+| P3(b) | gated_by | external:owner-training-trust-app-canary-release | A concrete production edit/restore canary still needs explicit owner authority. |
 
 ## Notes / open questions
 

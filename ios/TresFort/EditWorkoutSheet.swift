@@ -21,17 +21,24 @@ struct EditWorkoutSheet: View {
     @State private var adding = false
     @State private var addPresetWarmup = false
     @State private var editingExercise: ExerciseEditTarget?
+    @State private var refreshing = false
 
     private var day: DayTemplate? { sync.dayTemplate(id: dayID) }
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let day, !day.exercises.isEmpty {
-                    list(day)
-                } else {
-                    emptyState
+            VStack(spacing: 0) {
+                if sync.workoutEditorRefreshNeeded {
+                    refreshError(sync.loadError)
                 }
+                Group {
+                    if let day, !day.exercises.isEmpty {
+                        list(day)
+                    } else {
+                        emptyState
+                    }
+                }
+                .disabled(sync.workoutEditorRefreshNeeded)
             }
             .background(Theme.background)
             .navigationTitle("Edit workout")
@@ -51,6 +58,7 @@ struct EditWorkoutSheet: View {
                     } label: {
                         Image(systemName: "plus.circle.fill").foregroundStyle(Theme.accent)
                     }
+                    .disabled(sync.workoutEditorRefreshNeeded)
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -67,6 +75,35 @@ struct EditWorkoutSheet: View {
             }
         }
         .preferredColorScheme(.dark)
+    }
+
+    private func refreshError(_ error: String?) -> some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Workout details may be out of date.")
+                    .font(Theme.mono(12, .bold))
+                    .foregroundStyle(Theme.danger)
+                Text(error ?? "Refresh to load the latest workout details.")
+                    .font(Theme.mono(11))
+                    .foregroundStyle(Theme.muted)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button(refreshing ? "Refreshing…" : "Refresh") {
+                refreshing = true
+                Task {
+                    await sync.load()
+                    refreshing = false
+                }
+            }
+            .font(Theme.mono(12, .bold))
+            .foregroundStyle(Theme.accent)
+            .disabled(refreshing)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(Theme.surface)
+        .accessibilityIdentifier("editWorkoutRefreshError")
     }
 
     private func list(_ day: DayTemplate) -> some View {

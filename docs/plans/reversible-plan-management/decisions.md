@@ -97,3 +97,70 @@ history successfully before and after coach-policy activation at
 post-upgrade plan mutation; this confirms authenticated reads, not production
 snapshot creation or restore behavior. No plan-write canary or TestFlight upload
 was performed.
+
+## 2026-09-07: TestFlight authorized; execution availability blocked
+
+Nick requested the TestFlight release and subsequently said to continue. The
+initial release candidate was integrated `ceca28273132c8f414291d46f126c2a424711f66`, tree
+`7ea802e0745fa34ba586e09930a87aa965c9c3a9`, with iOS subtree
+`672ce7d43cc3e30ac7755d288f979fdb3eb0d7a0`. Its iOS source and uploader are
+unchanged from independently reviewed PR #139 and the approved service source.
+Integrated CI run `34173076884` passed. Fresh Xcode 26.3 iPhone 17 Pro/iOS 26.3
+simulator verification passed all 280 iOS tests; the uploader harness passed
+all five checks. Those results apply to the pre-fix candidate; the subsequent
+acknowledgement correction below changes the iOS source and requires fresh
+verification before release. The build-number file is unchanged.
+
+A live App Store Connect query through the standard Fastlane API-key action
+confirmed marketing version `0.1.0` had latest upload `31`; `32` was selected
+for the release. The existing credential was used through the normal client;
+its contents were not inspected or copied. The isolated locked Fastlane bundle
+and standard query lane are prepared for the later processing check. Browser
+sign-in was unavailable, but the API query succeeded. A host-level read-only
+device inventory found a paired iPhone 15 Pro; no device installation or launch
+was performed.
+
+Automatic approval review rejected `BUILD_NUMBER=32 npm run ios:testflight`
+before process creation because the Codex account had reached its usage limit.
+No archive, export, upload, production mutation, or external beta/App Store
+submission occurred. This is an execution-availability blocker, not evidence of
+a signing or application defect; signing/export remain untested this run. Do
+not bypass the rejected execution through another path. The TestFlight approval
+persists when execution availability is restored; recheck live build numbering
+before resuming. Require affirmative upload success, Apple `VALID`, and the
+existing internal testing-group assignment before claiming release completion.
+
+TestFlight alone does not complete either trust plan. A proposed production
+canary changes only an approved existing slot's cue temporarily, verifies
+invalid-prescription rejection and cross-client history, then restores the
+baseline as a new version and checks stale-version rejection. The concrete
+slot/value and production requests remain unapproved; no legacy repair is
+authorized. The canary must preserve concurrent changes and stop on uncertain
+acknowledgment or account/workout state.
+
+
+## 2026-09-07: preserve acknowledged target edits after refresh failure
+
+A local adversarial review found that `updateSlot` returned failure after a
+successful PATCH when the following state read failed. The still-open target
+form could resend its stale fields without an expected version, adding duplicate
+history or overwriting an intervening coach change. This behavior predates the
+trust implementation; Nick approved its correction before TestFlight.
+
+The PATCH acknowledgement now remains successful when only refresh fails, so
+the target form closes. The parent workout editor retains the sync error, offers
+a Refresh action that only reads current state, and disables editing stale
+values until that refresh succeeds. The lockout is specific to an acknowledged
+target edit awaiting fresh state; unrelated errors and rejected PATCH requests
+do not activate it. Genuine PATCH failures remain failures, and existing
+account/session guards are preserved. Regression coverage requires
+one accepted PATCH, a failed refresh, then a successful read of a newer coach
+version without a second PATCH. This is an iOS-only correction; the deployed
+Worker and production training data are unchanged.
+
+Verification of the corrected candidate passed all four focused target-save
+regressions and all 202 `SetOutboxTests`, including compilation of the updated
+app UI. Diff hygiene and the plan compiler passed (12 plans, 40 edges, four
+initiatives). These are repository checks; signing/export, TestFlight processing,
+and the production canary remain separate evidence. The repair must pass fresh
+independent exact-head review and required CI before merge and release.
