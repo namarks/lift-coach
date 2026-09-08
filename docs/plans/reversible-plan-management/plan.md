@@ -42,10 +42,16 @@ audit trail rather than rewriting them.
     - [x] Release the reviewed app: `0.1.0 (32)` from merged source `0d39656`
       is Apple `VALID`, `IN_BETA_TESTING`, and assigned to the existing internal
       Testers group. This includes the reviewed target-save acknowledgement fix.
-    - [ ] Install and exercise the released app, then run the separately
-      approved production edit/restore canary. Verify shared app/coach history
-      and conflict-safe restore; TestFlight availability alone does not prove
-      these behaviors. See [release evidence](decisions.md).
+    - [x] The owner installed build 32 and verified an app-authored edit in
+      shared snapshot history. The attempted restore returned the active-workout
+      rejection; successful restoration remains unverified.
+    - [ ] Complete the now-authorized coordinated production canary: verify
+      shared app/coach history, stale-version rejection, successful app restore,
+      and persistence of the original prescription. See [evidence](decisions.md).
+    - The remaining restore blocker is a historical session that the owner
+      explicitly authorized discarding. The app service supports discard, but
+      the deployed coach interface lacks the action. Deliver the focused MCP
+      wrapper through the existing service before performing that cleanup.
 
 ## Execution frontier
 
@@ -53,18 +59,19 @@ audit trail rather than rewriting them.
 
 ## Next step
 
-**Now (@owner):** Install TestFlight `0.1.0 (32)` and approve the concrete
-production edit/restore canary. The service, authenticated reads, app upload,
-and internal tester availability are verified. Device installation and the
-production mutation/restore path remain unexercised; the
-[release evidence](decisions.md) preserves the exact source and artifact.
+**Now (@owner):** Authorize the exact merged Worker source containing the MCP
+discard wrapper after its review and CI gates pass. The historical workout's
+discard is already authorized. After release, verify its sets are
+soft-deleted and the restore blocker is gone, then complete the temporary coach
+edit and app restoration. Invalid-prescription and stale-restore rejection have
+passed live; successful restoration remains unverified. See [evidence](decisions.md).
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | blocked_by | plan:prescription-integrity#P1 | A snapshot cannot repair partial or lost edits; mutation/version/audit must share a proven boundary first. |
-| P3(b) | gated_by | external:owner-training-trust-app-canary-release | TestFlight is available; a concrete production edit/restore canary still needs explicit owner authority and device verification. |
+| P3(b) | gated_by | external:owner-training-trust-discard-service-release | The canary and historical workout discard are authorized; the missing MCP capability requires a reviewed Worker release before the remaining live checks can proceed. |
 
 ## Notes / open questions
 

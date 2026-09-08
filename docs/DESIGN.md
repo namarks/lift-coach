@@ -304,6 +304,11 @@ Claude context-aware with zero tool calls.
 **Write tools**
 - `log_set({exercise, weight, reps, rpe?, is_warmup?, session_date?, notes?})` → auto-creates session, appends, returns running summary.
 - `log_workout_complete({session_date?, perceived_fatigue?, notes?})`
+- `discard_workout({session_id, expected_attempt})` → discard the explicitly
+  selected owned session attempt and soft-delete its logged sets through the
+  same service as the app. Requires an explicit user request; never defaults
+  to today, creates a session, or substitutes completion. A stale attempt is
+  rejected, and an identical retry adds no second discard audit.
 - `add_note({scope, ref_id?, body})`
 - `update_plan({plan:<full tree>, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies).
 - `update_exercise({target, patch})` → one slot (`target` = template_exercise_id or {day, exercise}).

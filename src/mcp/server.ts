@@ -9,6 +9,7 @@ import {
   addTrip,
   adjustToday,
   deleteTemplateExercise,
+  discardSession,
   findRecentMatchingSet,
   getActivePlan,
   getExercises,
@@ -157,6 +158,8 @@ interface Tool {
   write?: boolean;
   /** Plan writer persisted its audit/note in the same D1 transaction. */
   atomicWrite?: boolean;
+  /** The service writes its own audit trail; do not duplicate it in dispatch. */
+  handlerAudited?: boolean;
   note?: (args: Json, result: any) => string | null;
 }
 
@@ -170,6 +173,8 @@ const obj = (props: Json, required: string[] = []): Json => ({
 type ToolFieldRule = (value: unknown) => boolean;
 const hasToolField = (args: Json, field: string) => Object.prototype.hasOwnProperty.call(args, field);
 const positiveSafeInteger: ToolFieldRule = (value) => Number.isSafeInteger(value) && (value as number) > 0;
+const nonNegativeSafeInteger: ToolFieldRule = (value) =>
+  Number.isSafeInteger(value) && (value as number) >= 0;
 const nonEmptyToolString: ToolFieldRule = (value) =>
   typeof value === 'string' && value.trim().length > 0;
 function invalidToolFields(
@@ -716,6 +721,42 @@ const TOOLS: Record<string, Tool> = {
       r?.error
         ? null
         : `Deleted set ${a.set_id} (${r.weight}x${r.reps}${r.is_warmup ? ' warmup' : ''}).`,
+  },
+  discard_workout: {
+    description:
+      'Discard one specific existing workout session that the user confirms they did not do. ' +
+      'This marks the session discarded and soft-deletes every logged set in it. It does not ' +
+      'look up a session by date or create a session. Read the session id and current attempt ' +
+      'first, then pass both explicitly; a stale attempt returns a conflict.',
+    inputSchema: obj(
+      {
+        session_id: { type: 'string', description: 'Existing owned sessions.id (UUID)' },
+        expected_attempt: {
+          type: 'integer',
+          minimum: 0,
+          description: 'Current session attempt observed from a read tool',
+        },
+      },
+      ['session_id', 'expected_attempt'],
+    ),
+    write: true,
+    handlerAudited: true,
+    handler: async (a, env, userId) => {
+      const invalid = invalidToolFields(a, {
+        session_id: nonEmptyToolString,
+        expected_attempt: nonNegativeSafeInteger,
+      });
+      if (invalid.length > 0) return { error: 'invalid_fields', fields: invalid };
+      const session = await discardSession(
+        env.DB,
+        userId,
+        a.session_id as string,
+        a.expected_attempt as number,
+      );
+      if (!session) return { error: 'not_found', session_id: a.session_id };
+      if ('error' in session) return session;
+      return { ok: true, session };
+    },
   },
   log_activity: {
     description:
@@ -1667,7 +1708,7 @@ async function dispatch(
       try {
         const args = (req.params?.arguments as Json) ?? {};
         const result = await tool.handler(args, env, userId, bg);
-        if (tool.write && !tool.atomicWrite) {
+        if (tool.write && !tool.atomicWrite && !tool.handlerAudited) {
           await writeAudit(env.DB, userId, name, args, JSON.stringify(result));
           const noteBody = tool.note?.(args, result);
           if (noteBody) await writeNote(env.DB, userId, 'plan', null, 'claude', noteBody);

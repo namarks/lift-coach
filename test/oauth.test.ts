@@ -186,9 +186,9 @@ describe('oauth full PKCE flow', () => {
     });
     expect(mcp.status).toBe(200);
     const tools = (await mcp.json<any>()).result.tools as Array<{ name: string }>;
-    expect(tools).toHaveLength(37);
+    expect(tools).toHaveLength(38);
     expect(tools.map((tool) => tool.name)).toEqual(expect.arrayContaining([
-      'get_plan_history', 'compare_plan_versions', 'restore_plan',
+      'get_plan_history', 'compare_plan_versions', 'restore_plan', 'discard_workout',
     ]));
 
     // 5. refresh rotates the token

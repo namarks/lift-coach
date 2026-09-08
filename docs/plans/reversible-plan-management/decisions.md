@@ -210,3 +210,67 @@ no training plan or legacy prescription was changed. Release artifacts and
 verification scratch paths may be removed after this evidence is retained; the
 IPA hash, source identity, delivery ID, and Apple terminal result are the durable
 release record.
+
+## 2026-09-07: device save/history verified; coordinated verification authorized
+
+The owner reported installing TestFlight `0.1.0 (32)` on the physical device.
+The subsequent Routine history screenshot shows the first baseline snapshot
+and an iOS-authored exercise update with one change. This establishes device
+installation by owner report and successful app-authored snapshot/history
+capture. The attempted restore returned the active-workout rejection; the
+screenshot does not establish a successful restore or persistence afterward.
+
+The owner then asked the assistant to perform the remaining coordinated
+verification and close the initiative. This authorizes the bounded invalid-edit,
+temporary coach-edit, shared-history, stale-restore, and restoration checks
+described above. Select the concrete slot from a fresh authenticated read,
+preserve concurrent changes, and retain the original prescription after the
+check. It does not authorize guessing that an unfinished workout was completed,
+discarding recorded sets, repairing legacy prescriptions, or accessing owner
+credentials outside their existing clients.
+
+Authenticated access was recovered through the existing signed-in Claude web
+client and enabled Tres Fort connector. The underlying tool results, rather
+than only assistant prose, confirmed the owner plan and its two snapshots.
+An explicit baseline-to-current comparison contained only the intended rest
+change; the selected slot's cue and RPE remained unset. Scoped direct D1 reads
+independently confirmed that a single historical in-progress session, containing
+one live set, was the sole restore blocker. No identity was guessed from the
+database's row order or user count.
+
+Two connector write requests were executed once each and rejected: an exercise
+patch containing `target_rpe: 99` returned `invalid_fields`, and a restore using
+the prior expected version returned a conflict naming the unchanged current
+version. Fresh connector reads and independent aggregate SQL checks found no
+change to the plan version, two snapshots, relevant successful mutation audits,
+or plan-scoped coaching-note count. No mutation succeeded. Direct diagnostic
+queries reported `changed_db=false`, `changes=0`, and `rows_written=0`.
+
+The deployed source and migration ledger were also rechecked: Worker version
+`58d830ac-6a1f-4bf7-adeb-8b19c6bcba94` remained at 100% under deployment
+`48365148-8109-4c7b-9550-129f6fa1b71f`, annotated with source `2e67f93` and its
+reviewed tree; migrations through `0042` remained applied.
+
+The owner explicitly authorized discarding the historical workout and its
+logged set. Completion was rejected as a workaround because the current tool
+would stamp the old session with the current completion time and display a
+misleading duration. The existing service already supports true discard, but
+its app-JWT route has no deployed MCP counterpart and the app exposes no
+historical-session discard control. Deleting a set or marking the workout
+skipped is not equivalent to discard.
+
+The focused repository correction exposes `discard_workout` with an explicit
+session ID and expected attempt through the existing discard service. It
+preserves ownership, attempt/protocol checks, atomic session/set transitions,
+and the service-owned idempotent audit without claiming that the audit itself
+shares the transition transaction. It needs no schema or iOS change. Typecheck
+and the focused MCP suites passed (15 tests). Normal delivery requires
+independent exact-head review and CI before merge, followed by release of that
+Worker source before the authorized discard and successful restore can run;
+neither live action is claimed complete.
+
+A read-only interface comparison also found missing targeted day deletion,
+generic activity deletion, explicit new-plan lifecycle, and some session
+metadata/restart actions in MCP. These are follow-up scope candidates, not
+additional changes in this correction. Account security, provider credentials,
+HealthKit consent, and infrastructure operations are separate authority domains.
