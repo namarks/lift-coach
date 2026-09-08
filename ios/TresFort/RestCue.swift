@@ -284,6 +284,7 @@ enum RestCue {
             ? "Rest's up. Workout complete."
             : "Rest's up. Up next, \(upNext)."
         let utterance = AVSpeechUtterance(string: phrase)
+        utterance.voice = TimerCueVoice.preferred()
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         utterance.postUtteranceDelay = 0.1
         synth.speak(utterance)
