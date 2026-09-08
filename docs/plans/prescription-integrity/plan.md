@@ -66,9 +66,12 @@ Snapshots and undo complement these guarantees; they do not replace them.
     - Source `2e67f93` and migrations through `0042` are live with independent
       deployment/schema verification and a compatible forward-recovery boundary.
   - [ ] **(b) Verify production behavior and assess legacy prescriptions**
-    - Use a separately approved canary to verify deployed validation and atomic
-      attribution. Keep diagnostics value-free and approve any legacy correction
-      separately. Local fixtures and deployment do not establish row health.
+    - Complete the owner-authorized coordinated canary to verify deployed
+      validation and atomic attribution. The invalid-prescription and stale-
+      restore rejection probes passed without a version or successful-audit
+      change; the app-authored save/history check also passed. Keep diagnostics
+      value-free and approve any legacy correction separately. Local fixtures
+      and deployment do not establish row health.
     - The bounded aggregate assessment found zero violations in its checked
       fields; unassessed cases and an import-transport metadata caveat are
       recorded in [decisions.md](decisions.md). No legacy repair is proposed.
@@ -83,15 +86,17 @@ Snapshots and undo complement these guarantees; they do not replace them.
 |---|---|---|---|
 | P1 | coordinates_with | plan:reversible-plan-management#P0 | Establish one commit boundary for field edits and snapshots. |
 | P1 | coordinates_with | plan:bodyweight-training-support#P2 | Swap exposure must reuse the repaired writer and destination validation. |
-| P3(b) | gated_by | external:owner-training-trust-app-canary-release | The service is live; a production validation/attribution canary still requires owner approval, and any legacy repair requires a separate concrete proposal. |
+| P3(b) | gated_by | external:owner-training-trust-discard-service-release | Remaining accepted-write/restore checks depend on the reviewed MCP discard release; the historical workout discard is authorized, while any legacy prescription repair still needs a separate concrete proposal. |
 
 ## Next step
 
-**Now (@owner):** Authorize a concrete P3(b) validation/attribution canary.
-The existing-client reads and service release are verified;
-production write behavior and any legacy correction remain unexercised. The
-[contract and legacy recovery proof](decisions.md) preserve compatibility and
-the production boundary; local tests do not establish production row health.
+**Now (@owner):** Authorize the exact reviewed MCP discard service release,
+then complete the already-authorized P3(b) checks alongside the
+[app restore verification](../reversible-plan-management/plan.md). App save and
+snapshot history, invalid-write rejection, and stale-restore rejection passed.
+The accepted coach mutation and successful restore remain unverified live.
+The [contract and legacy recovery proof](decisions.md) retain the bounded legacy
+assessment; no legacy repair is proposed or authorized.
 
 ## Notes / open questions
 

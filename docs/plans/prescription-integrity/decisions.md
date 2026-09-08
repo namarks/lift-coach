@@ -73,3 +73,20 @@ reported application-row writes, not a claim of zero internal/control-plane
 state change. The cause of the import metadata was not established. That path
 was stopped; the authoritative aggregate result came from a later direct
 `--command` SELECT. Use direct commands for future read-only diagnostics.
+
+## 2026-09-07: coordinated live verification authorized
+
+The owner installed TestFlight build 32 and supplied evidence of an iOS-authored
+exercise edit and its baseline/change snapshots. Restore was rejected because
+the server still reported an active workout. The owner subsequently asked the
+assistant to perform the remaining verification and close the initiative.
+
+The bounded invalid-edit, temporary coach-edit, attribution/history, and
+conflict-safe restoration checks are now authorized. No legacy correction or
+workout-record deletion is included. See the shared
+[device verification and client-access evidence](../reversible-plan-management/decisions.md).
+The successful app save establishes only its observed path. The subsequent
+invalid-RPE and stale-restore probes both returned their expected rejection,
+and independent connector/SQL reads confirmed unchanged version, snapshots,
+successful mutation audits, and coaching notes. The accepted coach mutation and
+successful restore remain pending the shared historical-workout discard path.

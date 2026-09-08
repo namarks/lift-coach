@@ -92,8 +92,8 @@ Make every workout and plan mutation authorized, validated, durable, and
 recoverable before adding product depth.
 
 - [Reversible plan management](reversible-plan-management/plan.md) —
-  **gated**; service live and TestFlight `0.1.0 (32)` available; device
-  verification and production edit/restore canary approval remain pending.
+  **gated**; build 32 installed and app save/history verified; the authorized
+  restore checks need the MCP discard capability to resolve an old active workout.
 - [Prescription integrity](prescription-integrity/plan.md) — **gated**;
   service live; bounded aggregate checks passed, with the validation/attribution canary pending.
 
