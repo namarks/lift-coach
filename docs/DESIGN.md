@@ -138,6 +138,7 @@ CREATE TABLE sessions (
   started_at        INTEGER,
   completed_at      INTEGER,
   perceived_fatigue INTEGER,                               -- optional 1–10
+  runner_targets   TEXT,                                  -- migration 0043; starting target snapshot
   notes             TEXT,
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL
@@ -230,9 +231,10 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `GET /api/state?since=<planVersion>&sets_since=<epochMs>&events_since=<epochMs>&activities_since=<epochMs>&log_since=<epochMs>` | **The sync pull.** Returns `{plan: tree|null, plan_version, external_sync_cursors_version, sessions[], sets[], external_events[], external_activities[], activities[], server_time}`. `plan` is null when `version <= since`; otherwise the full small tree. A zero collection cursor requests a complete current snapshot; an active cursor returns changes plus tombstones. P2 Workers return `external_sync_cursors_version: 2`; compatible clients activate the external cursors only for version 2 or later. `server_time` is captured at request start. Called on launch/foreground/post-write. |
 | `GET /api/today` | Today's session (created from today's template if absent) + its sets + per-exercise last-time actuals + suggested weight. |
 | `POST /api/sessions` | `{date, day_template_id?}` → create/start session. |
-| `PATCH /api/sessions/{id}` | `{status?, perceived_fatigue?, notes?}`. |
-| `POST /api/sessions/{id}/sets` | Idempotent on body `id`. `{id, exercise_id, set_index, weight, reps, rpe?, is_warmup?, notes?, logged_at}`. |
-| `PATCH /api/sets/{id}` | Edit / soft-delete a set. |
+| `PATCH /api/sessions/{id}` | `{status?, perceived_fatigue?, notes?}` plus the existing attempt guard. A completed acknowledgement includes an optional persisted `summary`; a summary failure cannot revoke completion. |
+| `GET /api/sessions/{id}/summary` | Owner-scoped persisted work, comparable records, and differences from starting targets. Discarded or unowned sessions return 404. |
+| `POST /api/sessions/{id}/sets` | Idempotent on body `id`. `{id, exercise_id, set_index, weight, reps, rpe?, is_warmup?, notes?, logged_at}` with existing slot/timed/attempt context and optional `prescription: {plan_id, version, day_id}` from the plan shown at the tap. |
+| `PATCH /api/sets/{id}` | Edit / soft-delete a set. Runner corrections supply all of `expected_session_id`, `expected_attempt`, `expected_updated_at`; stale competing changes return 409. Guarded success returns the flat set row plus its authoritative `session`. Legacy callers retain the flat row response. |
 | `GET /api/history?exercise_id=&from=&to=` | Set history + comparisons by exercise/mode/external load; conventional rep Epley only. |
 | `GET /api/volume?muscle=&from=&to=` | Nullable external-load volume (`tonnage_basis: external_load`) & hard sets per week bucket. |
 | `GET /api/me/export` | Download the signed caller's portable account and training-data snapshot as a non-cacheable JSON attachment. Excludes credentials, tokens, invite capabilities, and other members' private data. |
@@ -295,7 +297,8 @@ Claude context-aware with zero tool calls.
 - `get_current_plan()` → full plan tree (templates, slots, progression, cues).
 - `get_today_workout()` → resolved today session: targets + last actuals + suggested working weight.
 - `get_current_session()` → in-progress session + sets so far.
-- `get_session_log({date?, recent_n?})`
+- `get_session_log({date?, recent_n?})` — includes the same persisted completion
+  summary used by iOS; no independent coach-side PR calculation.
 - `get_history({exercise, range?:"30d|90d|all", limit?})`
 - `get_volume_trend({muscle_group, range?:"8w|12w|6mo", bucket?:"week"})`
 - `get_plan_history({limit?, before_version?})` and
@@ -398,6 +401,33 @@ absent or lower capability keeps both external cursors at zero. A changed plan
 returns the full small tree. Set/session, external-cache, and manual-activity
 deltas merge by stable id, including tombstones; complete reloads replace their
 collections.
+
+Runner inputs keep an intentional draft only while its slot and prescription
+still match. An explicit load/RPE/rep/duration target takes precedence over
+history; last-time context is separate and distinguishes slots, warm-ups and
+rep versus timed execution. A correction is a durable, account-scoped intent
+against the original set UUID, session attempt and observed row revision.
+Pending deletes leave the original visible. Retry after a lost acknowledgement
+accepts an already-applied desired state; a competing revision requires review.
+Deletion and last-live-set session demotion share one atomic write batch.
+
+Migration `0043` adds nullable `sessions.runner_targets`. At the first accepted
+set, the app's tap-time plan id/version/day resolves through owner-scoped,
+immutable `plan_snapshots`; missing history stays unavailable. Older callers
+capture the current selected day in the same write batch as their first set.
+An empty completion can snapshot its pinned day. Started legacy sessions are
+not backfilled, and explicit restart clears the snapshot. Later plan edits
+cannot rewrite the starting targets; detached historical slots are reported as
+unavailable for comparison instead of missed work.
+
+`getWorkoutSummary` reads persisted session, set and prior-best rows in one D1
+batch. It reuses the shared metric cohorts: records require a previous lower
+rep/hold result at the same exercise, load and execution mode; an initial
+baseline is not a PR. Warm-ups and tombstones do not contribute to working
+volume or records. iOS renders this projection in completion and history;
+`get_session_log` and `log_workout_complete` expose it to the coach. Queued
+finishes remain pending, and summary refresh failure never resends an
+acknowledged completion. Corrections invalidate the app summary cache.
 
 Every mutable log cursor is server-owned. The response captures `server_time`
 before reading any collection, and the client persists the next active

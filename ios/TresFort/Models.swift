@@ -326,6 +326,7 @@ struct PlanComparisonResponse: Codable, Equatable {
 }
 
 struct SessionRow: Codable, Identifiable {
+    var summary: WorkoutSummary? = nil
     let id: String
     let date: String
     let status: String

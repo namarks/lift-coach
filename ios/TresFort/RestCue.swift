@@ -54,8 +54,8 @@ private final class SystemRestNotificationCenter: RestNotificationCenterProvidin
 /// can remove only itself after a newer schedule/cancel advances `generation`.
 @MainActor
 final class RestNotificationCoordinator {
-    private static let legacyNotificationID = "rest-cue"
-    private static let notificationPrefix = "rest-cue-"
+    private let legacyNotificationID: String
+    private let notificationPrefix: String
 
     private let center: any RestNotificationCenterProviding
     private let now: () -> Date
@@ -68,10 +68,13 @@ final class RestNotificationCoordinator {
     init(
         center: any RestNotificationCenterProviding,
         now: @escaping () -> Date = Date.init,
+        prefix: String = "rest-cue",
         requestIDFactory: @escaping () -> String = {
             UUID().uuidString.lowercased()
         }
     ) {
+        self.legacyNotificationID = prefix
+        self.notificationPrefix = prefix + "-"
         self.center = center
         self.now = now
         self.requestIDFactory = requestIDFactory
@@ -84,10 +87,10 @@ final class RestNotificationCoordinator {
         _ = try? await center.requestAuthorization(options: [.alert, .sound])
     }
 
-    func schedule(at end: Date) {
+    func schedule(at end: Date, timedSet: Bool = false) {
         generation &+= 1
         let token = generation
-        let requestID = Self.notificationPrefix + requestIDFactory()
+        let requestID = notificationPrefix + requestIDFactory()
         if let activeRequestID {
             center.removePendingNotificationRequests(
                 withIdentifiers: [activeRequestID])
@@ -113,8 +116,8 @@ final class RestNotificationCoordinator {
                 pending: pending, delivered: delivered)
 
             let content = UNMutableNotificationContent()
-            content.title = "Rest's up"
-            content.body = "Time for your next set."
+            content.title = timedSet ? "Set timer complete" : "Rest's up"
+            content.body = timedSet ? "Your timed set has reached its target." : "Time for your next set."
             content.sound = .default
             content.interruptionLevel = .timeSensitive
             let trigger = UNTimeIntervalNotificationTrigger(
@@ -142,13 +145,13 @@ final class RestNotificationCoordinator {
 
     func notificationWasDelivered() async -> Bool {
         let delivered = await center.deliveredNotificationIdentifiers()
-        return delivered.contains(where: Self.isRestNotification)
+        return delivered.contains(where: isRestNotification)
     }
 
     func cancel() {
         generation &+= 1
         let token = generation
-        let knownIDs = [activeRequestID, Self.legacyNotificationID].compactMap { $0 }
+        let knownIDs = [activeRequestID, legacyNotificationID].compactMap { $0 }
         activeRequestID = nil
         center.removePendingNotificationRequests(withIdentifiers: knownIDs)
         center.removeDeliveredNotifications(withIdentifiers: knownIDs)
@@ -163,6 +166,16 @@ final class RestNotificationCoordinator {
         }
     }
 
+    var currentGeneration: Int { generation }
+
+    func finish(generation expected: Int) async -> Bool? {
+        guard generation == expected else { return nil }
+        let delivered = await notificationWasDelivered()
+        guard generation == expected else { return nil }
+        cancel()
+        return delivered
+    }
+
     func waitForSchedulingForTests() async {
         await scheduleTask?.value
         await cleanupTask?.value
@@ -175,14 +188,14 @@ final class RestNotificationCoordinator {
         // delivered between the two async snapshots or during cancellation;
         // deleting each discovered id from both collections closes that race.
         let identifiers = Array(Set(
-            (pending + delivered).filter(Self.isRestNotification)))
+            (pending + delivered).filter(isRestNotification)))
         center.removePendingNotificationRequests(
             withIdentifiers: identifiers)
         center.removeDeliveredNotifications(
             withIdentifiers: identifiers)
     }
 
-    private static func isRestNotification(_ identifier: String) -> Bool {
+    private func isRestNotification(_ identifier: String) -> Bool {
         identifier == legacyNotificationID
             || identifier.hasPrefix(notificationPrefix)
     }
@@ -223,6 +236,17 @@ enum RestCue {
 
     private static let notificationCoordinator = RestNotificationCoordinator(
         center: SystemRestNotificationCenter())
+    private static let timedNotificationCoordinator = RestNotificationCoordinator(
+        center: SystemRestNotificationCenter(), prefix: "timed-set-cue")
+
+    static func scheduleTimedNotification(at end: Date) -> Int {
+        if enabled { timedNotificationCoordinator.schedule(at: end, timedSet: true) }
+        return timedNotificationCoordinator.currentGeneration
+    }
+    static func cancelTimedNotification() { timedNotificationCoordinator.cancel() }
+    static func finishTimedNotification(generation: Int) async -> Bool? {
+        await timedNotificationCoordinator.finish(generation: generation)
+    }
 
     /// Honors the @AppStorage toggle (absent key → default ON).
     static var enabled: Bool {
@@ -245,9 +269,9 @@ enum RestCue {
     /// Schedule the backgrounded backstop only when permission already exists.
     /// If permission is denied (or has not been requested), the foreground
     /// `play()` path still covers an app-open workout without interrupting it.
-    static func scheduleNotification(at end: Date) {
+    static func scheduleNotification(at end: Date, timedSet: Bool = false) {
         guard enabled else { return }
-        notificationCoordinator.schedule(at: end)
+        notificationCoordinator.schedule(at: end, timedSet: timedSet)
     }
 
     /// Whether the OS has already *delivered* our rest-cue notification — i.e.
@@ -268,7 +292,7 @@ enum RestCue {
         notificationCoordinator.cancel()
     }
 
-    static func play(upNext: String) {
+    static func play(upNext: String, timedSet: Bool = false) {
         guard enabled else { return }
 
         let session = AVAudioSession.sharedInstance()
@@ -280,9 +304,10 @@ enum RestCue {
         AudioServicesPlaySystemSound(1057)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
 
-        let phrase = upNext.isEmpty || upNext.uppercased() == "DONE"
-            ? "Rest's up. Workout complete."
-            : "Rest's up. Up next, \(upNext)."
+        let phrase = timedSet ? "Set timer complete." : (
+            upNext.isEmpty || upNext.uppercased() == "DONE"
+                ? "Rest's up. Workout complete."
+                : "Rest's up. Up next, \(upNext).")
         let utterance = AVSpeechUtterance(string: phrase)
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate
         utterance.postUtteranceDelay = 0.1

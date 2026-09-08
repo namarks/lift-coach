@@ -29,6 +29,7 @@ import {
   getUpcomingRides,
   getUserTimezone,
   getVolume,
+  getWorkoutSummary,
   ensureActivePlan,
   isGroupMember,
   listPlanHistory,
@@ -333,7 +334,7 @@ const TOOLS: Record<string, Tool> = {
     },
   },
   get_session_log: {
-    description: 'Get logged sessions. Pass a specific date (YYYY-MM-DD) or recent_n for the last N.',
+    description: 'Get logged sessions and their persisted completion summary: work, same-load rep/hold records, and differences from targets captured when logging began. Missing historical targets are unavailable. Pass a date (YYYY-MM-DD) or recent_n for the last N.',
     inputSchema: obj(
       {
         date: { type: 'string', description: 'YYYY-MM-DD' },
@@ -344,12 +345,12 @@ const TOOLS: Record<string, Tool> = {
     handler: async (a, env, userId) => {
       if (typeof a.date === 'string') {
         const s = await getSessionByDate(env.DB, userId, a.date);
-        return s ? [{ session: s, sets: await getSetsForSession(env.DB, s.id) }] : [];
+        return s ? [{ session: s, sets: await getSetsForSession(env.DB, s.id), summary: await getWorkoutSummary(env.DB, userId, s.id) }] : [];
       }
       const n = typeof a.recent_n === 'number' ? a.recent_n : 5;
       const sessions = await getRecentSessions(env.DB, userId, n);
       return Promise.all(
-        sessions.map(async (s) => ({ session: s, sets: await getSetsForSession(env.DB, s.id) })),
+        sessions.map(async (s) => ({ session: s, sets: await getSetsForSession(env.DB, s.id), summary: await getWorkoutSummary(env.DB, userId, s.id) })),
       );
     },
   },
@@ -836,7 +837,9 @@ const TOOLS: Record<string, Tool> = {
         typeof a.notes === 'string' ? a.notes : null,
       );
       if (!s) return { error: 'no_active_plan' };
-      return s;
+      if ('error' in s) return s;
+      const summary = await getWorkoutSummary(env.DB, userId, s.id).catch(() => null);
+      return { ...s, summary: summary?.attempt === s.attempt && summary.final ? summary : null };
     },
   },
   add_note: {

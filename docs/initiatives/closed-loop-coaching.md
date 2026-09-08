@@ -14,10 +14,14 @@ are delivered foundations for this remaining work.
 
 ## Scope
 
-- plan:gym-runner-depth#P0
 - plan:coaching-feedback-loop
 
 ## Priority policy
+
+[Completed Gym Runner Depth](../plans/completed/gym-runner-depth/plan.md)
+provides prescription fidelity, durable corrections, bounded loading/timing
+aids and the persisted completion summary. Its production/app release remains
+separate from repository delivery.
 
 [Completed bodyweight support](../plans/completed/bodyweight-training-support/plan.md)
 provides the comparable-metrics repository foundation. Its Worker/app release

@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "session_id": "today",
+  "date": "2038-09-08",
+  "attempt": 0,
+  "final": true,
+  "working_sets": 4,
+  "total_reps": 25,
+  "external_load_volume": 225,
+  "cohorts": [
+    {
+      "exercise_id": "pull",
+      "name": "Pull-up",
+      "unit": "lb",
+      "modality": "bw",
+      "laterality": "bilateral",
+      "load_mode": "total",
+      "weight": -30,
+      "metric": "reps",
+      "value": 12,
+      "set_count": 1
+    },
+    {
+      "exercise_id": "pull",
+      "name": "Pull-up",
+      "unit": "lb",
+      "modality": "bw",
+      "laterality": "bilateral",
+      "load_mode": "total",
+      "weight": 0,
+      "metric": "reps",
+      "value": 8,
+      "set_count": 1
+    },
+    {
+      "exercise_id": "pull",
+      "name": "Pull-up",
+      "unit": "lb",
+      "modality": "bw",
+      "laterality": "bilateral",
+      "load_mode": "total",
+      "weight": 45,
+      "metric": "reps",
+      "value": 5,
+      "set_count": 1
+    },
+    {
+      "exercise_id": "pull",
+      "name": "Pull-up",
+      "unit": "lb",
+      "modality": "bw",
+      "laterality": "bilateral",
+      "load_mode": "total",
+      "weight": 0,
+      "metric": "duration",
+      "value": 45,
+      "set_count": 1
+    }
+  ],
+  "records": [
+    {
+      "exercise_id": "pull",
+      "name": "Pull-up",
+      "unit": "lb",
+      "modality": "bw",
+      "laterality": "bilateral",
+      "load_mode": "total",
+      "weight": -30,
+      "metric": "reps",
+      "value": 12,
+      "previous": 10
+    }
+  ],
+  "targets_available": false,
+  "targets_captured_at": null,
+  "targets": []
+}

@@ -18,6 +18,7 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
     let skippedSlotIDs: [String]
     let workoutStartedAtMS: Int
     let finished: Bool
+    let input: RunnerInputState?
 
     init(
         date: String,
@@ -28,7 +29,8 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         workoutStartedAtMS: Int,
         finished: Bool,
         sessionAttempt: Int? = nil,
-        restartDiscardedAttempt: Int? = nil
+        restartDiscardedAttempt: Int? = nil,
+        input: RunnerInputState? = nil
     ) {
         self.date = date
         self.sessionID = sessionID
@@ -39,6 +41,7 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         self.skippedSlotIDs = skippedSlotIDs
         self.workoutStartedAtMS = workoutStartedAtMS
         self.finished = finished
+        self.input = input
     }
 }
 

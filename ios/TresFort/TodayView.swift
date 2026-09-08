@@ -206,6 +206,9 @@ struct TodayView: View {
                         PendingTerminalBanner(sync: sync)
                     }
                     PendingSetBannerGate(sync: sync)
+                    if !sync.setCorrections.isEmpty {
+                        PendingCorrectionsView(sync: sync)
+                    }
                     content
                 }
                 // The full rest screen is modal. Without explicitly removing
@@ -587,27 +590,8 @@ private struct WorkoutDoneView: View {
                     Text(doneTemplateTitle)
                         .font(Theme.mono(13, .bold)).tracking(1)
                         .foregroundStyle(Theme.accent)
-                    let n = todaySets.count
-                    if n > 0 {
-                        // Reps count both sides; volume also counts both
-                        // implements when weight is logged per hand.
-                        let reps = sync.totalReps(for: todaySets)
-                        let repsLabel = reps > 0 ? " · \(reps) REPS" : ""
-                        let tonnage = sync.totalTonnage(for: todaySets)
-                        let tonnageLabel = tonnage.map { " · \(Int($0)) LB EXTERNAL LOAD" } ?? ""
-                        Text("✓ \(n) SET\(n == 1 ? "" : "S")\(repsLabel)\(tonnageLabel)")
-                            .font(Theme.mono(12, .bold)).tracking(1)
-                            .foregroundStyle(Theme.muted)
-                            .padding(.top, 2)
-                        ForEach(sync.metricCohorts(for: todaySets)) { cohort in
-                            Text("\(sync.exerciseName(cohort.key.exerciseID)) · \(cohort.valueLabel)")
-                                .font(Theme.mono(11)).foregroundStyle(Theme.muted)
-                        }
-                    } else {
-                        Text("✓ DONE — LOGGED TO YOUR COACH")
-                            .font(Theme.mono(12, .bold)).tracking(1)
-                            .foregroundStyle(Theme.muted)
-                            .padding(.top, 2)
+                    if let session = sync.sessionsByDate[sync.todayString] {
+                        WorkoutSummaryView(sync: sync, sessionID: session.id)
                     }
                 }
                 .padding(20)
@@ -864,6 +848,12 @@ private struct RunnerView: View {
     /// Exercise demo sheet, openable mid-workout — not just from the
     /// pre-start preview (#54).
     @State private var demoFor: TemplateExercise?
+    @State private var editingValues = false
+    @State private var valueDraft: RunnerInputState?
+    @State private var weightPrescription: RunnerPrescription?
+    @State private var loadingTarget: Double?
+    @State private var showingLoading = false
+    @AppStorage(RestCue.defaultsKey) private var timerCuesEnabled = true
 
     var body: some View {
         if let ex = sync.currentExercise {
@@ -911,10 +901,30 @@ private struct RunnerView: View {
                     }
                     .padding(.top, 12)
 
+                    prescriptionContext(ex: ex)
+                    Button("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE") {
+                        valueDraft = sync.currentInputState
+                        editingValues = true
+                    }
+                    .font(Theme.mono(12, .bold)).frame(minHeight: 44)
+                    .disabled(sync.timedActive || sync.isSetEntryBlocked(ex))
+                    if let rpe = sync.rpe {
+                        Text("LOGGING RPE \(SetValueFormatter.number(rpe))")
+                            .font(Theme.mono(11)).foregroundStyle(Theme.accent)
+                    }
+                    Toggle("Timer sounds", isOn: $timerCuesEnabled)
+                        .font(Theme.mono(11)).tint(Theme.accent)
+                        .onChange(of: timerCuesEnabled) { sync.refreshTimerCues() }
                     jumpStrip(ex: ex)
 
                     if ex.showsLoadControl {
-                        loadControl(ex: ex)
+                        loadControl(ex: ex).disabled(sync.timedActive)
+                    }
+                    if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
+                        Button("Plates & warm-up guide") {
+                            loadingTarget = sync.weight
+                            showingLoading = true
+                        }.font(Theme.mono(12, .bold)).frame(minHeight: 44)
                     }
 
                     if ex.isTimed {
@@ -948,7 +958,7 @@ private struct RunnerView: View {
                     }
 
                     completedChips(ex: ex)
-                    pendingSetRows(ex: ex)
+
 
                     HStack {
                         navBtn("← PREV") { sync.previous() }
@@ -996,11 +1006,27 @@ private struct RunnerView: View {
                         // Trim and parse — empty / non-numeric drafts cancel
                         // silently rather than zeroing the working weight.
                         let trimmed = weightDraft.trimmingCharacters(in: .whitespaces)
-                        if let v = Double(trimmed) { sync.setWeight(v) }
+                        if let v = Double(trimmed), sync.currentExercise.map(RunnerPrescription.init) == weightPrescription {
+                            sync.setWeight(v)
+                        }
                         editingWeight = false
                     },
                     onCancel: { editingWeight = false }
                 )
+            }
+            .sheet(isPresented: $showingLoading) {
+                BarbellLoadingView(target: loadingTarget ?? sync.weight)
+            }
+            .sheet(isPresented: $editingValues) {
+                if let draft = valueDraft {
+                    SetValuesEditor(title: "Next set", values: SetCorrectionValues(
+                        weight: draft.weight, reps: draft.reps, rpe: draft.rpe,
+                        durationSeconds: draft.prescription.timed ? draft.durationSeconds : nil),
+                        timed: draft.prescription.timed, allowsAssistance: ex.allowsAssistance,
+                        onSave: { values in
+                            sync.setRunnerValues(values, expected: draft.prescription)
+                        })
+                }
             }
             .sheet(item: $demoFor) { ex in
                 ExerciseDemoSheet(
@@ -1079,6 +1105,7 @@ private struct RunnerView: View {
             ],
             onTapValue: {
                 weightDraft = SetValueFormatter.number(sync.weight)
+                weightPrescription = RunnerPrescription(ex)
                 editingWeight = true
             })
     }
@@ -1143,71 +1170,32 @@ private struct RunnerView: View {
         }
     }
 
-    private func completedChips(ex: TemplateExercise) -> some View {
-        let done = sync.todaySlotSets(ex)
-        return VStack(alignment: .leading, spacing: 10) {
-            Text("COMPLETED SETS").font(Theme.mono(10, .bold)).tracking(2)
-                .foregroundStyle(Theme.muted)
-            if done.isEmpty {
-                Text("No sets logged yet").font(Theme.mono(12)).italic()
-                    .foregroundStyle(Theme.dim)
-            } else {
-                FlowChips(sets: done, timed: ex.isTimed, bodyweight: ex.isBodyweight) { s in Task { await sync.removeSet(s) } }
+    private func prescriptionContext(ex: TemplateExercise) -> some View {
+        let load = ex.target_weight.map { SetValueFormatter.number($0) + " lb · " } ?? ""
+        let effort = ex.target_rpe.map { " · RPE " + SetValueFormatter.number($0) } ?? ""
+        let target = "PRESCRIBED · " + load + ex.targetLabel + effort
+        let previous = sync.comparablePreviousSets(for: ex)
+        let previousLabel = previous.map { set in
+            let value = set.valueLabel(timed: ex.isTimed, bodyweight: ex.isBodyweight)
+            let effort = set.rpe.map { " RPE " + SetValueFormatter.number($0) } ?? ""
+            return value + effort
+        }.joined(separator: " · ")
+        return VStack(alignment: .leading, spacing: 8) {
+            Text(target).font(Theme.mono(11, .bold)).foregroundStyle(Theme.text)
+            if let cues = ex.cues, !cues.isEmpty {
+                Text(cues).font(.subheadline).foregroundStyle(Theme.muted)
             }
-        }
-        .padding(.top, 24)
+            if !previous.isEmpty {
+                Text("LAST TIME · " + previousLabel).font(Theme.mono(11)).foregroundStyle(Theme.muted)
+            } else {
+                Text("No comparable previous session").font(.caption).foregroundStyle(Theme.muted)
+            }
+        }.padding(.top, 16)
     }
 
-    private func pendingSetRows(ex: TemplateExercise) -> some View {
-        let pending = sync.pendingSetIntents(for: ex)
-        return Group {
-            if !pending.isEmpty {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("PENDING SETS")
-                        .font(Theme.mono(10, .bold)).tracking(2)
-                        .foregroundStyle(Theme.muted)
-                    ForEach(pending) { intent in
-                        let sending = sync.sendingSetIntentIDs.contains(intent.id)
-                        HStack(spacing: 10) {
-                            Image(systemName: sending
-                                ? "arrow.triangle.2.circlepath"
-                                : (intent.deliveryState == .failed
-                                    ? "exclamationmark.triangle.fill"
-                                    : "clock.fill"))
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(intent.deliveryState == .failed
-                                    ? Theme.danger : Theme.accent)
-                            Text(SetValueFormatter.value(
-                                weight: intent.body.weight,
-                                reps: intent.body.reps,
-                                durationSeconds: intent.body.duration_s,
-                                timed: intent.body.is_timed,
-                                bodyweight: ex.isBodyweight))
-                                .font(Theme.mono(12, .bold))
-                                .foregroundStyle(Theme.text)
-                            Spacer()
-                            Text(sending
-                                ? "SENDING"
-                                : (intent.deliveryState == .failed ? "FAILED" : "QUEUED"))
-                                .font(Theme.mono(10, .bold)).tracking(1)
-                                .foregroundStyle(intent.deliveryState == .failed
-                                    ? Theme.danger : Theme.muted)
-                            if intent.deliveryState == .failed && !sending {
-                                Button("RETRY") {
-                                    Task { await sync.retrySetIntent(id: intent.id) }
-                                }
-                                .font(Theme.mono(10, .bold))
-                                .foregroundStyle(Theme.accent)
-                            }
-                        }
-                        .padding(.horizontal, 12).padding(.vertical, 10)
-                        .background(Theme.surface)
-                        .clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
-                }
-                .padding(.top, 16)
-            }
-        }
+    private func completedChips(ex: TemplateExercise) -> some View {
+        SetReviewList(sync: sync, sets: sync.todaySlotSets(ex), pending: sync.pendingSetIntents(for: ex))
+            .padding(.top, 24)
     }
 
     private func navBtn(_ t: String, _ a: @escaping () -> Void) -> some View {
@@ -1279,34 +1267,6 @@ private struct WeightEditorSheet: View {
     }
 }
 
-private struct FlowChips: View {
-    let sets: [SetLog]
-    let timed: Bool
-    let bodyweight: Bool
-    let onRemove: (SetLog) -> Void
-    var body: some View {
-        let cols = [GridItem(.adaptive(minimum: 110), spacing: 8)]
-        LazyVGrid(columns: cols, alignment: .leading, spacing: 8) {
-            ForEach(Array(sets.enumerated()), id: \.element.id) { i, s in
-                HStack(spacing: 8) {
-                    Text(String(format: "%02d", i + 1))
-                        .font(Theme.mono(10)).foregroundStyle(Theme.dim)
-                    Text(s.valueLabel(timed: timed, bodyweight: bodyweight))
-                        .font(Theme.mono(13)).foregroundStyle(Theme.text)
-                    Button { onRemove(s) } label: {
-                        Image(systemName: "xmark").font(.system(size: 10))
-                            .foregroundStyle(Theme.dim)
-                    }
-                }
-                .padding(.horizontal, 12).padding(.vertical, 10)
-                .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 10))
-            }
-        }
-    }
-}
-
-// MARK: - Timed set (plank, holds)
-
 private struct TimedSetView: View {
     @ObservedObject var sync: SyncModel
     let ex: TemplateExercise
@@ -1325,7 +1285,7 @@ private struct TimedSetView: View {
                         .foregroundStyle(remaining <= 0 ? Theme.done : Theme.accent)
                 }
             } else {
-                Text("\(ex.holdSeconds)s")
+                Text("\(sync.holdDurationSeconds)s")
                     .font(Theme.number(64))
                     .foregroundStyle(Theme.text)
             }
@@ -1535,7 +1495,9 @@ private struct FinishedView: View {
                 // volume also counts both implements for per-hand loads.
                 let reps = sync.totalReps(for: sets)
                 VStack(spacing: 0) {
-                    sumRow("Sets logged", "\(sets.count)")
+                    sumRow("Sets saved", "\(sets.count)")
+                    let queued = sync.setOutbox.pending.filter { $0.date == sync.todayString }.count
+                    if queued > 0 { sumRow("Sets queued on this device", "\(queued)") }
                     if reps > 0 {
                         sumRow("Total reps", "\(reps)")
                     }
@@ -1544,9 +1506,18 @@ private struct FinishedView: View {
                     }
                 }
                 .padding(.top, 20)
+                Text("Completion summary and records are pending until the workout is saved.")
+                    .font(.caption).foregroundStyle(Theme.muted)
                 ForEach(sync.metricCohorts(for: sets)) { cohort in
                     sumRow(sync.exerciseName(cohort.key.exerciseID), cohort.valueLabel)
                 }
+
+                SetReviewList(sync: sync, sets: sync.sets.filter {
+                    $0.session_id == sync.todaySession?.id && $0.deleted_at == nil
+                }, pending: sync.setOutbox.pending.filter { $0.date == sync.todayString })
+                Button("Return to exercises") { sync.jump(to: sync.exerciseIndex) }
+                    .frame(minHeight: 44)
+                    .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
 
                 Button {
                     guard let target = sync.terminalActionTarget else { return }

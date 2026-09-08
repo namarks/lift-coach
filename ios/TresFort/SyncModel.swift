@@ -113,6 +113,10 @@ struct WorkoutTerminalActionTarget: Equatable {
 
 @MainActor
 final class SyncModel: ObservableObject {
+    @Published private(set) var summaryRevision: UInt64 = 0
+    @Published private(set) var summaryErrors: [String: String] = [:]
+    @Published private var completionSummaries: [String: WorkoutSummary] = [:]
+    private var completionSummaryRevisions: [String: UInt64] = [:]
     @Published var plan: PlanTree?
     @Published var sets: [SetLog] = []
     @Published var sessions: [SessionRow] = []
@@ -144,6 +148,10 @@ final class SyncModel: ObservableObject {
     /// Durable set intents are separate from acknowledged `sets`. Publishing
     /// the account queue makes relaunch state visible on Today even when the
     /// workout runner is not mounted.
+    @Published private(set) var setCorrections: [PendingSetCorrection]
+    @Published private(set) var sendingCorrectionIDs: Set<String> = []
+    @Published private(set) var correctionRefreshNeeded = false
+    private var ownedCorrectionIDs: Set<String>
     @Published private(set) var setOutbox: SetOutbox
     /// Finish/discard intents share the same account boundary as set intents.
     /// An acknowledged discard remains here as a local barrier until the user
@@ -157,6 +165,9 @@ final class SyncModel: ObservableObject {
     private var routineMutationWaiters: [CheckedContinuation<Void, Never>] = []
 
     // Rest timer (local Live Activity arrives in milestone g).
+    private(set) var restControlID: String?
+    private(set) var timedControlID: String?
+    private var timedCueGeneration: Int?
     @Published var restEndDate: Date?
     @Published var restExercise: String = ""
     @Published var restTotal: Int = 0
@@ -167,6 +178,8 @@ final class SyncModel: ObservableObject {
     @Published var exerciseIndex = 0
     @Published var weight: Double = 0
     @Published var reps: Int = 0
+    @Published var rpe: Double?
+    @Published var holdDurationSeconds: Int = 30
     /// PLAN SLOT ids (template_exercise_id) the user explicitly skipped this
     /// session. Keyed by slot, not exercise_id, to match the slot-keyed
     /// completion path: the same movement in two slots skips independently
@@ -205,6 +218,8 @@ final class SyncModel: ObservableObject {
         let exerciseID: String
         let setNumber: Int
         let holdSeconds: Int
+        let prescribedHoldSeconds: Int
+        let rpe: Double?
         let weight: Double
         let isWarmup: Bool
         let startedAt: Date
@@ -346,12 +361,18 @@ final class SyncModel: ObservableObject {
         for intent in persistedTerminals.intents where intent.action == .discard {
             persistedSets.remove(date: intent.date)
         }
+        for intent in persistedTerminals.intents where intent.action == .discard {
+            SetCorrectionOutboxStore.remove(date: intent.date, userID: auth.userID, defaults: defaults)
+        }
+        let corrections = SetCorrectionOutboxStore.load(userID: auth.userID, defaults: defaults)
+        self.setCorrections = corrections
+        self.ownedCorrectionIDs = Set(corrections.map(\.id))
         self.setOutbox = persistedSets
         self.terminalOutbox = persistedTerminals
         self.ownedSetIntentIDs = Set(persistedSets.pending.map(\.id))
         self.ownedTerminalIntentIDs = Set(
             persistedTerminals.intents.map(\.id))
-        if !persistedSets.isEmpty || !persistedTerminals.intents.isEmpty {
+        if !persistedSets.isEmpty || !persistedTerminals.intents.isEmpty || !corrections.isEmpty {
             self.workoutWriteRetryNotBefore =
                 WorkoutWriteRetryDeadlineStore.load(
                     userID: auth.userID, defaults: defaults)
@@ -695,6 +716,7 @@ final class SyncModel: ObservableObject {
         let runnerWasActive = running
         let activeSlotID = activeRunnerSlotID()
         let previousExecutionIdentity = activeRunnerExecutionIdentity()
+        let previousPrescription = currentExercise.map(RunnerPrescription.init)
         let runnerCheckpointBeforeState = persistedRunnerCheckpoint
         let previousSkippedExecutionState =
             skippedExecutionStateForCurrentPlan()
@@ -706,6 +728,7 @@ final class SyncModel: ObservableObject {
             state.externalSyncCursorsVersion
         plan = state.plan
         if isLiveResponse {
+            summaryRevision &+= 1
             // A replacement model may have cleared or superseded this
             // instance's in-memory writes. Adopt the account store before a
             // live response is allowed to acknowledge or requeue anything.
@@ -765,8 +788,10 @@ final class SyncModel: ObservableObject {
             }
             normalizeMountedRunnerProgress(
                 for: todaySession?.date ?? todayString,
-                reseedCurrent: executionIdentityChanged)
+                reseedCurrent: executionIdentityChanged
+                    || (runnerWasActive && previousPrescription != currentExercise.map(RunnerPrescription.init)))
             isUsingCachedState = false
+            correctionRefreshNeeded = false
             validatePersistedRunnerCheckpoint()
         }
     }
@@ -1618,7 +1643,8 @@ final class SyncModel: ObservableObject {
             workoutStartedAtMS: checkpoint.workoutStartedAtMS,
             finished: normalizedFinished,
             sessionAttempt: serverSession.attempt ?? checkpoint.sessionAttempt,
-            restartDiscardedAttempt: nil)
+            restartDiscardedAttempt: nil,
+            input: checkpoint.input)
         if normalized != checkpoint {
             guard replaceRunnerCheckpoint(
                 normalized, ifCurrent: checkpoint)
@@ -1654,7 +1680,8 @@ final class SyncModel: ObservableObject {
                 (workoutStart.timeIntervalSince1970 * 1_000).rounded(.down)),
             finished: finished,
             sessionAttempt: todaySession?.attempt,
-            restartDiscardedAttempt: runnerRestartDiscardedAttempt)
+            restartDiscardedAttempt: runnerRestartDiscardedAttempt,
+            input: currentInputState)
         let expected = persistedRunnerCheckpoint
         guard replaceRunnerCheckpoint(checkpoint, ifCurrent: expected) else {
             relinquishStaleRunnerCheckpoint()
@@ -1691,7 +1718,8 @@ final class SyncModel: ObservableObject {
             workoutStartedAtMS: checkpoint.workoutStartedAtMS,
             finished: checkpoint.finished,
             sessionAttempt: session.attempt ?? checkpoint.sessionAttempt,
-            restartDiscardedAttempt: nil)
+            restartDiscardedAttempt: nil,
+            input: checkpoint.input)
         guard replaceRunnerCheckpoint(bound, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -1896,7 +1924,8 @@ final class SyncModel: ObservableObject {
             workoutStartedAtMS: checkpoint.workoutStartedAtMS,
             finished: checkpoint.finished,
             sessionAttempt: checkpoint.sessionAttempt,
-            restartDiscardedAttempt: checkpoint.restartDiscardedAttempt)
+            restartDiscardedAttempt: checkpoint.restartDiscardedAttempt,
+            input: checkpoint.input)
         guard replaceRunnerCheckpoint(normalized, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -2335,6 +2364,8 @@ final class SyncModel: ObservableObject {
         ownedTerminalIntentIDs.formIntersection(
             terminalOutbox.intents.map(\.id))
         ownedSetIntentIDs.formIntersection(setOutbox.pending.map(\.id))
+        setCorrections = SetCorrectionOutboxStore.load(userID: accountID, defaults: defaults)
+        ownedCorrectionIDs.formIntersection(setCorrections.map(\.id))
     }
 
     private func durableTerminalIntent(
@@ -2399,6 +2430,7 @@ final class SyncModel: ObservableObject {
     var hasPendingSetsForCurrentWorkout: Bool {
         let date = todaySession?.date ?? todayString
         return setOutbox.pending.contains { $0.date == date }
+            || setCorrections.contains { $0.date == date }
     }
 
     private func persistEnqueuedSetIntent(_ intent: PendingSetIntent) {
@@ -2524,7 +2556,8 @@ final class SyncModel: ObservableObject {
         _ ex: TemplateExercise,
         weight: Double,
         reps: Int,
-        durationOverride: Int?
+        durationOverride: Int?,
+        rpe: Double? = nil
     ) -> PendingSetIntent? {
         let workoutDate = todaySession?.date ?? todayString
         guard canInitiateBoundFeatureAction,
@@ -2552,7 +2585,10 @@ final class SyncModel: ObservableObject {
             is_warmup: ex.isWarmup,
             logged_at: Int((now().timeIntervalSince1970 * 1_000).rounded(.down)),
             duration_s: durationOverride,
-            is_timed: ex.isTimed)
+            is_timed: ex.isTimed, rpe: rpe,
+            prescription: selectedDayID.flatMap { dayID in
+                plan.map { SetPrescriptionContext(plan_id: $0.id, version: $0.version, day_id: dayID) }
+            })
         let intent = PendingSetIntent(
             body: body,
             date: workoutDate,
@@ -2578,10 +2614,11 @@ final class SyncModel: ObservableObject {
         _ ex: TemplateExercise,
         weight: Double,
         reps: Int,
-        durationOverride: Int? = nil
+        durationOverride: Int? = nil,
+        rpe: Double? = nil
     ) -> Bool {
         guard enqueueSetIntent(
-            ex, weight: weight, reps: reps, durationOverride: durationOverride
+            ex, weight: weight, reps: reps, durationOverride: durationOverride, rpe: rpe
         ) != nil else { return false }
 
         if running {
@@ -2657,7 +2694,7 @@ final class SyncModel: ObservableObject {
         }
         cancelWorkoutWriteRetry(resetAttempt: false)
         guard currentJWT != nil, canInitiateBoundFeatureAction,
-              !setOutbox.isEmpty || !terminalOutbox.intents.isEmpty
+              !setOutbox.isEmpty || !terminalOutbox.intents.isEmpty || !setCorrections.isEmpty
         else {
             return
         }
@@ -2702,6 +2739,7 @@ final class SyncModel: ObservableObject {
                 userID: accountID, defaults: defaults).isEmpty
                 && WorkoutTerminalOutboxStore.load(
                     userID: accountID, defaults: defaults).intents.isEmpty
+                && SetCorrectionOutboxStore.load(userID: accountID, defaults: defaults).isEmpty
             cancelWorkoutWriteRetry(
                 resetAttempt: true,
                 clearServerDeadline: durableQueuesAreEmpty)
@@ -2801,12 +2839,17 @@ final class SyncModel: ObservableObject {
         }) {
             return true
         }
+        if setCorrections.contains(where: { correction in
+            correction.deliveryState == .queued && ownedCorrectionIDs.contains(correction.id)
+                && !setOutbox.pending.contains(where: { $0.id == correction.setID })
+        }) { return true }
         return terminalOutbox.intents.contains { intent in
             guard ownedTerminalIntentIDs.contains(intent.id),
                   intent.deliveryState == .queued
             else { return false }
             if intent.action == .discard { return true }
             return !setOutbox.pending.contains { $0.date == intent.date }
+                && !setCorrections.contains { $0.date == intent.date }
         }
     }
 
@@ -2819,6 +2862,8 @@ final class SyncModel: ObservableObject {
         // explicit restart performed by a replacement model.
         adoptDurableWorkoutWriteOutboxes()
         for date in discardBarrierDates {
+            SetCorrectionOutboxStore.remove(date: date, userID: accountID, defaults: defaults)
+            setCorrections.removeAll { $0.date == date }
             guard setOutbox.pending.contains(where: { $0.date == date }) else {
                 continue
             }
@@ -2846,6 +2891,7 @@ final class SyncModel: ObservableObject {
 
         let setStopped = await performSetOutboxDrain()
         if setStopped { return true }
+        if await performSetCorrectionDrain() { return true }
         supersedeSetIntentsForDiscardBarriers()
 
         guard canInitiateBoundFeatureAction else { return true }
@@ -2856,6 +2902,7 @@ final class SyncModel: ObservableObject {
             else { return false }
             if intent.action == .discard { return true }
             return !setOutbox.pending.contains { $0.date == intent.date }
+                && !setCorrections.contains { $0.date == intent.date }
         }) else { return false }
         return await sendPersistedTerminalIntent(terminal)
     }
@@ -3120,7 +3167,7 @@ final class SyncModel: ObservableObject {
                 // as a queued one; the caller excludes both before reaching us.
                 guard !setOutbox.pending.contains(where: {
                     $0.date == intent.date
-                }) else { return false }
+                }), !setCorrections.contains(where: { $0.date == intent.date }) else { return false }
                 response = try await terminalAPI.completeSession(
                     sessionId: sessionID,
                     expectedAttempt: intent.expectedAttempt,
@@ -3184,10 +3231,17 @@ final class SyncModel: ObservableObject {
                     isLiveResponse: false)
                 terminalOutbox.remove(id: intent.id)
                 persistRemovedTerminalIntent(id: intent.id)
+                summaryRevision &+= 1
+                if let summary = response.summary, summary.version == 1, summary.final,
+                   summary.session_id == response.id, summary.attempt == (response.attempt ?? 0) {
+                    completionSummaries[response.id] = summary
+                    completionSummaryRevisions[response.id] = summaryRevision
+                }
                 if applied, intent.date == todayString {
                     stopRunnerAfterTerminalAck()
                 }
             case .discard:
+                summaryRevision &+= 1
                 applyTerminalAcknowledgementLocally(response, action: .discard)
                 applyLocalDiscardMask()
                 guard let persisted = persistTerminalAcknowledgement(
@@ -3474,6 +3528,7 @@ final class SyncModel: ObservableObject {
             } else {
                 baselineProvedAcknowledgement = false
             }
+            summaryRevision &+= 1
             applySetAcknowledgement(
                 result,
                 intent: intent,
@@ -3774,8 +3829,7 @@ final class SyncModel: ObservableObject {
         _ expected: TemplateExercise,
         current: TemplateExercise
     ) -> Bool {
-        executionIdentity(for: expected) == executionIdentity(for: current)
-            && (!expected.isTimed || expected.holdSeconds == current.holdSeconds)
+        RunnerPrescription(expected) == RunnerPrescription(current)
     }
 
     // MARK: runner
@@ -3868,6 +3922,7 @@ final class SyncModel: ObservableObject {
         seedInputs()
         weight = failedIntent.body.weight
         reps = failedIntent.body.reps
+        rpe = failedIntent.body.rpe
         persistRunnerCheckpoint()
         updateRestActivityAfterRunnerNormalization()
     }
@@ -4057,25 +4112,29 @@ final class SyncModel: ObservableObject {
         skipRest()
     }
 
-    /// Seed weight/reps from last time → plan target → default.
+    var currentInputState: RunnerInputState? {
+        guard let ex = currentExercise else { return nil }
+        return RunnerInputState(prescription: RunnerPrescription(ex), weight: weight,
+                                reps: reps, rpe: rpe, durationSeconds: holdDurationSeconds)
+    }
+
+    func comparablePreviousSets(for ex: TemplateExercise) -> [SetLog] {
+        let history = RunnerInputPolicy.comparableSets(ex, sets: sets, sessions: sessions,
+            currentSessionID: todaySession?.id, dayExercises: exercises, dayID: selectedDayID)
+        guard let lastSessionID = history.last?.session_id else { return [] }
+        return history.filter { $0.session_id == lastSessionID }
+    }
+
     private func seedInputs() {
         clearTimedSet()
         guard let ex = currentExercise else { return }
-        // A same-slot prescription can switch between timed and rep work.
-        // Seed only from history in the current execution class so seconds
-        // cannot become reps (or vice versa) after an edit.
-        let last = live(ex.exercise_id)
-            .filter { isTimedSet($0) == ex.isTimed }
-            .max { $0.logged_at < $1.logged_at }
-        // Bodyweight/static-hold load is relative to bodyweight: positive
-        // added load, zero strict, negative assistance. It is visible and
-        // editable, so carry the last/target value like any other exercise.
-        // Cardio shares the countdown runner but has no visible load control;
-        // never carry a stale/invalid target into the persisted timed set.
-        weight = ex.exercise_modality == "cardio"
-            ? 0
-            : (last?.weight ?? ex.target_weight ?? (ex.isTimed || ex.isBodyweight ? 0 : 45))
-        reps = last?.reps ?? ex.target_reps
+        let input = RunnerInputPolicy.seed(ex,
+            previous: comparablePreviousSets(for: ex).last,
+            draft: persistedRunnerCheckpoint?.input)
+        weight = input.weight
+        reps = input.reps
+        rpe = input.rpe
+        holdDurationSeconds = input.durationSeconds
     }
 
     // MARK: timed exercises (plank, holds)
@@ -4099,10 +4158,13 @@ final class SyncModel: ObservableObject {
               !hasPendingTerminalIntentForCurrentWorkout,
               !isSetEntryBlocked(ex)
         else { return }
+        if restEndDate != nil { skipRest() }
         skipped.remove(ex.id)
+        timedControlID = UUID().uuidString
+        registerTimerControls()
         timedActive = true
         let startedAt = start ?? now()
-        let endDate = startedAt.addingTimeInterval(TimeInterval(ex.holdSeconds))
+        let endDate = startedAt.addingTimeInterval(TimeInterval(holdDurationSeconds))
         timedStartDate = startedAt
         // Count down the prescribed hold (target_duration_s, fallback
         // target_reps) — not target_reps directly, which was 1s for slots
@@ -4113,12 +4175,17 @@ final class SyncModel: ObservableObject {
             slotID: ex.id,
             exerciseID: ex.exercise_id,
             setNumber: nextReservedSetIndex(for: ex),
-            holdSeconds: ex.holdSeconds,
+            holdSeconds: holdDurationSeconds,
+            prescribedHoldSeconds: ex.holdSeconds,
+            rpe: rpe,
             weight: weight,
             isWarmup: ex.isWarmup,
             startedAt: startedAt,
             endDate: endDate)
         persistRunnerCheckpoint()
+        RestLiveActivity.start(exercise: ex.exercise_name, endDate: endDate,
+                               upNext: "\(holdDurationSeconds)s", timerKind: "set", controlID: timedControlID)
+        timedCueGeneration = RestCue.scheduleTimedNotification(at: endDate)
         scheduleTimedSetCompletion()
     }
 
@@ -4145,7 +4212,12 @@ final class SyncModel: ObservableObject {
         }
     }
 
-    private func clearTimedSet() {
+    private func clearTimedSet(cancelCue: Bool = true) {
+        if timedActive, canControlSharedRestArtifacts {
+            if cancelCue { RestCue.cancelTimedNotification() }
+            RestLiveActivity.endNow()
+        }
+        timedControlID = nil
         timedSetCompletionTask?.cancel()
         timedSetCompletionTask = nil
         timedActive = false
@@ -4173,7 +4245,7 @@ final class SyncModel: ObservableObject {
               nextReservedSetIndex(for: ex) == attempt.setNumber,
               ex.isTimed,
               !isRunnerComplete(ex),
-              ex.holdSeconds == attempt.holdSeconds,
+              ex.holdSeconds == attempt.prescribedHoldSeconds,
               ex.isWarmup == attempt.isWarmup,
               timedStartDate == attempt.startedAt,
               timedEndDate == attempt.endDate
@@ -4239,8 +4311,9 @@ final class SyncModel: ObservableObject {
         held: Int
     ) async {
         guard timedSetAttempt == validated.attempt, timedActive else { return }
+        let cueGeneration = held >= validated.attempt.holdSeconds ? timedCueGeneration : nil
         let ex = validated.exercise
-        clearTimedSet()
+        clearTimedSet(cancelCue: cueGeneration == nil)
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
         let secs = max(1, held)
@@ -4248,7 +4321,7 @@ final class SyncModel: ObservableObject {
             ex,
             weight: validated.attempt.weight,
             reps: secs,
-            durationOverride: secs)
+            durationOverride: secs, rpe: validated.attempt.rpe)
         else {
             persistRunnerCheckpoint()
             return
@@ -4257,20 +4330,34 @@ final class SyncModel: ObservableObject {
         let date = todaySession?.date ?? todayString
         normalizeMountedRunnerAfterLocalCommit(for: date)
         reopenFailedRunnerIntentIfStable(for: date)
+        if let cueGeneration,
+           let alreadyCued = await RestCue.finishTimedNotification(generation: cueGeneration),
+           canInitiateBoundFeatureAction, !alreadyCued {
+            RestCue.play(upNext: "", timedSet: true)
+        }
     }
 
-    func adjustWeight(_ delta: Double) {
-        let candidate = weight + delta
-        weight = currentExercise?.allowsAssistance == true
-            ? candidate
-            : max(0, candidate)
-    }
-    /// Direct-set the working load. Bodyweight and timed slots accept
-    /// negative assistance; conventional loaded exercises remain nonnegative.
+    func adjustWeight(_ delta: Double) { setWeight(weight + delta) }
     func setWeight(_ value: Double) {
+        guard value.isFinite, !timedActive else { return }
         weight = currentExercise?.allowsAssistance == true ? value : max(0, value)
+        persistRunnerCheckpoint()
     }
-    func adjustReps(_ delta: Int) { reps = max(0, reps + delta) }
+    func adjustReps(_ delta: Int) { setReps(reps + delta) }
+    func setReps(_ value: Int) {
+        reps = max(0, value)
+        persistRunnerCheckpoint()
+    }
+    func setRPE(_ value: Double?) {
+        guard value == nil || (value!.isFinite && (0...10).contains(value!)) else { return }
+        rpe = value
+        persistRunnerCheckpoint()
+    }
+    func setHoldDuration(_ seconds: Int) {
+        guard !timedActive else { return }
+        holdDurationSeconds = max(1, seconds)
+        persistRunnerCheckpoint()
+    }
 
     func setsDone(_ ex: TemplateExercise) -> Int { todaySlotSets(ex).count }
     func isComplete(_ ex: TemplateExercise) -> Bool { setsDone(ex) >= ex.target_sets }
@@ -4319,7 +4406,7 @@ final class SyncModel: ObservableObject {
         else { return }
         skipped.remove(ex.id)   // logging work un-skips this slot
         persistRunnerCheckpoint()
-        guard queueRunnerSet(ex, weight: weight, reps: reps) else {
+        guard queueRunnerSet(ex, weight: weight, reps: reps, rpe: rpe) else {
             persistRunnerCheckpoint()
             return
         } // starts rest immediately; delivery continues in the background
@@ -4876,25 +4963,8 @@ final class SyncModel: ObservableObject {
     }
 
     func removeSet(_ set: SetLog) async {
-        guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return }
-        do {
-            try await setWriteAPI.deleteSet(setId: set.id, jwt: jwt)
-            // The endpoint can also revert the last-set session to `planned`,
-            // but it does not return that session. Invalidate rather than
-            // guessing; a cold offline launch must never resurrect this set.
-            if !StateSnapshotStore.invalidate(
-                userID: accountID, defaults: defaults),
-               let accountID
-            {
-                StateSnapshotStore.clear(
-                    userID: accountID, defaults: defaults)
-            }
-            guard canInitiateBoundFeatureAction else {
-                auth.noteAccountStatePersisted(for: accountID)
-                return
-            }
-            sets.removeAll { $0.id == set.id }
-        } catch { handle(error, jwt: jwt) }
+        enqueueCorrection(set: set, values: nil)
+        await drainWorkoutWriteOutboxes()
     }
 
     /// Fires the "rest's up" audio cue exactly when the current rest elapses.
@@ -4911,7 +4981,9 @@ final class SyncModel: ObservableObject {
         restTotal = seconds
         let end = Date().addingTimeInterval(TimeInterval(seconds))
         restEndDate = end
-        RestLiveActivity.start(exercise: name, endDate: end, upNext: upNextName)
+        restControlID = UUID().uuidString
+        registerTimerControls()
+        RestLiveActivity.start(exercise: name, endDate: end, upNext: upNextName, controlID: restControlID)
         scheduleRestCue(for: end)
         RestCue.scheduleNotification(at: end)
     }
@@ -4940,6 +5012,7 @@ final class SyncModel: ObservableObject {
     /// that loses the runner-checkpoint CAS must not end the replacement
     /// model's process-global Live Activity or notification.
     private func relinquishLocalRest() {
+        restControlID = nil
         restEndDate = nil
         restCueTask?.cancel()
         restCueTask = nil
@@ -5531,5 +5604,254 @@ private extension SetLog {
             is_timed: is_timed,
             deleted_at: deleted_at,
             updated_at: updated_at)
+    }
+}
+
+// MARK: - Durable set corrections
+
+extension SyncModel {
+    func refreshTimerCues() {
+        guard canInitiateBoundFeatureAction, canControlSharedRestArtifacts else { return }
+        if !RestCue.enabled {
+            RestCue.cancelNotification()
+            RestCue.cancelTimedNotification()
+        } else if timedActive, let end = timedEndDate, end > now() {
+            timedCueGeneration = RestCue.scheduleTimedNotification(at: end)
+        } else if let end = restEndDate, end > now() {
+            RestCue.scheduleNotification(at: end)
+        }
+    }
+
+    private func registerTimerControls() {
+        WorkoutTimerControl.handler = { [weak self] id, action in
+            await self?.controlTimer(id: id, action: action) ?? false
+        }
+    }
+
+    func controlTimer(id: String, action: String) async -> Bool {
+        guard canInitiateBoundFeatureAction, canControlSharedRestArtifacts else { return false }
+        if id == restControlID, restEndDate != nil {
+            if action == "extend" { addRest(15); return true }
+            if action == "stop" { skipRest(); return true }
+        }
+        if id == timedControlID, timedActive, action == "stop", timedElapsed >= 2 {
+            await stopTimedSet()
+            return true
+        }
+        return false
+    }
+
+    func setRunnerValues(_ values: SetCorrectionValues, expected: RunnerPrescription) -> Bool {
+        guard canInitiateBoundFeatureAction, !timedActive, values.isValid,
+              currentExercise.map(RunnerPrescription.init) == expected else { return false }
+        setWeight(values.weight)
+        setReps(values.reps)
+        setRPE(values.rpe)
+        if let duration = values.durationSeconds { setHoldDuration(duration) }
+        return true
+    }
+
+    func correction(for setID: String) -> PendingSetCorrection? {
+        setCorrections.first { $0.setID == setID }
+    }
+
+    @discardableResult
+    func enqueueCorrection(set: SetLog, values: SetCorrectionValues?) -> Bool {
+        guard canInitiateBoundFeatureAction, values?.isValid != false,
+              let session = sessions.first(where: { $0.id == set.session_id }),
+              !["discarded", "skipped"].contains(session.status),
+              sets.contains(where: { $0.id == set.id && $0.session_id == set.session_id }),
+              set.deleted_at == nil
+        else { return false }
+        return saveCorrection(PendingSetCorrection(
+            id: uuidFactory().uuidString, setID: set.id, date: session.date,
+            slotID: set.template_exercise_id, exerciseID: set.exercise_id,
+            sessionID: set.session_id, expectedAttempt: session.attempt ?? 0,
+            expectedUpdatedAt: set.updated_at ?? set.logged_at, values: values))
+    }
+
+    @discardableResult
+    func enqueueCorrection(pending: PendingSetIntent, values: SetCorrectionValues?) -> Bool {
+        guard canInitiateBoundFeatureAction, values?.isValid != false,
+              durableSetIntent(matching: pending)?.body == pending.body
+        else { return false }
+        return saveCorrection(PendingSetCorrection(
+            id: uuidFactory().uuidString, setID: pending.id, date: pending.date,
+            slotID: pending.slotID, exerciseID: pending.body.exercise_id,
+            sessionID: pending.resolvedSessionID, expectedAttempt: pending.expectedAttempt,
+            expectedUpdatedAt: nil, values: values))
+    }
+
+    private func saveCorrection(_ intent: PendingSetCorrection) -> Bool {
+        adoptDurableWorkoutWriteOutboxes()
+        guard !setCorrections.contains(where: { $0.setID == intent.setID }),
+              terminalOutbox.intent(for: intent.date) == nil
+        else { return false }
+        SetCorrectionOutboxStore.enqueue(intent, userID: accountID, defaults: defaults)
+        ownedCorrectionIDs.insert(intent.id)
+        adoptDurableWorkoutWriteOutboxes()
+        guard setCorrections.contains(where: { $0.id == intent.id }) else { return false }
+        Task { await drainWorkoutWriteOutboxes() }
+        return true
+    }
+
+    func retryCorrection(id: String) async {
+        guard canInitiateBoundFeatureAction else { return }
+        adoptDurableWorkoutWriteOutboxes()
+        guard var intent = setCorrections.first(where: { $0.id == id }),
+              !sendingCorrectionIDs.contains(id)
+        else { return }
+        // Retain the revision even for a 409. Retrying never overwrites a
+        // remote correction the member has not reviewed.
+        intent.deliveryState = .queued
+        intent.failedHTTPStatus = nil
+        SetCorrectionOutboxStore.replace(intent, userID: accountID, defaults: defaults)
+        adoptDurableWorkoutWriteOutboxes()
+        await drainWorkoutWriteOutboxes()
+    }
+
+    /// Permanent rejection proves this request was not accepted. Clearing it
+    /// permits a fresh review of the server row; queued/time-out operations
+    /// cannot be abandoned while their acknowledgement is uncertain.
+    func dismissRejectedCorrection(id: String) async {
+        guard canInitiateBoundFeatureAction else { return }
+        adoptDurableWorkoutWriteOutboxes()
+        guard let intent = setCorrections.first(where: { $0.id == id }),
+              intent.deliveryState == .failed, !sendingCorrectionIDs.contains(id)
+        else { return }
+        SetCorrectionOutboxStore.remove(id: id, userID: accountID, defaults: defaults)
+        adoptDurableWorkoutWriteOutboxes()
+        await loadAfterMutation()
+    }
+
+    private func performSetCorrectionDrain() async -> Bool {
+        adoptDurableWorkoutWriteOutboxes()
+        while canInitiateBoundFeatureAction,
+              var intent = setCorrections.first(where: { correction in
+                  correction.deliveryState == .queued && ownedCorrectionIDs.contains(correction.id)
+                      && !setOutbox.pending.contains(where: { $0.id == correction.setID })
+              }), let jwt = currentJWT {
+            guard !discardBarrierDates.contains(intent.date) else {
+                supersedeSetIntentsForDiscardBarriers()
+                continue
+            }
+            if intent.expectedUpdatedAt == nil {
+                // Only an acknowledged original UUID can bind an offline
+                // correction. Never create another set to stand in for it.
+                guard let set = sets.first(where: { $0.id == intent.setID }),
+                      let session = sessions.first(where: { $0.id == set.session_id }),
+                      session.date == intent.date, set.exercise_id == intent.exerciseID,
+                      set.template_exercise_id == intent.slotID || set.template_exercise_id == nil,
+                      intent.expectedAttempt == nil || intent.expectedAttempt == (session.attempt ?? 0)
+                else {
+                    failCorrection(&intent, status: 409)
+                    continue
+                }
+                intent.sessionID = session.id
+                intent.slotID = set.template_exercise_id
+                intent.expectedAttempt = session.attempt ?? 0
+                intent.expectedUpdatedAt = set.updated_at ?? set.logged_at
+                SetCorrectionOutboxStore.replace(intent, userID: accountID, defaults: defaults)
+                adoptDurableWorkoutWriteOutboxes()
+                guard let bound = setCorrections.first(where: { $0.id == intent.id }) else { continue }
+                intent = bound
+            }
+            sendingCorrectionIDs.insert(intent.id)
+            do {
+                let result = try await setWriteAPI.correctSet(intent, jwt: jwt)
+                sendingCorrectionIDs.remove(intent.id)
+                guard canMutateBoundSetAccount else { return true }
+                adoptDurableWorkoutWriteOutboxes()
+                guard setCorrections.contains(where: { $0.id == intent.id }),
+                      !discardBarrierDates.contains(intent.date)
+                else { continue }
+                guard result.set.id == intent.setID,
+                      result.set.session_id == intent.sessionID,
+                      result.set.exercise_id == intent.exerciseID,
+                      result.set.template_exercise_id == intent.slotID || result.set.template_exercise_id == nil,
+                      result.session.id == intent.sessionID,
+                      result.session.date == intent.date,
+                      result.session.attempt == intent.expectedAttempt
+                else { throw APIError.decoding("Correction acknowledgement changed its identity") }
+                summaryRevision &+= 1
+                let merged = StateSnapshotStore.mergeAcknowledgement(
+                    userID: accountID, fallback: currentStateResponse(), defaults: defaults
+                ) { state in
+                    Self.mergingSetAcknowledgement(into: state, acceptedSet: result.set,
+                                                  acknowledgedSession: result.session)
+                }
+                // ACK is the mutation boundary. It cannot become a failed
+                // edit merely because a later refresh/local cache save fails.
+                SetCorrectionOutboxStore.remove(id: intent.id, userID: accountID, defaults: defaults)
+                adoptDurableWorkoutWriteOutboxes()
+                if canInitiateBoundFeatureAction {
+                    let state = merged?.state ?? Self.mergingSetAcknowledgement(
+                        into: currentStateResponse(), acceptedSet: result.set,
+                        acknowledgedSession: result.session)
+                    applyState(state, preferredTodaySessionID: todaySession?.id, isLiveResponse: false)
+                    // No runner normalization here: correcting a previous set
+                    // preserves the selected slot, final review and rest timer.
+                    persistRunnerCheckpoint()
+                    correctionRefreshNeeded = merged == nil
+                    if merged == nil {
+                        _ = StateSnapshotStore.requireFullReload(userID: accountID, defaults: defaults)
+                        loadError = "Correction saved. Refresh to update the recovery cache."
+                    }
+                } else {
+                    auth.noteAccountStatePersisted(for: accountID)
+                }
+            } catch {
+                sendingCorrectionIDs.remove(intent.id)
+                guard canMutateBoundSetAccount else { return true }
+                adoptDurableWorkoutWriteOutboxes()
+                guard setCorrections.contains(where: { $0.id == intent.id }) else { continue }
+                if isPermanentSetClientError(error) {
+                    failCorrection(&intent, status: (error as? APIError)?.httpStatus ?? 400)
+                    continue
+                }
+                recordRetryAfter(from: error)
+                handle(error, jwt: jwt)
+                return true
+            }
+            adoptDurableWorkoutWriteOutboxes()
+        }
+        return false
+    }
+
+    private func failCorrection(_ intent: inout PendingSetCorrection, status: Int) {
+        intent.deliveryState = .failed
+        intent.failedHTTPStatus = status
+        SetCorrectionOutboxStore.replace(intent, userID: accountID, defaults: defaults)
+        adoptDurableWorkoutWriteOutboxes()
+    }
+}
+
+
+extension SyncModel {
+    func completionSummary(for sessionID: String) -> WorkoutSummary? {
+        guard completionSummaryRevisions[sessionID] == summaryRevision else { return nil }
+        return completionSummaries[sessionID]
+    }
+
+    func loadCompletionSummary(sessionID: String) async {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT,
+              let session = sessions.first(where: { $0.id == sessionID && $0.status == "completed" }),
+              completionSummary(for: sessionID) == nil else { return }
+        let revision = summaryRevision
+        do {
+            let summary = try await setWriteAPI.getWorkoutSummary(sessionID: sessionID, jwt: jwt)
+            guard canInitiateBoundFeatureAction, summaryRevision == revision,
+                  summary.version == 1, summary.final, summary.session_id == sessionID,
+                  summary.attempt == (session.attempt ?? 0),
+                  sessions.contains(where: { $0.id == sessionID && $0.status == "completed"
+                      && ($0.attempt ?? 0) == summary.attempt }) else { return }
+            completionSummaries[sessionID] = summary
+            completionSummaryRevisions[sessionID] = revision
+            summaryErrors[sessionID] = nil
+        } catch {
+            guard canInitiateBoundFeatureAction, summaryRevision == revision else { return }
+            summaryErrors[sessionID] = "Summary unavailable until the next successful sync."
+            if (error as? APIError)?.httpStatus == 401 { handle(error, jwt: jwt) }
+        }
     }
 }

@@ -3,13 +3,21 @@ import Foundation
 /// The immutable body of one user set-log intent. `id` is both the local
 /// identity and the Worker's idempotency key; `logged_at` is captured at tap
 /// time. Neither value is regenerated while retrying.
+struct SetPrescriptionContext: Codable, Equatable {
+    let plan_id: String
+    let version: Int
+    let day_id: String
+}
+
 struct SetRequestBody: Codable, Equatable {
+    let prescription: SetPrescriptionContext?
     let id: String
     let exercise_id: String
     let template_exercise_id: String
     let set_index: Int
     let weight: Double
     let reps: Int
+    let rpe: Double?
     let is_warmup: Bool
     let logged_at: Int
     let duration_s: Int?
@@ -30,14 +38,18 @@ struct SetRequestBody: Codable, Equatable {
         logged_at: Int,
         duration_s: Int?,
         is_timed: Bool,
-        expected_attempt: Int? = nil
+        expected_attempt: Int? = nil,
+        rpe: Double? = nil,
+        prescription: SetPrescriptionContext? = nil
     ) {
+        self.prescription = prescription
         self.id = id
         self.exercise_id = exercise_id
         self.template_exercise_id = template_exercise_id
         self.set_index = set_index
         self.weight = weight
         self.reps = reps
+        self.rpe = rpe
         self.is_warmup = is_warmup
         self.logged_at = logged_at
         self.duration_s = duration_s
@@ -57,7 +69,8 @@ struct SetRequestBody: Codable, Equatable {
             logged_at: logged_at,
             duration_s: duration_s,
             is_timed: is_timed,
-            expected_attempt: expectedAttempt ?? expected_attempt)
+            expected_attempt: expectedAttempt ?? expected_attempt,
+            rpe: rpe, prescription: prescription)
     }
 }
 
