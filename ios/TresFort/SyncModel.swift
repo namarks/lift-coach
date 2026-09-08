@@ -4588,10 +4588,9 @@ final class SyncModel: ObservableObject {
                 auth.noteAccountStatePersisted(for: accountID)
                 return false
             }
-            // The write may have committed while the authoritative state pull
-            // failed. Keep the editor open with the sync error visible rather
-            // than dismissing onto stale target values.
-            guard loadError == nil else { return false }
+            // The PATCH acknowledgement is the commit boundary. A failed
+            // refresh leaves `loadError` visible, but returning false would
+            // keep the form open and let a retry overwrite a newer edit.
             return true
         } catch {
             handle(error, jwt: jwt)
