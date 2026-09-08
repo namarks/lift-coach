@@ -54,9 +54,10 @@ and timing aids, and finish with an accurate summary.
 
 ## Dependencies
 
+P0 carries the completed [prescription and recurring-adjustment contract](../completed/prescription-integrity/decisions.md) faithfully into the input controls.
+
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:prescription-integrity#P2 | The corrected prescription and its persistent scope must reach the input controls faithfully. |
 | P2 | blocked_by | plan:bodyweight-training-support#P3 | New bodyweight PR claims must use the corrected comparability policy. |
 | P2 | feeds | plan:coaching-feedback-loop#P2 | The persisted completion summary provides context for coaching; it does not block runner delivery. |
 

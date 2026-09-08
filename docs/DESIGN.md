@@ -262,7 +262,7 @@ snapshot together, plus the coaching note for MCP plan writes. Legacy slot
 patches retain their existing input shape: they retry a bounded version
 conflict against fresh state and validate the merged prescription. Explicitly versioned edits return
 a conflict for the caller to review. See the
-[prescription contract](plans/prescription-integrity/decisions.md).
+[prescription contract](plans/completed/prescription-integrity/decisions.md).
 
 Migration `0040` adds `plan_snapshots`. A legacy plan's first accepted edit
 captures its actual previous version and the resulting version; earlier history
@@ -275,7 +275,7 @@ version with a pinned target. `POST /api/plan/history/:version/restore` requires
 stale/foreign history or an active workout. Logged set values remain history;
 restore does not resurrect detached historical references. Account export schema
 version 2 includes snapshots, and account deletion removes them. See the
-[snapshot contract and release boundary](plans/reversible-plan-management/decisions.md).
+[snapshot contract and release boundary](plans/completed/reversible-plan-management/decisions.md).
 
 ---
 

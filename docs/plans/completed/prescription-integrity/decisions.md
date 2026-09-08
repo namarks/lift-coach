@@ -49,7 +49,7 @@ health of production rows or authorize modifying them.
 
 Nick approved exact source `2e67f93` and migrations through `0042`. Production
 now serves that source at 100%, with independent source/schema verification
-recorded in the [shared release evidence](../completed/coach-access-integrity/decisions.md).
+recorded in the [shared release evidence](../coach-access-integrity/decisions.md).
 No production prescription was edited or corrected, and no validation or
 attribution canary was executed. A concrete production canary and any legacy
 repair remain separate owner decisions.
@@ -90,3 +90,24 @@ invalid-RPE and stale-restore probes both returned their expected rejection,
 and independent connector/SQL reads confirmed unchanged version, snapshots,
 successful mutation audits, and coaching notes. The accepted coach mutation and
 successful restore remain pending the shared historical-workout discard path.
+
+## 2026-09-07: accepted-write and restoration evidence complete
+
+The owner subsequently approved the exact reviewed coach discard release and
+the historical workout cleanup separately. Both succeeded. One bounded
+cue-only coach mutation then advanced the plan once and produced exactly one
+MCP-authored snapshot, version-bound successful audit and Claude-authored plan
+note. The app showed that change alongside the earlier iOS edit in the same
+history, then restored the reviewed original snapshot as a new version.
+Independent D1 reads confirmed a single iOS restore audit and snapshot, one
+Nick-authored plan note, and byte-for-byte equality between the restored
+canonical document and the original baseline. No temporary test edit remained.
+The shared [release and canary evidence](../reversible-plan-management/decisions.md)
+retains source, deployment, client, attribution and verification details.
+
+Together with the already-passed live invalid-prescription and stale-restore
+rejections, these observations complete the authorized production canary.
+The deterministic suite remains the evidence for forced concurrency and
+rollback cases. The bounded legacy assessment above retains its exclusions
+and import-transport metadata caveat; no legacy prescription repair was made
+or authorized.

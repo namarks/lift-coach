@@ -111,7 +111,7 @@ runtime input. See the [REST path](https://github.com/namarks/tres-fort/blob/696
 [shared writer](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/src/db.ts#L5696)
 and [Swift model](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/ios/TresFort/Models.swift#L35).
 
-**Closure:** new [prescription-integrity P0](../../plans/prescription-integrity/plan.md)
+**Closure:** new [prescription-integrity P0](../../plans/completed/prescription-integrity/plan.md)
 validates every create/patch/rebuild/swap path, including merged cross-field
 constraints and legitimate assistance. Rejections must leave data, version
 and successful audit history unchanged. Existing set/session validation did
@@ -159,7 +159,7 @@ reduction magnitude. The operation changes recurring template targets and,
 when no day is supplied, every template. The name `adjust_today` obscures
 that persistent scope. See [adjustment](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/src/db.ts#L5843).
 
-**Closure:** [prescription-integrity P2](../../plans/prescription-integrity/plan.md)
+**Closure:** [prescription-integrity P2](../../plans/completed/prescription-integrity/plan.md)
 requires monotonic reductions, assistance in the correct direction, explicit
 no-ops, deliberate increments/units and returned scope/before-after values.
 Reversible history helps recover an edit; it cannot make wrong arithmetic
@@ -175,9 +175,9 @@ as separate operations; MCP audit/note writing happens after the handler.
 See [writer](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/src/db.ts#L5700)
 and [MCP dispatch](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/src/mcp/server.ts#L1524).
 
-**Closure:** [prescription-integrity P1](../../plans/prescription-integrity/plan.md)
+**Closure:** [prescription-integrity P1](../../plans/completed/prescription-integrity/plan.md)
 establishes mutation/version/audit ownership and tested concurrency behavior.
-[Reversible plan management](../../plans/reversible-plan-management/plan.md)
+[Reversible plan management](../../plans/completed/reversible-plan-management/plan.md)
 now depends on that boundary; its earlier instruction to reuse a universal
 existing transaction was too strong. New group/library writers share this
 prerequisite instead of replicating the current pattern.

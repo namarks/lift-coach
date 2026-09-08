@@ -1,6 +1,6 @@
 # Training Data Trust
 
-Slug: training-data-trust · Status: gated · Updated: 2026-09-07
+Slug: training-data-trust · Status: done · Updated: 2026-09-07 · Archived: completed
 
 ## Objective
 
@@ -9,14 +9,14 @@ functionality review found real loss or corruption: server writes stay scoped
 and deterministic, gym-floor intents survive interruption, authentication does
 not erase local data, and plan changes can be inspected and restored.
 
-The [completed coach-access workstream](../plans/completed/coach-access-integrity/plan.md)
+The [completed coach-access workstream](../../plans/completed/coach-access-integrity/plan.md)
 retains the authorization, deployment and verified lifetime-activation evidence
 that supports the remaining current workstreams.
 
-## Scope
+## Delivered workstreams
 
-- plan:prescription-integrity
-- plan:reversible-plan-management
+- [Prescription integrity](../../plans/completed/prescription-integrity/plan.md)
+- [Reversible plan management](../../plans/completed/reversible-plan-management/plan.md)
 
 ## Priority policy
 
@@ -37,6 +37,16 @@ exchanges to have one successor, prescriptions to be valid and atomically
 audited, reductions to respect their stated scope/direction, and AI/manual
 edits to share readable snapshot-and-revert history. Repository proof and
 owner-approved production/lifecycle transition evidence remain distinct.
+
+These conditions were verified on 2026-09-07. The approved Worker releases,
+coach-lifetime activation and TestFlight build 32 delivery are retained with the
+completed workstreams. The coordinated live canary verified rejection of
+invalid and stale writes, one accepted coach edit with atomic attribution,
+shared app/coach history, an app restore matching the reviewed baseline exactly,
+and persistence after fresh reads and app refresh/reopen. The separately
+authorized historical workout discard removed the restore blocker. See the
+[release and device evidence](../../plans/completed/reversible-plan-management/decisions.md)
+for exact identities, observed paths and verification limits.
 
 ## Stop rules
 

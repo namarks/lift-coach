@@ -68,11 +68,12 @@ durable account/attempt-bound writes remain the foundation.
 
 ## Dependencies
 
+P2 preserves the completed [validated atomic prescription writer](../completed/prescription-integrity/decisions.md) during backend extraction.
+
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Share runner controls and recovery presentation rather than fork them. |
 | P1 | coordinates_with | plan:member-activation-and-adherence#P0 | Entry copy, errors and large-text layouts touch the same surfaces. |
-| P2 | coordinates_with | plan:prescription-integrity#P1 | Preserve the repaired writer contracts during backend extraction. |
 | P2 | coordinates_with | plan:bodyweight-training-support#P3 | Share one comparable-metrics implementation and fixture set. |
 
 ## Next step

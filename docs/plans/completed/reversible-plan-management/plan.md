@@ -1,6 +1,6 @@
 # Reversible Plan Management
 
-Slug: reversible-plan-management · Status: gated · Updated: 2026-09-07 · Theme: training-trust
+Slug: reversible-plan-management · Status: done · Updated: 2026-09-07 · Theme: training-trust · Archived: completed
 
 ## Goal
 
@@ -15,8 +15,7 @@ audit trail rather than rewriting them.
   - Store the canonical plan tree, schedule, and plan metadata alongside the
     resulting version for each successful plan mutation.
   - Reuse the canonical serializer and the commit boundary established for all
-    writers by prescription-integrity P1. Current slot updates and audit calls
-    are not universally atomic. A failed mutation must produce neither a
+    writers by prescription-integrity P1. A failed mutation must produce neither a
     partial edit, new version nor a misleading snapshot.
   - Prove snapshot round trips for representative MCP and iOS edit paths.
 - [x] **P1 — Conflict-safe revert**
@@ -33,45 +32,38 @@ audit trail rather than rewriting them.
   - Add a simple comparison view only for fields users need to decide whether to
     restore; measure snapshot growth before adding pruning policy.
   - Verify both AI and manual app edits appear in the same history.
-- [ ] **P3 — Owner-approved service and app release**
+- [x] **P3 — Owner-approved service and app release**
   - [x] **(a) Release the reviewed service and migrations**
     - Migrations through `0042` and exact reviewed Worker source `2e67f93` are
       live. The source/schema were independently verified. Recovery must retain
       snapshot, lineage and active-fence guarantees.
-  - [ ] **(b) Release and verify the app with an approved canary**
+  - [x] **(b) Release and verify the app with an approved canary**
     - [x] Release the reviewed app: `0.1.0 (32)` from merged source `0d39656`
       is Apple `VALID`, `IN_BETA_TESTING`, and assigned to the existing internal
       Testers group. This includes the reviewed target-save acknowledgement fix.
     - [x] The owner installed build 32 and verified an app-authored edit in
-      shared snapshot history. The attempted restore returned the active-workout
-      rejection; successful restoration remains unverified.
-    - [ ] Complete the now-authorized coordinated production canary: verify
-      shared app/coach history, stale-version rejection, successful app restore,
-      and persistence of the original prescription. See [evidence](decisions.md).
-    - The remaining restore blocker is a historical session that the owner
-      explicitly authorized discarding. The app service supports discard, but
-      the deployed coach interface lacks the action. Deliver the focused MCP
-      wrapper through the existing service before performing that cleanup.
-
-## Execution frontier
-
-- P3(b)
+      shared snapshot history. The initial restore correctly rejected an
+      active workout; the separately authorized discard resolved that blocker.
+    - [x] The coordinated production canary verified shared app/coach history,
+      stale-version rejection, accepted coach-edit attribution, successful app
+      restore and persistence of the original prescription. The restored
+      canonical document exactly matched the reviewed baseline. App refresh
+      and reopening history/workout views passed; fresh coach and database
+      reads independently confirmed all restored fields. See [evidence](decisions.md).
+    - The owner-approved MCP discard source `4cf2eb3` is live. The historical
+      session was discarded through the coach, its logged set was soft-deleted,
+      and independent reads confirmed no remaining restore blocker.
 
 ## Next step
 
-**Now (@owner):** Authorize the exact merged Worker source containing the MCP
-discard wrapper after its review and CI gates pass. The historical workout's
-discard is already authorized. After release, verify its sets are
-soft-deleted and the restore blocker is gone, then complete the temporary coach
-edit and app restoration. Invalid-prescription and stale-restore rejection have
-passed live; successful restoration remains unverified. See [evidence](decisions.md).
+Complete. The [evidence](decisions.md) retains exact release identities,
+owner authority, independent verification, and the bounded device-check limits.
 
-## Dependencies
+## Delivered contracts
 
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P0 | blocked_by | plan:prescription-integrity#P1 | A snapshot cannot repair partial or lost edits; mutation/version/audit must share a proven boundary first. |
-| P3(b) | gated_by | external:owner-training-trust-discard-service-release | The canary and historical workout discard are authorized; the missing MCP capability requires a reviewed Worker release before the remaining live checks can proceed. |
+Snapshots and restores use the completed
+[prescription-integrity writer boundary](../prescription-integrity/plan.md).
+Future plan fields must remain part of canonical snapshot serialization.
 
 ## Notes / open questions
 

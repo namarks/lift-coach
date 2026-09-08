@@ -8,13 +8,15 @@ Make coaching a visible, two-way loop: members share what happened and how it
 felt, coaches receive that context, and plan changes are understandable and
 recoverable without moving coaching logic into the backend.
 
+The completed [prescription contract](../plans/completed/prescription-integrity/plan.md)
+and [snapshot/revert history](../plans/completed/reversible-plan-management/plan.md)
+are delivered foundations for this remaining work.
+
 ## Scope
 
 - plan:gym-runner-depth#P0
 - plan:coaching-feedback-loop
 - plan:bodyweight-training-support#P3
-- plan:prescription-integrity#P2
-- plan:reversible-plan-management
 
 ## Priority policy
 
