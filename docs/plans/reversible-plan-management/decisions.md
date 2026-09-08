@@ -150,14 +150,16 @@ trust implementation; Nick approved its correction before TestFlight.
 The PATCH acknowledgement now remains successful when only refresh fails, so
 the target form closes. The parent workout editor retains the sync error, offers
 a Refresh action that only reads current state, and disables editing stale
-values until that refresh succeeds. Genuine PATCH failures remain failures;
-existing account/session guards are preserved. Regression coverage requires
+values until that refresh succeeds. The lockout is specific to an acknowledged
+target edit awaiting fresh state; unrelated errors and rejected PATCH requests
+do not activate it. Genuine PATCH failures remain failures, and existing
+account/session guards are preserved. Regression coverage requires
 one accepted PATCH, a failed refresh, then a successful read of a newer coach
 version without a second PATCH. This is an iOS-only correction; the deployed
 Worker and production training data are unchanged.
 
-Verification of the corrected candidate passed all three focused target-save
-regressions and all 201 `SetOutboxTests`, including compilation of the updated
+Verification of the corrected candidate passed all four focused target-save
+regressions and all 202 `SetOutboxTests`, including compilation of the updated
 app UI. Diff hygiene and the plan compiler passed (12 plans, 40 edges, four
 initiatives). These are repository checks; signing/export, TestFlight processing,
 and the production canary remain separate evidence. The repair must pass fresh

@@ -4047,6 +4047,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(editor.updateCalls, 1)
         XCTAssertNotNil(model.loadError)
         XCTAssertTrue(model.loadError?.contains("write_failed") == true)
+        XCTAssertFalse(model.workoutEditorRefreshNeeded)
     }
 
     func testAcknowledgedTargetSaveSucceedsWhenPostMutationRefreshFails() async {
@@ -4078,6 +4079,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(saved)
         XCTAssertEqual(editor.updateCalls, 1)
         XCTAssertNotNil(model.loadError)
+        XCTAssertTrue(model.workoutEditorRefreshNeeded)
         XCTAssertEqual(model.plan?.days[0].exercises[0].target_reps, ex.target_reps)
     }
 
@@ -4117,16 +4119,32 @@ final class SetOutboxTests: XCTestCase {
 
         XCTAssertTrue(saved)
         XCTAssertNotNil(model.loadError)
+        XCTAssertTrue(model.workoutEditorRefreshNeeded)
         XCTAssertEqual(editor.updateCalls, 1)
         XCTAssertEqual(model.plan?.days[0].exercises[0].target_sets, 3)
 
         await model.load()
 
         XCTAssertNil(model.loadError)
+        XCTAssertFalse(model.workoutEditorRefreshNeeded)
         XCTAssertEqual(stateAPI.stateCalls, 2)
         XCTAssertEqual(editor.updateCalls, 1)
         XCTAssertEqual(model.plan?.version, 3)
         XCTAssertEqual(model.plan?.days[0].exercises[0].target_sets, 6)
+    }
+
+    func testUnrelatedErrorDoesNotRequireWorkoutEditorRefresh() {
+        let defaults = defaults()
+        let model = SyncModel(
+            auth: retainedAuth(defaults: defaults),
+            setWriteAPI: SetWriteAPIStub(),
+            defaults: defaults,
+            now: { self.fixedDate })
+
+        model.loadError = "A different operation failed."
+
+        XCTAssertNotNil(model.loadError)
+        XCTAssertFalse(model.workoutEditorRefreshNeeded)
     }
 
     func testDeletingActiveWorkoutDayShowsActionableConflict() async {

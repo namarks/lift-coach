@@ -132,6 +132,9 @@ final class SyncModel: ObservableObject {
     @Published var selectedDayID: String?
     @Published var loadError: String?
     @Published var isLoading = false
+    /// True after a target PATCH is acknowledged until a bound live-state
+    /// response reconciles the workout editor's cached prescription values.
+    @Published private(set) var workoutEditorRefreshNeeded = false
     /// True while the visible plan/calendar came from the last successful
     /// account-scoped snapshot rather than a live `/api/state` response.
     @Published private(set) var isUsingCachedState = false
@@ -679,6 +682,7 @@ final class SyncModel: ObservableObject {
             committed.state,
             preferredTodaySessionID: preferredTodaySessionID,
             isLiveResponse: true)
+        workoutEditorRefreshNeeded = false
         return true
     }
 
@@ -4583,6 +4587,7 @@ final class SyncModel: ObservableObject {
                 auth.noteAccountStatePersisted(for: accountID)
                 return false
             }
+            workoutEditorRefreshNeeded = true
             await loadAfterMutation()
             guard canInitiateBoundFeatureAction else {
                 auth.noteAccountStatePersisted(for: accountID)

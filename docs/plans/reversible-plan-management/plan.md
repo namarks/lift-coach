@@ -44,8 +44,8 @@ audit trail rather than rewriting them.
       usage limit before archive/export/upload started. The release approval
       persists. The local review also found and prompted correction of an
       acknowledged target-save retry defect; the updated iOS candidate passed
-      focused regressions and all 201 `SetOutboxTests` and still requires
-      exact-head review and required CI before release. A concrete production edit/restore canary still needs
+      focused regression checks. The release must include this fix after
+      exact-head review and required CI. A concrete production edit/restore canary still needs
       approval.
     - Verify shared app/coach history and conflict-safe restore after release.
       Do not infer production behavior from repository checks.

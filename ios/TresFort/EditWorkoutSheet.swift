@@ -28,8 +28,8 @@ struct EditWorkoutSheet: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
-                if let error = sync.loadError {
-                    refreshError(error)
+                if sync.workoutEditorRefreshNeeded {
+                    refreshError(sync.loadError)
                 }
                 Group {
                     if let day, !day.exercises.isEmpty {
@@ -38,7 +38,7 @@ struct EditWorkoutSheet: View {
                         emptyState
                     }
                 }
-                .disabled(sync.loadError != nil)
+                .disabled(sync.workoutEditorRefreshNeeded)
             }
             .background(Theme.background)
             .navigationTitle("Edit workout")
@@ -58,7 +58,7 @@ struct EditWorkoutSheet: View {
                     } label: {
                         Image(systemName: "plus.circle.fill").foregroundStyle(Theme.accent)
                     }
-                    .disabled(sync.loadError != nil)
+                    .disabled(sync.workoutEditorRefreshNeeded)
                 }
             }
             .toolbarColorScheme(.dark, for: .navigationBar)
@@ -77,13 +77,13 @@ struct EditWorkoutSheet: View {
         .preferredColorScheme(.dark)
     }
 
-    private func refreshError(_ error: String) -> some View {
+    private func refreshError(_ error: String?) -> some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Workout details may be out of date.")
                     .font(Theme.mono(12, .bold))
                     .foregroundStyle(Theme.danger)
-                Text(error)
+                Text(error ?? "Refresh to load the latest workout details.")
                     .font(Theme.mono(11))
                     .foregroundStyle(Theme.muted)
                     .lineLimit(2)
