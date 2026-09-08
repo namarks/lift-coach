@@ -2172,6 +2172,41 @@ describe('discard terminal-state concurrency', () => {
 });
 
 describe('set correction concurrency', () => {
+  it('rejects a delayed guarded correction when another correction wins its revision', async () => {
+    const { userId, planId } = await seedUserAndPlan('guarded-correction-race');
+    const session = await getOrCreateSession(env.DB, userId, planId, '2038-09-10', null);
+    const { set } = await logSet(env.DB, userId, { id: crypto.randomUUID(), session_id: session.id,
+      exercise_id: 'ex_bench', set_index: 1, weight: 185, reps: 5, expected_attempt: 0, source: 'ios' });
+    const paused = databaseWithPausedBatchAfterRead('SELECT sl.*, s.attempt AS session_attempt');
+    const expected = { session_id: session.id, attempt: 0, updated_at: set.updated_at };
+    const delayed = patchSet(paused.db, userId, set.id, { weight: 135, reps: 4 }, expected)
+      .then(() => 'accepted', (error: Error) => error.message);
+    await paused.readReached;
+    await patchSet(env.DB, userId, set.id, { reps: 6 }, expected);
+    paused.releaseBatch();
+    expect(await delayed).toBe('set_correction_conflict');
+    expect(await env.DB.prepare('SELECT weight,reps FROM set_logs WHERE id=?1').bind(set.id).first())
+      .toEqual({ weight: 185, reps: 6 });
+  });
+
+  it('rejects a delayed guarded deletion across discard and restart', async () => {
+    const { userId, planId } = await seedUserAndPlan('guarded-delete-restart');
+    const session = await getOrCreateSession(env.DB, userId, planId, '2038-09-11', null);
+    const { set } = await logSet(env.DB, userId, { id: crypto.randomUUID(), session_id: session.id,
+      exercise_id: 'ex_bench', set_index: 1, weight: 185, reps: 5, expected_attempt: 0, source: 'ios' });
+    const paused = databaseWithPausedBatchAfterRead('SELECT sl.*, s.attempt AS session_attempt');
+    const delayed = patchSet(paused.db, userId, set.id, { deleted: true },
+      { session_id: session.id, attempt: 0, updated_at: set.updated_at })
+      .then(() => 'accepted', (error: Error) => error.message);
+    await paused.readReached;
+    await discardSession(env.DB, userId, session.id, 0);
+    await reviveDiscardedSession(env.DB, userId, session.id, 0, null);
+    paused.releaseBatch();
+    expect(await delayed).toBe('set_correction_conflict');
+    expect(await env.DB.prepare('SELECT status,attempt FROM sessions WHERE id=?1').bind(session.id).first())
+      .toEqual({ status: 'planned', attempt: 1 });
+  });
+
   it('combines disjoint corrections without resurrecting a concurrent delete', async () => {
     const { userId, planId } = await seedUserAndPlan('set-correction-race');
     const session = await getOrCreateSession(
@@ -2227,12 +2262,11 @@ describe('set correction concurrency', () => {
       expected_attempt: 0,
       source: 'ios',
     });
-    const paused = databaseWithPausedRunAfterRead(
+    const paused = databaseWithPausedBatchAfterRead(
       'SELECT sl.*, s.attempt AS session_attempt',
-      "SET status = 'planned'",
     );
     const deletion = patchSet(paused.db, userId, oldSetId, { deleted: true });
-    await paused.runReached;
+    await paused.readReached;
     const newSetId = crypto.randomUUID();
     await logSet(env.DB, userId, {
       id: newSetId,
@@ -2244,7 +2278,7 @@ describe('set correction concurrency', () => {
       expected_attempt: 0,
       source: 'ios',
     });
-    paused.releaseRun();
+    paused.releaseBatch();
     await deletion;
 
     expect(
@@ -2279,12 +2313,11 @@ describe('set correction concurrency', () => {
       expected_attempt: 0,
       source: 'ios',
     });
-    const paused = databaseWithPausedRunAfterRead(
+    const paused = databaseWithPausedBatchAfterRead(
       'SELECT sl.*, s.attempt AS session_attempt',
-      "SET status = 'planned'",
     );
     const deletion = patchSet(paused.db, userId, oldSetId, { deleted: true });
-    await paused.runReached;
+    await paused.readReached;
     await discardSession(env.DB, userId, session.id, 0);
     await reviveDiscardedSession(env.DB, userId, session.id, 0, null);
     const newSetId = crypto.randomUUID();
@@ -2298,7 +2331,7 @@ describe('set correction concurrency', () => {
       expected_attempt: 1,
       source: 'ios',
     });
-    paused.releaseRun();
+    paused.releaseBatch();
     await deletion;
 
     expect(

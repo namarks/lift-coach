@@ -64,6 +64,9 @@ private final class SetWriteAPIStub: SetWriteAPI {
     var logHandler: ((String, SetRequestBody, String) async throws -> APIClient.SetLogResult)?
     var reopenHandler: ((String, String?, Int?, String) async throws -> SessionRow)?
     var deleteHandler: ((String, String) async throws -> Void)?
+    var correctionHandler: ((PendingSetCorrection, String) async throws -> SetCorrectionResult)?
+    var summaryHandler: ((String, String) async throws -> WorkoutSummary)?
+    private(set) var correctionCalls: [PendingSetCorrection] = []
     var stateHandler: ((String) async throws -> StateResponse)?
     var stateWatermarkHandler:
         ((String, StateSyncWatermarks) async throws -> StateResponse)?
@@ -144,6 +147,17 @@ private final class SetWriteAPIStub: SetWriteAPI {
         }
         guard let stateHandler else { throw URLError(.badServerResponse) }
         return try await stateHandler(jwt)
+    }
+
+    func getWorkoutSummary(sessionID: String, jwt: String) async throws -> WorkoutSummary {
+        guard let summaryHandler else { throw URLError(.notConnectedToInternet) }
+        return try await summaryHandler(sessionID, jwt)
+    }
+
+    func correctSet(_ intent: PendingSetCorrection, jwt: String) async throws -> SetCorrectionResult {
+        correctionCalls.append(intent)
+        guard let correctionHandler else { throw URLError(.badServerResponse) }
+        return try await correctionHandler(intent, jwt)
     }
 
     func deleteSet(setId: String, jwt: String) async throws {
@@ -622,7 +636,7 @@ final class SetOutboxTests: XCTestCase {
             set_index: body.set_index,
             weight: body.weight,
             reps: body.reps,
-            rpe: nil,
+            rpe: body.rpe,
             is_warmup: body.is_warmup ? 1 : 0,
             logged_at: body.logged_at,
             duration_s: body.duration_s,
@@ -6719,7 +6733,7 @@ final class SetOutboxTests: XCTestCase {
     func testDelayedSetRemovalRefreshesReplacementAfterSameUserReauth() async {
         let defaults = defaults()
         let ex = exercise()
-        let s = session(status: "in_progress")
+        let s = session(status: "in_progress", updatedAt: 100, attempt: 0)
         let body = SetRequestBody(
             id: fixedUUID.uuidString,
             exercise_id: ex.exercise_id,
@@ -6739,9 +6753,11 @@ final class SetOutboxTests: XCTestCase {
         let entered = SetAsyncLatch()
         let release = SetAsyncLatch()
         let setAPI = SetWriteAPIStub()
-        setAPI.deleteHandler = { _, _ in
+        setAPI.correctionHandler = { [self] _, _ in
             await entered.open()
             await release.wait()
+            return SetCorrectionResult(set: setLog(body: body, sessionID: s.id, deletedAt: 200),
+                                       session: session(status: "planned", updatedAt: 200, attempt: 0))
         }
         setAPI.stateHandler = { [self] _ in
             state(session: s, sets: [], exercise: ex)
@@ -6776,7 +6792,7 @@ final class SetOutboxTests: XCTestCase {
             await Task.yield()
         }
 
-        XCTAssertEqual(setAPI.deleteCalls.map(\.setID), [savedSet.id])
+        XCTAssertEqual(setAPI.correctionCalls.map(\.setID), [savedSet.id])
         XCTAssertTrue(replacement.sets.isEmpty)
         XCTAssertGreaterThanOrEqual(setAPI.stateCalls, 1)
         XCTAssertEqual(old.sets.map(\.id), [savedSet.id])
@@ -9025,7 +9041,7 @@ final class SetOutboxTests: XCTestCase {
             true)
     }
 
-    func testSuccessfulDeleteInvalidatesSnapshotBeforeColdOfflineLaunch() async {
+    func testSuccessfulDeletePersistsTombstoneAndSessionBeforeColdOfflineLaunch() async {
         let defaults = defaults()
         let ex = exercise()
         let active = session(
@@ -9043,7 +9059,10 @@ final class SetOutboxTests: XCTestCase {
             is_timed: false)
         let savedSet = setLog(body: body, sessionID: active.id)
         let api = SetWriteAPIStub()
-        api.deleteHandler = { _, _ in }
+        api.correctionHandler = { [self] _, _ in
+            SetCorrectionResult(set: setLog(body: body, sessionID: active.id, updatedAt: 2_000_000_000_002, deletedAt: 200),
+                                session: session(status: "planned", updatedAt: 200, attempt: 0))
+        }
         let sharedAuth = retainedAuth(defaults: defaults)
         let model = SyncModel(
             auth: sharedAuth, setWriteAPI: api, defaults: defaults,
@@ -9053,20 +9072,21 @@ final class SetOutboxTests: XCTestCase {
 
         await model.removeSet(savedSet)
 
-        XCTAssertEqual(api.deleteCalls.map(\.setID), [savedSet.id])
+        XCTAssertEqual(api.correctionCalls.map(\.setID), [savedSet.id])
         XCTAssertTrue(model.sets.isEmpty)
-        XCTAssertNil(StateSnapshotStore.load(
-            userID: "user-a", defaults: defaults))
+        XCTAssertEqual(StateSnapshotStore.load(
+            userID: "user-a", defaults: defaults)?.state.sets.first?.deleted_at, 200)
 
         let cold = SyncModel(
             auth: sharedAuth, defaults: defaults,
             now: { self.fixedDate })
-        XCTAssertNil(cold.plan)
+        XCTAssertNotNil(cold.plan)
+        XCTAssertEqual(cold.todaySession?.status, "planned")
         XCTAssertTrue(cold.sets.isEmpty)
-        XCTAssertFalse(cold.isUsingCachedState)
+        XCTAssertTrue(cold.isUsingCachedState)
     }
 
-    func testConflictAfterDeleteAdoptsNewAttemptWithoutRecreatingInvalidatedSnapshot() async {
+    func testConflictAfterDeleteAdoptsNewAttemptWithoutResurrectingDeletedSet() async {
         let defaults = defaults()
         let ex = exercise()
         let active = session(
@@ -9084,7 +9104,10 @@ final class SetOutboxTests: XCTestCase {
             is_timed: false)
         let savedSet = setLog(body: deletedBody, sessionID: active.id)
         let api = SetWriteAPIStub()
-        api.deleteHandler = { _, _ in }
+        api.correctionHandler = { [self] _, _ in
+            SetCorrectionResult(set: setLog(body: deletedBody, sessionID: active.id, updatedAt: 2_000_000_000_002, deletedAt: 150),
+                                session: session(status: "planned", updatedAt: 150, attempt: 0))
+        }
         api.logHandler = { [self] _, _, _ in
             let current = session(
                 status: "in_progress", updatedAt: 200, attempt: 1)
@@ -9103,8 +9126,7 @@ final class SetOutboxTests: XCTestCase {
         model.startWorkout()
 
         await model.removeSet(savedSet)
-        XCTAssertNil(StateSnapshotStore.load(
-            userID: "user-a", defaults: defaults))
+        XCTAssertFalse(model.sets.contains { $0.id == savedSet.id })
 
         let acknowledged = await model.logSet(ex, weight: 135, reps: 5)
 
@@ -9116,8 +9138,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertFalse(model.running)
         XCTAssertNil(WorkoutRunnerCheckpointStore.load(
             userID: "user-a", defaults: defaults))
-        XCTAssertNil(StateSnapshotStore.load(
-            userID: "user-a", defaults: defaults))
+        XCTAssertFalse(model.sets.contains { $0.id == savedSet.id })
     }
 
     func testExplicitRestartAttemptWinsOverCachedDiscardWithoutFollowUpPull() async {
@@ -9850,5 +9871,318 @@ final class SetOutboxTests: XCTestCase {
                 userID: "user-a", defaults: defaults)?.state.sessions.first?
                 .day_template_id,
             "day-remapped")
+    }
+}
+
+extension SetOutboxTests {
+    private func correctionFixture(_ ex: TemplateExercise, id: String = "set-correct", weight: Double = 185, sessionID: String = "session-a") -> SetLog {
+        setLog(body: SetRequestBody(id: id, exercise_id: ex.exercise_id, template_exercise_id: ex.id,
+            set_index: 1, weight: weight, reps: 5, is_warmup: ex.isWarmup,
+            logged_at: 2_000_000_000_000, duration_s: ex.isTimed ? 30 : nil, is_timed: ex.isTimed), sessionID: sessionID)
+    }
+
+    private func corrected(_ original: SetLog, intent: PendingSetCorrection, session: SessionRow) -> SetCorrectionResult {
+        SetCorrectionResult(set: SetLog(id: original.id, session_id: original.session_id,
+            exercise_id: original.exercise_id, template_exercise_id: original.template_exercise_id,
+            set_index: original.set_index, weight: intent.values?.weight ?? original.weight,
+            reps: intent.values?.reps ?? original.reps, rpe: intent.values?.rpe,
+            is_warmup: original.is_warmup, logged_at: original.logged_at,
+            duration_s: intent.values?.durationSeconds, is_timed: original.is_timed,
+            deleted_at: intent.isDelete ? 2_000_000_000_002 : nil, updated_at: 2_000_000_000_002), session: session)
+    }
+
+    func testRunnerPrescriptionWinsHistoryAndWarmupHasSeparateComparableContext() {
+        let warmup = exercise(id: "warmup", warmup: true, targetWeight: 45)
+        let working = exercise(targetWeight: 135)
+        let last = session(id: "last", date: "2033-05-16", status: "completed")
+        let old = correctionFixture(working, sessionID: last.id)
+        XCTAssertTrue(RunnerInputPolicy.comparableSets(warmup, sets: [old], sessions: [last],
+            currentSessionID: "session-a", dayExercises: [warmup, working]).isEmpty)
+        XCTAssertEqual(RunnerInputPolicy.seed(warmup, previous: old, draft: nil).weight, 45)
+        XCTAssertEqual(RunnerInputPolicy.seed(working, previous: old, draft: nil).weight, 135)
+        let duplicate = exercise(id: "other")
+        XCTAssertTrue(RunnerInputPolicy.comparableSets(duplicate, sets: [old], sessions: [last],
+            currentSessionID: "session-a", dayExercises: [working, duplicate]).isEmpty)
+        let hold = exercise(id: working.id, timed: true)
+        XCTAssertTrue(RunnerInputPolicy.comparableSets(hold, sets: [old], sessions: [last],
+            currentSessionID: "session-a", dayExercises: [hold]).isEmpty)
+    }
+
+    func testRunnerDraftSurvivesRecoveryButChangedPrescriptionWins() {
+        let ex = exercise(targetWeight: 135)
+        let draft = RunnerInputState(prescription: RunnerPrescription(ex), weight: 140, reps: 7, rpe: 8.5, durationSeconds: 45)
+        XCTAssertEqual(RunnerInputPolicy.seed(ex, previous: nil, draft: draft), draft)
+        let changed = exercise(targetWeight: 115)
+        let next = RunnerInputPolicy.seed(changed, previous: nil, draft: draft)
+        XCTAssertEqual(next.weight, 115)
+        XCTAssertEqual(next.reps, 5)
+        XCTAssertNil(next.rpe)
+    }
+
+    func testRPEAndIntentionalValuesPersistInSetEnvelopeAndCheckpoint() async throws {
+        let defaults = defaults(), ex = exercise(targetWeight: 135)
+        let api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(attempt: 0), sets: [], exercise: ex))
+        model.startWorkout()
+        XCTAssertTrue(model.setRunnerValues(SetCorrectionValues(weight: 140, reps: 7, rpe: 8.5, durationSeconds: nil),
+                                            expected: RunnerPrescription(ex)))
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.input?.weight, 140)
+        await model.logCurrentSet(expected: ex, expectedSetNumber: 1)
+        let intent = try XCTUnwrap(SetOutboxStore.load(userID: "user-a", defaults: defaults).pending.first)
+        XCTAssertEqual(intent.body.prescription, .init(plan_id: "plan-a", version: 1, day_id: "day-a"))
+        XCTAssertEqual(intent.body.rpe, 8.5)
+        XCTAssertEqual(intent.body.scoped(to: 0).rpe, 8.5)
+        let encoded = try JSONEncoder().encode(intent)
+        XCTAssertEqual(try JSONDecoder().decode(PendingSetIntent.self, from: encoded).body, intent.body)
+    }
+
+    func testRejectedDeleteRetainsSetAndRestThenRetryUsesOriginalIdentity() async throws {
+        let defaults = defaults(), ex = exercise()
+        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
+        let api = SetWriteAPIStub()
+        api.correctionHandler = { _, _ in throw APIError.http(403, "rejected") }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [original], exercise: ex))
+        model.startWorkout()
+        let rest = fixedDate.addingTimeInterval(90)
+        model.restEndDate = rest
+        let index = model.exerciseIndex
+        await model.removeSet(original)
+        XCTAssertEqual(model.sets.map(\.id), [original.id])
+        XCTAssertEqual(model.restEndDate, rest)
+        XCTAssertEqual(model.exerciseIndex, index)
+        let failed = try XCTUnwrap(model.setCorrections.first)
+        XCTAssertEqual(failed.deliveryState, .failed)
+        api.correctionHandler = { [self] intent, _ in
+            corrected(original, intent: intent, session: session(status: "planned", updatedAt: 200, attempt: 0))
+        }
+        await model.retryCorrection(id: failed.id)
+        XCTAssertEqual(api.correctionCalls.count, 2)
+        XCTAssertEqual(api.correctionCalls.map(\.expectedUpdatedAt), [original.updated_at, original.updated_at])
+        XCTAssertEqual(api.correctionCalls.map(\.setID), [original.id, original.id])
+        XCTAssertTrue(model.sets.isEmpty)
+        XCTAssertTrue(model.setCorrections.isEmpty)
+        XCTAssertEqual(model.todaySession?.status, "planned")
+        XCTAssertEqual(model.exerciseIndex, index)
+        XCTAssertEqual(model.restEndDate, rest)
+        XCTAssertTrue(api.logCalls.isEmpty)
+    }
+
+    func testOfflineFinalSetCorrectionRecoversFromDurableQueueWithoutDuplicateCreate() async throws {
+        let defaults = defaults(), ex = exercise(targetSets: 1)
+        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
+        let api = SetWriteAPIStub()
+        api.correctionHandler = { _, _ in throw URLError(.notConnectedToInternet) }
+        let sharedAuth = retainedAuth(defaults: defaults)
+        let model = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [original], exercise: ex))
+        model.startWorkout()
+        model.finished = true
+        let values = SetCorrectionValues(weight: 135, reps: 4, rpe: 9, durationSeconds: nil)
+        XCTAssertTrue(model.enqueueCorrection(set: original, values: values))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.finished)
+        XCTAssertEqual(model.sets.first?.weight, 185)
+        let queued = try XCTUnwrap(model.setCorrections.first)
+        api.correctionHandler = { [self] intent, _ in corrected(original, intent: intent, session: active) }
+        // The next model owns the same durable operation and identity.
+        let cold = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        await cold.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(cold.setCorrections.isEmpty)
+        XCTAssertEqual(cold.sets.first?.id, original.id)
+        XCTAssertEqual(cold.sets.first?.weight, 135)
+        XCTAssertEqual(cold.sets.first?.rpe, 9)
+        XCTAssertEqual(api.correctionCalls.last?.id, queued.id)
+        XCTAssertTrue(api.logCalls.isEmpty)
+        XCTAssertEqual(StateSnapshotStore.load(userID: "user-a", defaults: defaults)?.state.sets.first?.weight, 135)
+    }
+
+    func testDelayedCorrectionCannotAcceptSecondLocalEditOrMoveFinalReview() async throws {
+        let defaults = defaults(), ex = exercise(targetSets: 1)
+        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
+        let api = SetWriteAPIStub(), entered = SetAsyncLatch(), release = SetAsyncLatch()
+        api.correctionHandler = { [self] intent, _ in
+            await entered.open(); await release.wait()
+            return corrected(original, intent: intent, session: active)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [original], exercise: ex))
+        model.startWorkout(); model.finished = true
+        model.restEndDate = fixedDate.addingTimeInterval(90)
+        let rest = model.restEndDate
+        let values = SetCorrectionValues(weight: 135, reps: 4, rpe: 9, durationSeconds: nil)
+        XCTAssertTrue(model.enqueueCorrection(set: original, values: values))
+        await entered.wait()
+        XCTAssertFalse(model.enqueueCorrection(set: original, values: nil))
+        XCTAssertEqual(model.sets.first?.weight, 185)
+        await release.open()
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.finished)
+        XCTAssertEqual(model.restEndDate, rest)
+        XCTAssertEqual(api.correctionCalls.count, 1)
+        XCTAssertTrue(model.setCorrections.isEmpty)
+    }
+
+    func testCorrectionAcceptsAcknowledgedSlotDetachmentWithoutRetryingSavedEdit() async {
+        let defaults = defaults(), ex = exercise()
+        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
+        let api = SetWriteAPIStub()
+        api.correctionHandler = { [self] intent, _ in
+            let accepted = corrected(original, intent: intent, session: active)
+            let row = accepted.set
+            return SetCorrectionResult(set: SetLog(id: row.id, session_id: row.session_id,
+                exercise_id: row.exercise_id, template_exercise_id: nil, set_index: row.set_index,
+                weight: row.weight, reps: row.reps, rpe: row.rpe, is_warmup: row.is_warmup,
+                logged_at: row.logged_at, duration_s: row.duration_s, is_timed: row.is_timed,
+                deleted_at: row.deleted_at, updated_at: row.updated_at), session: active)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [original], exercise: ex))
+        model.startWorkout()
+        XCTAssertTrue(model.enqueueCorrection(set: original,
+            values: .init(weight: 135, reps: 4, rpe: 9, durationSeconds: nil)))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.setCorrections.isEmpty)
+        XCTAssertEqual(model.sets.first?.weight, 135)
+        XCTAssertNil(model.sets.first?.template_exercise_id)
+        XCTAssertEqual(api.correctionCalls.count, 1)
+        XCTAssertTrue(api.logCalls.isEmpty)
+    }
+
+    func testQueuedOriginalIsCreatedOnceBeforeItsCorrection() async throws {
+        let defaults = defaults(), ex = exercise(targetSets: 1)
+        let active = session(updatedAt: 100, attempt: 0)
+        let api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [], exercise: ex))
+        model.startWorkout()
+        await model.logCurrentSet(expected: ex, expectedSetNumber: 1)
+        let pending = try XCTUnwrap(model.setOutbox.pending.first)
+        XCTAssertTrue(model.enqueueCorrection(pending: pending, values: .init(weight: 95, reps: 4, rpe: 8, durationSeconds: nil)))
+        var accepted: SetLog?
+        api.logHandler = { [self] _, body, _ in
+            let row = setLog(body: body)
+            accepted = row
+            return APIClient.SetLogResult(set: row, deduped: false, session: active)
+        }
+        api.stateHandler = { [self] _ in state(session: active, sets: accepted.map { [$0] } ?? [], exercise: ex) }
+        api.correctionHandler = { [self] intent, _ in
+            corrected(try XCTUnwrap(accepted), intent: intent, session: active)
+        }
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertTrue(model.setCorrections.isEmpty)
+        XCTAssertEqual(Set(api.logCalls.map { $0.body.id }), [pending.id])
+        XCTAssertEqual(api.correctionCalls.first?.setID, pending.id)
+        XCTAssertEqual(model.sets.first?.weight, 95)
+        XCTAssertEqual(model.sets.first?.rpe, 8)
+    }
+}
+
+extension SetOutboxTests {
+    func testLockScreenRestControlIsBoundToOneTimerAndAccount() async throws {
+        let defaults = defaults(), sharedAuth = retainedAuth(defaults: defaults)
+        let model = SyncModel(auth: sharedAuth, defaults: defaults, now: { self.fixedDate })
+        prepare(model, exercise: exercise(), session: session(attempt: 0), running: true)
+        model.startRest(seconds: 90, name: "Squat")
+        let first = try XCTUnwrap(model.restControlID), original = try XCTUnwrap(model.restEndDate)
+        let extended = await model.controlTimer(id: first, action: "extend")
+        XCTAssertTrue(extended)
+        XCTAssertEqual(model.restEndDate, original.addingTimeInterval(15))
+        model.startRest(seconds: 60, name: "Squat")
+        let stale = await model.controlTimer(id: first, action: "stop")
+        XCTAssertFalse(stale)
+        let current = try XCTUnwrap(model.restControlID)
+        sharedAuth.signOut()
+        let crossedAccount = await model.controlTimer(id: current, action: "extend")
+        XCTAssertFalse(crossedAccount)
+    }
+
+    func testEditedTimedDurationAndRPEReachTheOriginalSetFromLockScreenStop() async throws {
+        let defaults = defaults(), ex = exercise(timed: true)
+        let api = SetWriteAPIStub()
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        var clock = fixedDate
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api, defaults: defaults, now: { clock })
+        model.replaceState(with: state(session: session(attempt: 0), sets: [], exercise: ex))
+        model.startWorkout()
+        model.setHoldDuration(45); model.setRPE(8.5)
+        model.startTimedSet(expected: ex, expectedSetNumber: 1)
+        XCTAssertEqual(model.timedEndDate, fixedDate.addingTimeInterval(45))
+        let token = try XCTUnwrap(model.timedControlID)
+        clock = fixedDate.addingTimeInterval(20)
+        let stopped = await model.controlTimer(id: token, action: "stop")
+        XCTAssertTrue(stopped)
+        let saved = try XCTUnwrap(SetOutboxStore.load(userID: "user-a", defaults: defaults).pending.first)
+        XCTAssertEqual(saved.body.duration_s, 20)
+        XCTAssertEqual(saved.body.rpe, 8.5)
+        let repeated = await model.controlTimer(id: token, action: "stop")
+        XCTAssertFalse(repeated)
+        XCTAssertEqual(SetOutboxStore.load(userID: "user-a", defaults: defaults).count, 1)
+    }
+}
+
+extension SetOutboxTests {
+    private func completionFixture(sessionID: String = "session-a") throws -> WorkoutSummary {
+        let url = try XCTUnwrap(Bundle(for: WorkoutSummaryTests.self).url(forResource: "WorkoutCompletion", withExtension: "json"))
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        object["session_id"] = sessionID; object["date"] = fixedCivilDate
+        return try JSONDecoder().decode(WorkoutSummary.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+
+    func testAcknowledgedCompletionKeepsServerSummaryWhenRefreshIsUnavailable() async throws {
+        let defaults = defaults(), ex = exercise(targetSets: 1), api = SetWriteAPIStub(), terminal = SetTerminalAPIStub()
+        let active = session(updatedAt: 100, attempt: 0)
+        var completed = session(status: "completed", updatedAt: 200, attempt: 0)
+        completed.summary = try completionFixture()
+        terminal.completeHandler = { _, _ in completed }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api, terminalAPI: terminal,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [correctionFixture(ex)], exercise: ex))
+        model.startWorkout(); model.finished = true
+        await model.finishResolvedWorkout()
+        XCTAssertEqual(model.todaySession?.status, "completed")
+        XCTAssertTrue(model.terminalOutbox.intents.isEmpty)
+        XCTAssertEqual(model.completionSummary(for: active.id)?.records.first?.value, 12)
+        await model.loadCompletionSummary(sessionID: active.id)
+        XCTAssertEqual(terminal.completeCalls.count, 1)
+        XCTAssertEqual(model.completionSummary(for: active.id)?.working_sets, 4)
+    }
+
+    func testFailedSummaryFetchNeverRequeuesAcknowledgedCompletion() async {
+        let defaults = defaults(), ex = exercise(targetSets: 1), api = SetWriteAPIStub(), terminal = SetTerminalAPIStub()
+        let active = session(updatedAt: 100, attempt: 0)
+        terminal.completeHandler = { [self] _, _ in session(status: "completed", updatedAt: 200, attempt: 0) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api, terminalAPI: terminal,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [correctionFixture(ex)], exercise: ex))
+        model.startWorkout(); model.finished = true
+        await model.finishResolvedWorkout()
+        await model.loadCompletionSummary(sessionID: active.id)
+        XCTAssertEqual(model.todaySession?.status, "completed")
+        XCTAssertTrue(model.terminalOutbox.intents.isEmpty)
+        XCTAssertNotNil(model.summaryErrors[active.id])
+        XCTAssertEqual(terminal.completeCalls.count, 1)
+    }
+
+    func testDelayedSummaryCannotCrossSessionRestart() async throws {
+        let defaults = defaults(), ex = exercise(), api = SetWriteAPIStub()
+        let entered = SetAsyncLatch(), release = SetAsyncLatch()
+        let oldSummary = try completionFixture()
+        api.summaryHandler = { _, _ in await entered.open(); await release.wait(); return oldSummary }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(status: "completed", attempt: 0), sets: [], exercise: ex))
+        let task = Task { await model.loadCompletionSummary(sessionID: "session-a") }
+        await entered.wait()
+        model.replaceState(with: state(session: session(status: "planned", attempt: 1), sets: [], exercise: ex))
+        await release.open(); await task.value
+        XCTAssertNil(model.completionSummary(for: "session-a"))
     }
 }

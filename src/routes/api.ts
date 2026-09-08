@@ -32,6 +32,7 @@ import {
   getState,
   getUserTimezone,
   getVolume,
+  getWorkoutSummary,
   isGroupMember,
   isAccountDeletionKey,
   leaveGroup,
@@ -834,7 +835,16 @@ apiRoutes.patch('/sessions/:id', async (c) => {
     if (s.error === 'invalid_status') return c.json(s, 400);
     return c.json(s, 409);
   }
+  if (s.status === 'completed') {
+    const summary = await getWorkoutSummary(c.env.DB, c.get('userId'), s.id).catch(() => null);
+    return c.json({ ...s, summary: summary?.attempt === s.attempt && summary.final ? summary : null });
+  }
   return c.json(s);
+});
+
+apiRoutes.get('/sessions/:id/summary', async (c) => {
+  const summary = await getWorkoutSummary(c.env.DB, c.get('userId'), c.req.param('id'));
+  return summary ? c.json(summary) : c.json({ error: 'not_found' }, 404);
 });
 
 // Discard a session — "I didn't really do this." Soft-deletes its sets
@@ -895,6 +905,12 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       duration_s: isNullableNonNegativeInteger,
       is_timed: (value) => typeof value === 'boolean',
       expected_attempt: isNonNegativeInteger,
+      prescription: (value) => {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+        const context = value as Record<string, unknown>;
+        return isNonEmptyString(context.plan_id) && isNonEmptyString(context.day_id)
+          && isPositiveInteger(context.version);
+      },
     },
   );
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
@@ -923,6 +939,7 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
       is_timed: b.is_timed as boolean | undefined,
       expected_attempt: b.expected_attempt as number | undefined,
       claim_attempt_protocol: protocolHeader.declared,
+      prescription: b.prescription as { plan_id: string; version: number; day_id: string } | undefined,
       source: 'ios',
     });
     return c.json(result, result.deduped ? 200 : 201);
@@ -943,7 +960,13 @@ apiRoutes.post('/sessions/:id/sets', async (c) => {
 apiRoutes.patch('/sets/:id', async (c) => {
   const parsed = await readMutationBody(c);
   if (!parsed.ok) return c.json({ error: parsed.error }, 400);
-  const b = parsed.body;
+  const { expected_session_id, expected_attempt, expected_updated_at, ...b } = parsed.body;
+  const guarded = [expected_session_id, expected_attempt, expected_updated_at].some((v) => v !== undefined);
+  if (guarded && (typeof expected_session_id !== 'string' || !expected_session_id
+      || !Number.isSafeInteger(expected_attempt) || (expected_attempt as number) < 0
+      || !Number.isSafeInteger(expected_updated_at) || (expected_updated_at as number) < 0)) {
+    return c.json({ error: 'invalid_correction_identity' }, 400);
+  }
   const allowed = new Set(['weight', 'reps', 'rpe', 'notes', 'duration_s', 'deleted']);
   const invalid = invalidMutationFields(b, {}, {
     weight: isFiniteNumber,
@@ -959,8 +982,19 @@ apiRoutes.patch('/sets/:id', async (c) => {
   invalid.push(...Object.keys(b).filter((field) => !allowed.has(field)));
   if (invalid.length > 0) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
   if (Object.keys(b).length === 0) return c.json({ error: 'no_corrections' }, 400);
-  const row = await patchSet(c.env.DB, c.get('userId'), c.req.param('id'), b);
-  return row ? c.json(row) : c.json({ error: 'not_found' }, 404);
+  try {
+    const row = await patchSet(c.env.DB, c.get('userId'), c.req.param('id'), b, guarded ? {
+      session_id: expected_session_id as string,
+      attempt: expected_attempt as number,
+      updated_at: expected_updated_at as number,
+    } : undefined);
+    return row ? c.json(row) : c.json({ error: 'not_found' }, 404);
+  } catch (error) {
+    if ((error as Error).message === 'set_correction_conflict') {
+      return c.json({ error: 'set_correction_conflict' }, 409);
+    }
+    throw error;
+  }
 });
 
 // ---- read models ---------------------------------------------------------

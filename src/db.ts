@@ -1,5 +1,6 @@
 // Service layer: all D1 access goes through here so REST (now) and MCP
 // (milestone b) share identical behavior. Timestamps are epoch-ms integers.
+import { parseRunnerTargets, summarizeWorkout, type SummaryExercise, type SummarySet, type RunnerTargetSnapshot, type WorkoutSummary } from './workoutSummary';
 import { metricCohorts, estimatedOneRepMax, positiveSetTonnage, type MetricExercise } from './metrics';
 import type {
   ActivityRow,
@@ -54,6 +55,52 @@ import {
 } from './workout-write-fence';
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
+
+/** Snapshot the selected slot's day at the same write boundary as its first
+ * accepted set. In-session overrides can differ from the session's day pin. */
+function runnerTargetSnapshotSQL(dayExpression: string, timestamp: string): string {
+  return `(SELECT json_object('version', 1, 'captured_at', ${timestamp}, 'plan_version', p.version,
+    'slots', json((SELECT json_group_array(json_object(
+      'slot_id', te.id, 'exercise_id', te.exercise_id, 'name', e.name,
+      'is_warmup', te.is_warmup,
+      'is_timed', CASE WHEN e.modality IN ('timed','cardio') OR te.target_duration_s IS NOT NULL THEN 1 ELSE 0 END,
+      'sets', te.target_sets, 'reps', te.target_reps, 'reps_max', te.target_reps_max,
+      'weight', te.target_weight, 'duration_s', te.target_duration_s, 'rpe', te.target_rpe))
+      FROM template_exercises te JOIN exercises e ON e.id=te.exercise_id
+      WHERE te.day_template_id=d.id)))
+    FROM day_templates d JOIN plans p ON p.id=d.plan_id
+    WHERE d.id=${dayExpression} AND p.user_id=sessions.user_id)`;
+}
+
+interface SetPrescriptionContext { plan_id: string; version: number; day_id: string }
+
+/** Offline log intents name an immutable, owner-scoped plan snapshot. Missing
+ * history stays unavailable; never substitute a newer prescription. */
+async function targetsForSetPrescription(
+  db: D1Database, userId: string, context: SetPrescriptionContext, capturedAt: number,
+): Promise<string | null> {
+  const stored = await db.prepare(
+    'SELECT document FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3')
+    .bind(userId, context.plan_id, context.version).first<{ document: string }>();
+  if (!stored) return null;
+  let day;
+  try { day = parsePlanSnapshot(stored.document).days.find((day) => day.id === context.day_id); }
+  catch { return null; }
+  if (!day) return null;
+  const catalog = await getExercises(db) as unknown as SummaryExercise[];
+  const targets: RunnerTargetSnapshot = { version: 1, captured_at: capturedAt,
+    plan_version: context.version, slots: [] };
+  for (const slot of day.exercises) {
+    const exercise = catalog.find((exercise) => exercise.id === slot.exercise_id);
+    if (!exercise) return null;
+    targets.slots.push({ slot_id: slot.id, exercise_id: slot.exercise_id, name: exercise.name,
+      is_warmup: slot.is_warmup, is_timed: ['timed', 'cardio'].includes(exercise.modality)
+        || slot.target_duration_s != null ? 1 : 0,
+      sets: slot.target_sets, reps: slot.target_reps, reps_max: slot.target_reps_max,
+      weight: slot.target_weight, duration_s: slot.target_duration_s, rpe: slot.target_rpe });
+  }
+  return JSON.stringify(targets);
+}
 
 // ---- D1 usage observability ---------------------------------------------
 
@@ -3898,6 +3945,7 @@ export async function getOrCreateSession(
         completed_at: null,
         perceived_fatigue: null,
         notes: null,
+        runner_targets: null,
         updated_at: ts,
         attempt: existing.attempt + 1,
         write_protocol: claimAttemptProtocol
@@ -3909,6 +3957,7 @@ export async function getOrCreateSession(
         db.prepare(
           `UPDATE sessions
               SET day_template_id=?2,
+                  runner_targets=NULL,
                   status=?3,
                   started_at=?4,
                   completed_at=?5,
@@ -4182,6 +4231,7 @@ export async function reviveDiscardedSession(
       `UPDATE sessions
           SET day_template_id = ?2,
               status = 'planned',
+              runner_targets = NULL,
               started_at = NULL,
               completed_at = NULL,
               perceived_fatigue = NULL,
@@ -4501,6 +4551,12 @@ export async function patchSession(
                 WHEN ?2 = 'in_progress' THEN COALESCE(started_at, ?5)
                 ELSE started_at
               END,
+              runner_targets = CASE
+                WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
+                WHEN ?2 = 'completed' AND runner_targets IS NULL AND started_at IS NULL
+                  THEN ${runnerTargetSnapshotSQL('sessions.day_template_id', '?7')}
+                ELSE runner_targets
+              END,
               completed_at = CASE
                 WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
                 WHEN ?2 = 'completed' THEN COALESCE(completed_at, ?6)
@@ -4796,6 +4852,7 @@ export async function logSet(
     /** Capability declaration is separate from generation CAS. MCP supplies
      * an observed attempt but never claims the client protocol. */
     claim_attempt_protocol?: boolean;
+    prescription?: SetPrescriptionContext;
     source: 'ios' | 'mcp';
   },
 ): Promise<{ set: SetLogRow; deduped: boolean; session: SessionRow }> {
@@ -4981,6 +5038,8 @@ export async function logSet(
   // contract: on a slot-unique violation, recompute max+1 and retry rather
   // than letting one writer's set be dropped. ON CONFLICT(id) DO NOTHING
   // still covers a concurrent same-id retry (idempotency).
+  const recordedTargets = input.prescription && targetSession.runner_targets == null
+    ? await targetsForSetPrescription(db, userId, input.prescription, row.logged_at) : null;
   const insertAndStart = () => {
     const ts = now();
     return runWorkoutWriteBatch(db, [
@@ -5012,6 +5071,10 @@ export async function logSet(
         .prepare(
           `UPDATE sessions
               SET status = CASE WHEN status = 'planned' THEN 'in_progress' ELSE status END,
+                  runner_targets = CASE
+                    WHEN runner_targets IS NULL AND started_at IS NULL AND status = 'planned'
+                      THEN CASE WHEN ?8=1 THEN ?9 ELSE ${runnerTargetSnapshotSQL("COALESCE((SELECT day_template_id FROM template_exercises WHERE id=?7), sessions.day_template_id)", '?2')} END
+                    ELSE runner_targets END,
                   started_at = COALESCE(started_at, ?2),
                   updated_at = ?2,
                   write_protocol = CASE
@@ -5035,6 +5098,9 @@ export async function logSet(
           claimAttemptProtocol ? 1 : 0,
           row.id,
           attemptScoped ? 1 : 0,
+          row.template_exercise_id,
+          input.prescription ? 1 : 0,
+          recordedTargets,
         ),
       // Capture both the target generation and the canonical current row at
       // the same linearization point. The latter gives a stable conflict body
@@ -5199,7 +5265,8 @@ export async function patchSet(
     duration_s?: number | null;
     deleted?: boolean;
   },
-): Promise<SetLogRow | null> {
+  expected?: { session_id: string; attempt: number; updated_at: number },
+): Promise<(SetLogRow & { session?: SessionRow }) | null> {
   if (patch.deleted === false) {
     throw new Error('set_undelete_unsupported');
   }
@@ -5214,7 +5281,21 @@ export async function patchSet(
   if (!row) return null;
   const has = (field: keyof typeof patch) =>
     Object.prototype.hasOwnProperty.call(patch, field);
+  const matches = (candidate: SetLogRow) => {
+    if (patch.deleted === true) return candidate.deleted_at != null;
+    if (candidate.deleted_at != null) return false;
+    return (['weight', 'reps', 'rpe', 'notes', 'duration_s'] as const)
+      .every((field) => !has(field) || candidate[field] === patch[field]);
+  };
+  if (expected && (row.session_id !== expected.session_id || row.session_attempt !== expected.attempt
+      || (row.updated_at !== expected.updated_at && !matches(row)))) {
+    throw new Error('set_correction_conflict');
+  }
+  if (expected && row.deleted_at != null && patch.deleted !== true) {
+    throw new Error('set_correction_conflict');
+  }
   const ts = now();
+  const statements: D1PreparedStatement[] = [];
   const deletedAt =
     patch.deleted === undefined
       ? row.deleted_at
@@ -5236,15 +5317,19 @@ export async function patchSet(
   if (has('notes')) assign('notes', patch.notes);
   if (has('duration_s')) assign('duration_s', patch.duration_s);
   if (has('deleted')) assign('deleted_at', deletedAt);
-  if (assignments.length > 0) {
+  if (assignments.length > 0 && (!expected || !matches(row))) {
     values.push(ts);
     assignments.push(`updated_at=MAX(updated_at + 1, ?${values.length})`);
-    await runWorkoutWriteStatement(
-      db,
-      db
-        .prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1`)
-        .bind(...values),
-    );
+    let condition = '';
+    if (expected) {
+      values.push(expected.updated_at, expected.session_id, expected.attempt);
+      condition = ` AND updated_at=?${values.length - 2}
+        AND session_id=?${values.length - 1}
+        AND EXISTS (SELECT 1 FROM sessions WHERE id=set_logs.session_id AND attempt=?${values.length})
+        AND deleted_at IS NULL`;
+    }
+    statements.push(db.prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1${condition}`)
+      .bind(...values));
   }
   // Phantom-session guard. Logging a set promotes a session 'planned' ->
   // 'in_progress' (see logSet). Deleting the LAST live set must do the
@@ -5256,7 +5341,7 @@ export async function patchSet(
   // live->deleted transition (field-only edits never touch
   // status), and only for 'in_progress' (a 'completed' session is NOT
   // auto-un-completed — that's a deliberate terminal state).
-  const isDelete = row.deleted_at === null && deletedAt !== null;
+  const isDelete = patch.deleted === true;
   if (isDelete) {
     // Check both facts at the write's linearization point: this deletion must
     // still belong to the generation we read, and no concurrent writer may
@@ -5264,11 +5349,9 @@ export async function patchSet(
     // false; if this demotion wins first, logSet's ordered batch promotes the
     // same attempt back to in_progress. A discard/restart advances `attempt`,
     // so a stale deletion can never demote the newer workout.
-    await runWorkoutWriteStatement(
-      db,
-      db.prepare(
+    statements.push(db.prepare(
         `UPDATE sessions
-            SET status = 'planned', started_at = NULL, updated_at = ?2
+            SET status = 'planned', started_at = NULL, updated_at = MAX(updated_at + 1, ?2)
           WHERE id = ?1
             AND status = 'in_progress'
             AND attempt = ?3
@@ -5277,18 +5360,25 @@ export async function patchSet(
                WHERE session_id = ?1 AND deleted_at IS NULL
             )`,
       )
-      .bind(row.session_id, ts, row.session_attempt),
-    );
+      .bind(row.session_id, ts, row.session_attempt));
   }
-  // Return a fresh row so the caller sees any disjoint concurrent correction
-  // or delete that committed alongside this field-only update.
-  return db
-    .prepare(
-      `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
-       WHERE sl.id = ?1 AND s.user_id = ?2`,
-    )
-    .bind(setId, userId)
-    .first<SetLogRow>();
+  // Keep deletion and last-set demotion atomic; a lost reply can safely
+  // replay the desired state without reopening or retargeting a workout.
+  if (statements.length) await runWorkoutWriteBatch(db, statements);
+  const fresh = await db.prepare(
+    `SELECT sl.*, s.attempt AS session_attempt FROM set_logs sl
+       JOIN sessions s ON s.id=sl.session_id WHERE sl.id=?1 AND s.user_id=?2`)
+    .bind(setId, userId).first<SetLogRow & { session_attempt: number }>();
+  if (expected && (!fresh || fresh.session_attempt !== expected.attempt || !matches(fresh))) {
+    throw new Error('set_correction_conflict');
+  }
+  if (!fresh) return null;
+  const { session_attempt, ...set } = fresh;
+  if (!expected) return set;
+  const session = await db.prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
+    .bind(set.session_id, userId).first<SessionRow>();
+  if (!session || session.attempt !== expected.attempt) throw new Error('set_correction_conflict');
+  return { ...set, session };
 }
 
 // ---- read models ---------------------------------------------------------
@@ -5508,6 +5598,31 @@ export async function getSessionByDate(
     .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 AND status != 'discarded' ORDER BY created_at LIMIT 1")
     .bind(userId, date)
     .first<SessionRow>();
+}
+
+export async function getWorkoutSummary(
+  db: D1Database, userId: string, sessionId: string,
+): Promise<WorkoutSummary | null> {
+  const owned = `SELECT id FROM sessions WHERE id=?1 AND user_id=?2 AND status!='discarded'`;
+  const [sessionResult, setResult, exerciseResult, previousResult] = await db.batch([
+    db.prepare(`SELECT * FROM sessions WHERE id IN (${owned})`).bind(sessionId, userId),
+    db.prepare(`SELECT * FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL`).bind(sessionId, userId),
+    db.prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
+      SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)`)
+      .bind(sessionId, userId),
+    db.prepare(`SELECT sl.exercise_id,sl.weight,sl.is_timed,MAX(sl.reps) AS reps,
+        MAX(COALESCE(sl.duration_s,sl.reps)) AS duration_s
+      FROM set_logs sl JOIN sessions s ON s.id=sl.session_id
+      WHERE s.user_id=?2 AND s.status='completed' AND sl.deleted_at IS NULL AND sl.is_warmup=0
+        AND s.date < (SELECT date FROM sessions WHERE id IN (${owned}))
+        AND sl.exercise_id IN (SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)
+      GROUP BY sl.exercise_id,sl.weight,sl.is_timed`).bind(sessionId, userId),
+  ]);
+  const session = sessionResult!.results[0] as unknown as SessionRow | undefined;
+  if (!session) return null;
+  return summarizeWorkout(session, setResult!.results as unknown as SummarySet[],
+    previousResult!.results as unknown as SummarySet[], exerciseResult!.results as unknown as SummaryExercise[],
+    parseRunnerTargets(session.runner_targets));
 }
 
 // ---- notes + audit -------------------------------------------------------

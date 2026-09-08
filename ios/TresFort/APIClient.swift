@@ -316,6 +316,17 @@ struct APIClient {
         let _: SetLog = try await patch("api/sets/\(setId)", body: ["deleted": true], jwt: jwt)
     }
 
+    func getWorkoutSummary(sessionID: String, jwt: String) async throws -> WorkoutSummary {
+        try await get("api/sessions/\(sessionID)/summary", jwt: jwt)
+    }
+
+    func correctSet(_ intent: PendingSetCorrection, jwt: String) async throws -> SetCorrectionResult {
+        guard let body = intent.requestBody else {
+            throw APIError.decoding("Correction identity has not been resolved")
+        }
+        return try await patch("api/sets/\(intent.setID)", body: body, jwt: jwt)
+    }
+
     // MARK: - in-app plan editing
     //
     // Add / edit / remove an exercise slot in the active plan's day template.
@@ -692,6 +703,8 @@ protocol SetWriteAPI {
         jwt: String
     ) async throws -> APIClient.SetLogResult
     func deleteSet(setId: String, jwt: String) async throws
+    func correctSet(_ intent: PendingSetCorrection, jwt: String) async throws -> SetCorrectionResult
+    func getWorkoutSummary(sessionID: String, jwt: String) async throws -> WorkoutSummary
     func getState(jwt: String) async throws -> StateResponse
     func getState(
         jwt: String,
@@ -700,6 +713,14 @@ protocol SetWriteAPI {
 }
 
 extension SetWriteAPI {
+    func getWorkoutSummary(sessionID: String, jwt: String) async throws -> WorkoutSummary {
+        throw APIError.decoding("Completion summary is unavailable")
+    }
+
+    func correctSet(_ intent: PendingSetCorrection, jwt: String) async throws -> SetCorrectionResult {
+        throw APIError.decoding("Set correction is unavailable")
+    }
+
     /// Compatibility bridge for focused write-test doubles. Production's
     /// APIClient overrides this requirement and sends every cursor; a legacy
     /// double that only models complete responses can keep implementing

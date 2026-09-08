@@ -8,6 +8,8 @@ struct RestActivityAttributes: ActivityAttributes {
     struct ContentState: Codable, Hashable {
         var endDate: Date     // Text(timerInterval:) counts down to this — no push needed
         var upNext: String
+        var timerKind: String? = nil
+        var controlID: String? = nil
     }
     var exercise: String      // the lift you just finished a set of
 }

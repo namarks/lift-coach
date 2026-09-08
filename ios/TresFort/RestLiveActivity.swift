@@ -6,11 +6,11 @@ import Foundation
 enum RestLiveActivity {
     private static var current: Activity<RestActivityAttributes>?
 
-    static func start(exercise: String, endDate: Date, upNext: String) {
+    static func start(exercise: String, endDate: Date, upNext: String, timerKind: String = "rest", controlID: String? = nil) {
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         endNow()
         let attributes = RestActivityAttributes(exercise: exercise)
-        let state = RestActivityAttributes.ContentState(endDate: endDate, upNext: upNext)
+        let state = RestActivityAttributes.ContentState(endDate: endDate, upNext: upNext, timerKind: timerKind, controlID: controlID)
         current = try? Activity.request(
             attributes: attributes,
             content: .init(state: state, staleDate: endDate.addingTimeInterval(120)))
@@ -18,7 +18,9 @@ enum RestLiveActivity {
 
     static func update(endDate: Date, upNext: String) {
         guard let activity = current else { return }
-        let state = RestActivityAttributes.ContentState(endDate: endDate, upNext: upNext)
+        var state = activity.content.state
+        state.endDate = endDate
+        state.upNext = upNext
         Task { await activity.update(.init(state: state, staleDate: endDate.addingTimeInterval(120))) }
     }
 

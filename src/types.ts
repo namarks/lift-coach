@@ -185,6 +185,7 @@ export interface TemplateExerciseRow {
 }
 
 export interface SessionRow {
+  runner_targets?: string | null;
   id: string;
   user_id: string;
   plan_id: string;

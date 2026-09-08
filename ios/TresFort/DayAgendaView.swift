@@ -331,6 +331,11 @@ struct DayAgendaView: View {
             if !$0.contains($1) { $0.append($1) }
         }
         return VStack(alignment: .leading, spacing: 12) {
+            if let session = realSession, session.status == "completed" {
+                WorkoutSummaryView(sync: sync, sessionID: session.id)
+                    .padding(16).background(Theme.surface)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
             if logged.isEmpty {
                 note("No sets logged.")
             } else {

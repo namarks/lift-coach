@@ -75,6 +75,7 @@ enum AccountLocalState {
     static func clear(userID: String, defaults: UserDefaults = .standard) {
         ActivityOutboxStore.clear(userID: userID, defaults: defaults)
         SetOutboxStore.clear(userID: userID, defaults: defaults)
+        SetCorrectionOutboxStore.clear(userID: userID, defaults: defaults)
         WorkoutTerminalOutboxStore.clear(userID: userID, defaults: defaults)
         WorkoutWriteRetryDeadlineStore.clear(
             userID: userID, defaults: defaults)

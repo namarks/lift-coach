@@ -189,12 +189,15 @@ Two model corrections that the workout library exposed:
 
 ## Dependencies
 
+[Completed Gym Runner Depth](../completed/gym-runner-depth/plan.md) supplies
+the shared prescription controls, durable corrections and runner presentation.
+Reuse that delivered path when changing the runner.
+
 P1 additional-session authoring preserves the completed [atomic prescription writer](../completed/prescription-integrity/decisions.md). During the owner-approved P0 rename rollout, update the [released snapshot serializer](../completed/reversible-plan-management/decisions.md) consistently with the agreed `workouts`/`workout_id` names.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | gated_by | external:owner-workout-rename-rollout | The existing Next step requires acceptance of the compatibility window and three-release rename rollout; encode it rather than leave it only in prose. |
-| P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the Today runner surface; share the slice, do not fork the runner. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step

@@ -138,17 +138,20 @@ workout is sequenced inside the runner.
 
 ## Dependencies
 
+[Completed Gym Runner Depth](../completed/gym-runner-depth/plan.md) supplies
+the shared prescription controls, durable corrections and runner presentation.
+Reuse that delivered path when changing the runner.
+
 P0 uses the completed [validated atomic writer](../completed/prescription-integrity/decisions.md). Extend the [canonical snapshot serializer](../completed/reversible-plan-management/decisions.md) to include `group_id` so restoration preserves grouping.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | coordinates_with | plan:workouts-and-multi-session#P0 | Both add or rename columns on the same plan-tree tables; whichever lands second rebases onto the other's migration and serializer. |
-| P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's exercise flow and correction path; share the slice rather than fork the runner. |
 | P2 | coordinates_with | plan:workout-library#P0 | Both edit the routine and slot editors; do not run concurrently on the same iOS files. |
 
 ## Next step
 
-**Now (@owner):** Decide the priority of P0 relative to `gym-runner-depth#P0`.
+**Now (@owner):** Decide whether to activate P0 after the completed runner foundation.
 P0 is backend and MCP only, so Claude can author supersets before the runner
 change ships; until P1 lands, iOS receives the compatibility view (group
 columns omitted, round rest on every member), which is safe but not useful on

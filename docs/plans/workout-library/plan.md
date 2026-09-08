@@ -174,19 +174,22 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Dependencies
 
+[Completed Gym Runner Depth](../completed/gym-runner-depth/plan.md) supplies
+the shared prescription controls, durable corrections and runner presentation.
+Reuse that delivered path when changing the runner.
+
 P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer](../completed/prescription-integrity/decisions.md), including prescription creation and session reassignment. Extend [canonical snapshots](../completed/reversible-plan-management/decisions.md) to retain `tags` and `archived_at`.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `day_templates` columns and serializers; whichever lands second rebases onto the other's migration. |
-| P2 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's exercise list and value entry; share the runner slice rather than fork it. |
 | P2 | feeds | plan:coaching-feedback-loop | Freestyle sessions and save-as-workout give the coach evidence of what a member actually does when the plan breaks. |
 
 ## Next step
 
-**Now (@owner):** Decide whether P0 enters the backlog ahead of
-`gym-runner-depth#P0`. P0 is iOS copy, navigation, and one calendar gesture
+**Now (@owner):** Decide whether to activate P0 next. P0 is iOS copy,
+navigation, and one calendar gesture
 over existing endpoints; it can ship in one slice with no migration.
 
 ## Notes / open questions

@@ -1947,3 +1947,77 @@ describe('PATCH /api/me/integrations/intervals', () => {
     expect(r.status).toBe(400);
   });
 });
+
+describe('attempt and revision scoped runner corrections', () => {
+  async function fixture() {
+    const jwt = await devJwt();
+    const headers = auth(jwt);
+    await SELF.fetch(`${BASE}/api/plan`, { method: 'POST', headers, body: JSON.stringify({ name: 'Runner' }) });
+    const sessionResponse = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST', headers, body: JSON.stringify({ date: '2038-09-08' }),
+    });
+    expect(sessionResponse.status).toBe(201);
+    const session = await sessionResponse.json<any>();
+    const created = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ id: crypto.randomUUID(), exercise_id: 'ex_bench', set_index: 1,
+        weight: 185, reps: 5, rpe: 8, expected_attempt: session.attempt }),
+    });
+    expect(created.status).toBe(201);
+    const { set } = await created.json<any>();
+    const identity = { expected_session_id: session.id, expected_attempt: session.attempt, expected_updated_at: set.updated_at };
+    const patch = (body: object) => SELF.fetch(`${BASE}/api/sets/${set.id}`, {
+      method: 'PATCH', headers, body: JSON.stringify(body),
+    });
+    return { session, set, identity, patch, headers };
+  }
+
+  it('corrects the original record, echoes its session, and dedupes a lost-ACK retry', async () => {
+    const { session, set, identity, patch, headers } = await fixture();
+    const body = { ...identity, weight: 135, reps: 4, rpe: 9, duration_s: null };
+    const response = await patch(body);
+    expect(response.status).toBe(200);
+    const corrected = await response.json<any>();
+    expect(corrected).toMatchObject({ id: set.id, session_id: session.id, weight: 135, reps: 4, rpe: 9,
+      logged_at: set.logged_at, set_index: 1, session: { id: session.id, status: 'in_progress', attempt: session.attempt } });
+    expect(corrected.updated_at).toBeGreaterThan(set.updated_at);
+    const retry = await patch(body);
+    expect(retry.status).toBe(200);
+    expect((await retry.json<any>()).updated_at).toBe(corrected.updated_at);
+    const history = await SELF.fetch(`${BASE}/api/state`, { headers });
+    const records = (await history.json<any>()).sets.filter((row: any) => row.id === set.id);
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ weight: 135, reps: 4, rpe: 9 });
+  });
+
+  it('rejects stale revision/session/attempt without overwriting a newer correction', async () => {
+    const { set, identity, patch } = await fixture();
+    expect((await patch({ ...identity, expected_session_id: 'another-session', reps: 6 })).status).toBe(409);
+    expect((await patch({ ...identity, expected_attempt: identity.expected_attempt + 1, reps: 6 })).status).toBe(409);
+    expect((await patch({ ...identity, reps: 6 })).status).toBe(200);
+    expect((await patch({ ...identity, weight: 95, reps: 4 })).status).toBe(409);
+    expect(await env.DB.prepare('SELECT weight,reps FROM set_logs WHERE id=?1').bind(set.id).first())
+      .toEqual({ weight: 185, reps: 6 });
+  });
+
+  it('clears optional RPE and rejects incomplete correction identity', async () => {
+    const { identity, patch } = await fixture();
+    expect((await patch({ expected_attempt: identity.expected_attempt, reps: 6 })).status).toBe(400);
+    const response = await patch({ ...identity, rpe: null });
+    expect(response.status).toBe(200);
+    expect((await response.json<any>()).rpe).toBeNull();
+  });
+
+  it('repeats deletion safely and returns the persisted last-set demotion', async () => {
+    const { identity, patch } = await fixture();
+    const response = await patch({ ...identity, deleted: true });
+    expect(response.status).toBe(200);
+    const deleted = await response.json<any>();
+    expect(deleted.deleted_at).not.toBeNull();
+    expect(deleted.session.status).toBe('planned');
+    const retry = await patch({ ...identity, deleted: true });
+    expect(retry.status).toBe(200);
+    expect((await retry.json<any>()).updated_at).toBe(deleted.updated_at);
+    expect((await patch({ ...identity, reps: 5 })).status).toBe(409);
+  });
+});

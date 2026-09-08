@@ -99,8 +99,6 @@ can understand and safely change.
 Let a person create and execute a workout confidently, whether or not they use
 AI coaching.
 
-- [Gym runner depth](gym-runner-depth/plan.md) — **planned**; improve the
-  in-workout reference, correction, loading, timer, and completion experience.
 - [Member activation and adherence](member-activation-and-adherence/plan.md) —
   **planned**; make onboarding, coach connection, invite continuation, and
   lightweight reminders coherent.
@@ -123,6 +121,11 @@ AI coaching.
 retained as completed repository history: holds/catalog, signed load,
 variation replacement and comparable metrics are delivered. Worker/app release
 requires separate owner authority.
+
+[Gym runner depth](completed/gym-runner-depth/plan.md) is retained as completed
+repository history: prescription fidelity, durable set corrections, loading
+and timing aids, and persisted completion feedback are delivered. Migration,
+Worker deployment and iOS distribution require separate owner authority.
 
 ### Connected training (`connected-training`)
 

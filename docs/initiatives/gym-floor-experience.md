@@ -12,7 +12,6 @@ the next scheduled session.
 ## Scope
 
 - plan:member-activation-and-adherence
-- plan:gym-runner-depth
 - plan:workout-library#P0
 - plan:supersets-and-circuits
 - plan:app-quality-and-maintainability#P0
@@ -20,6 +19,11 @@ the next scheduled session.
 - plan:app-quality-and-maintainability#P2
 
 ## Priority policy
+
+[Completed Gym Runner Depth](../plans/completed/gym-runner-depth/plan.md)
+provides prescription fidelity, durable corrections, bounded loading/timing
+aids and the persisted completion summary. Its production/app release remains
+separate from repository delivery.
 
 [Completed bodyweight support](../plans/completed/bodyweight-training-support/plan.md)
 provides the comparable-metrics repository foundation. Its Worker/app release
