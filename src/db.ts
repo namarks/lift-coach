@@ -6556,7 +6556,6 @@ export async function swapExercise(
   if (invalid) return invalid;
   // A replacement always preserves the saved prescription and slot identity.
   // Historical logs retain their original exercise_id and values.
-  if (slot.exercise_id === destination.id) return slot;
   const ts = now();
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [

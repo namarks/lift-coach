@@ -192,5 +192,14 @@ describe('exercise replacement', () => {
     const list = await handleMcp({ jsonrpc: '2.0', id: 2, method: 'tools/list' }, env as Env, f.userId);
     const tools = (list.json as { result: { tools: Array<{ name: string; inputSchema: { properties: object } }> } }).result.tools;
     expect(tools.find((tool) => tool.name === 'swap_exercise')!.inputSchema.properties).not.toHaveProperty('carry_targets');
+    // Retain the established MCP audit contract even when the caller selects
+    // the same movement; do not add an unaudited early-success path.
+    await handleMcp({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: {
+      name: 'swap_exercise', arguments: { day: 'A', from_exercise: 'L-sit', to_exercise: 'L-sit' },
+    } }, env as Env, f.userId);
+    const repeated = await footprint(f.userId);
+    expect(repeated.plan!.version).toBe(after.plan!.version + 1);
+    expect(repeated.counts).toEqual({ audits: after.counts!.audits + 1,
+      notes: after.counts!.notes + 1, snapshots: after.counts!.snapshots + 1 });
   });
 });
