@@ -355,7 +355,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_history: {
     description:
-      'Get set history for one exercise (by name or id, e.g. "bench"). Loaded rep work reports its top set and Epley est-1RM; bodyweight work reports best and total reps; timed work reports the best hold. est_1rm and tonnage are null when the underlying set has no positive external load.',
+      'Get set history for one exercise (by name or id, e.g. "bench"). Compare reps and holds only within the returned cohorts (same exercise/variation, execution mode and exact external load). Mixed bodyweight/hold conditions have no overall top set. Bodyweight est_1rm is always null, including positive added load; Epley is only for conventional loaded rep work. Pooled total reps describe work, not strength progress. Nullable tonnage measures positive external-load volume only, never bodyweight system load.',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'Exercise name, alias, or id' },
@@ -373,7 +373,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_volume_trend: {
     description:
-      'Get weekly hard-set count and positive-load tonnage for a muscle group (e.g. "chest","quads","back") over a range. Tonnage is null when a bucket contains only strict-bodyweight, assisted, or timed work; negative assistance never subtracts from it.',
+      'Get weekly hard-set count and positive external-load volume (tonnage_basis=external_load) for a muscle group (e.g. "chest","quads","back") over a range. Tonnage is null when a bucket contains only strict-bodyweight, assisted, or timed work; negative assistance never subtracts from it.',
     inputSchema: obj(
       {
         muscle_group: { type: 'string' },
@@ -481,8 +481,9 @@ const TOOLS: Record<string, Tool> = {
       'external load relative to bodyweight: positive for a belt/vest, zero ' +
       'for strict bodyweight, and negative for band or machine assistance. ' +
       'Do not substitute the athlete\'s body mass. Zero, assisted, and timed ' +
-      'sets have undefined tonnage; rep totals or hold duration are their ' +
-      'progress metrics.',
+      'sets have undefined tonnage. Positive tonnage is external-load volume only. ' +
+      'Compare best reps or holds only at the same exercise, mode and exact load; ' +
+      'pooled rep totals describe work, not strength progress. Bodyweight e1RM is unsupported.',
     inputSchema: obj(
       {
         exercise: { type: 'string', description: 'name, alias, or id' },
@@ -606,7 +607,8 @@ const TOOLS: Record<string, Tool> = {
         effective: {
           sides,
           implements: implementsUsed,
-          total_reps: set.reps * sides,
+          total_reps: set.is_timed === 1 ? null : set.reps * sides,
+          tonnage_basis: 'external_load',
           tonnage:
             set.is_timed === 0 && set.weight > 0
               ? set.weight * set.reps * sides * implementsUsed

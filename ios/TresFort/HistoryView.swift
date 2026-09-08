@@ -87,41 +87,25 @@ private struct ExerciseHistoryList: View {
     }
 
     private func row(_ id: String) -> some View {
-        let hist = sync.history(for: id)
-        let last = hist.last
-        let bodyweight = sync.isBodyweightExercise(id)
-        return HStack {
-            VStack(alignment: .leading, spacing: 4) {
+        let last = sync.history(for: id).last
+        return HStack(spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(sync.exerciseName(id).uppercased())
                     .font(Theme.display(20)).foregroundStyle(Theme.text)
                 if let last {
-                    let summary = bodyweight && last.totalReps > 0
-                        ? "\(last.topReps) best · \(last.totalReps) total reps"
-                        : (last.bestHoldSeconds.map { "\($0)s best hold" }
-                            ?? "\(fmtW(last.topWeight))×\(last.topReps)")
-                    Text("\(summary) · \(last.setCount) sets · \(last.date)")
-                        .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                    ForEach(Array(last.cohorts.prefix(2))) { cohort in
+                        Text(cohort.valueLabel)
+                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                    }
+                    if last.cohorts.count > 2 {
+                        Text("+\(last.cohorts.count - 2) more load/mode combinations")
+                            .font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                    }
+                    Text("\(last.setCount) sets · \(last.date)")
+                        .font(Theme.mono(10)).foregroundStyle(Theme.dim)
                 }
             }
             Spacer()
-            if let last {
-                VStack(alignment: .trailing, spacing: 2) {
-                    if let estimate = last.est1RM {
-                        Text("\(Int(estimate))").font(Theme.mono(18, .bold))
-                            .foregroundStyle(Theme.accent)
-                        Text("est 1RM").font(Theme.mono(9)).foregroundStyle(Theme.dim)
-                    } else if let hold = last.bestHoldSeconds,
-                              !bodyweight || last.totalReps == 0 {
-                        Text("\(hold)s").font(Theme.mono(18, .bold))
-                            .foregroundStyle(Theme.accent)
-                        Text("best hold").font(Theme.mono(9)).foregroundStyle(Theme.dim)
-                    } else if bodyweight && last.totalReps > 0 {
-                        Text("\(last.topReps)").font(Theme.mono(18, .bold))
-                            .foregroundStyle(Theme.accent)
-                        Text("best reps").font(Theme.mono(9)).foregroundStyle(Theme.dim)
-                    }
-                }
-            }
             Image(systemName: "chevron.right").font(.caption).foregroundStyle(Theme.dim)
         }
         .padding(16)
@@ -133,72 +117,68 @@ private struct ExerciseDetailView: View {
     @ObservedObject var sync: SyncModel
     let exerciseID: String
 
+    private struct Point: Identifiable {
+        let id: String
+        let date: String
+        let cohort: ExerciseMetricCohort
+        var value: Double { Double(cohort.bestHoldSeconds ?? cohort.bestReps ?? 0) }
+    }
+    private struct Comparison: Identifiable {
+        let points: [Point]
+        var id: ExerciseMetricCohort.Key { points[0].cohort.key }
+    }
+
+    private func comparisons(_ history: [SyncModel.SessionStat]) -> [Comparison] {
+        let points = history.flatMap { session in
+            session.cohorts.map { Point(id: session.id, date: session.date, cohort: $0) }
+        }
+        return Dictionary(grouping: points, by: { $0.cohort.key }).values
+            .map { Comparison(points: $0.sorted { $0.date < $1.date }) }
+            .sorted {
+                let a = $0.id, b = $1.id
+                return a.timed == b.timed ? a.weight < b.weight : !a.timed
+            }
+    }
+
     var body: some View {
         let hist = sync.history(for: exerciseID)
-        let bodyweight = sync.isBodyweightExercise(exerciseID)
-        let repHistory = bodyweight ? hist.filter { $0.bestReps != nil } : []
-        let bodyweightReps = !repHistory.isEmpty
         let estimated = hist.filter { $0.est1RM != nil }
-        let durationHist = sync.durationHistory(for: exerciseID)
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if bodyweightReps, let best = repHistory.compactMap(\.bestReps).max() {
-                    HStack {
-                        stat("BEST REPS", "\(best)")
-                        Spacer()
-                        stat("SESSIONS", "\(hist.count)")
-                        Spacer()
-                        stat("LAST TOTAL", repHistory.last.map { "\($0.totalReps)" } ?? "—")
-                    }
-                    chartCard("TOTAL REPS", repHistory) { Double($0.totalReps) }
-                } else if let best = hist.compactMap(\.bestHoldSeconds).max() {
-                    HStack {
-                        stat("BEST HOLD", "\(best)s")
-                        Spacer()
-                        stat("SESSIONS", "\(hist.count)")
-                        Spacer()
-                        stat("LAST", hist.last?.bestHoldSeconds.map { "\($0)s" } ?? "—")
-                    }
-                } else if let best = estimated.compactMap(\.est1RM).max() {
-                    HStack {
-                        stat("BEST e1RM", "\(Int(best))")
-                        Spacer()
-                        stat("SESSIONS", "\(hist.count)")
-                        Spacer()
-                        stat("LAST", hist.last.map { "\(fmtW($0.topWeight))×\($0.topReps)" } ?? "—")
-                    }
-                }
-
                 if !estimated.isEmpty {
-                    chartCard("ESTIMATED 1RM", estimated) { $0.est1RM ?? 0 }
-                }
-
-                // Key duration history on the logged set, not catalog
-                // modality: any movement can be prescribed as a hold, while
-                // old rep sets may still carry incidental wall-clock values.
-                if !durationHist.isEmpty {
-                    chartCard("AVG SET DURATION (s)", durationHist) {
-                        Double($0.avgDuration)
-                    }
-                }
-
-                if let last = hist.last {
                     VStack(alignment: .leading, spacing: 10) {
-                        Text("LAST SESSION · \(last.date)")
-                            .font(Theme.mono(10, .bold)).tracking(2)
-                            .foregroundStyle(Theme.muted)
-                        ForEach(lastSessionSets(last.id)) { s in
-                            HStack {
-                                Text(s.valueLabel(
-                                    timed: sync.isTimedSet(s),
-                                    bodyweight: sync.isBodyweightExercise(exerciseID)))
-                                    .font(Theme.mono(14)).foregroundStyle(Theme.text)
-                                Spacer()
+                        Text("ESTIMATED 1RM").font(Theme.mono(10, .bold))
+                        Chart(estimated) { session in
+                            LineMark(x: .value("Date", session.date),
+                                     y: .value("Estimated 1RM", session.est1RM ?? 0))
+                            PointMark(x: .value("Date", session.date),
+                                      y: .value("Estimated 1RM", session.est1RM ?? 0))
+                        }.frame(height: 180)
+                    }.foregroundStyle(Theme.accent)
+                }
+                Text("Compare the same movement, load and rep or hold mode. Total reps describe work logged.")
+                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                ForEach(comparisons(hist)) { comparison in
+                    comparisonCard(comparison.points)
+                }
+                ForEach(hist.reversed()) { session in
+                    DisclosureGroup("SESSION · \(session.date) · \(session.setCount) sets") {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if session.totalReps > 0 {
+                                Text("\(session.totalReps) total reps · work logged")
                             }
-                            .padding(.vertical, 8)
-                            .overlay(alignment: .bottom) { Divider().overlay(Theme.surface2) }
+                            if let volume = session.volume {
+                                Text("\(fmtW(volume)) lb external-load volume")
+                            }
+                            ForEach(sessionSets(session.id)) { set in
+                                Text(set.valueLabel(timed: sync.isTimedSet(set),
+                                    bodyweight: sync.isBodyweightExercise(exerciseID)))
+                            }
                         }
+                        .font(Theme.mono(12)).foregroundStyle(Theme.text)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 8)
                     }
+                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                 }
             }
             .padding(20)
@@ -210,39 +190,31 @@ private struct ExerciseDetailView: View {
         .preferredColorScheme(.dark)
     }
 
-    private func lastSessionSets(_ sid: String) -> [SetLog] {
-        sync.sets
-            .filter { $0.session_id == sid && $0.exercise_id == exerciseID
-                && $0.is_warmup == 0 && $0.deleted_at == nil }
-            .sorted { $0.set_index < $1.set_index }
-    }
-
-    private func stat(_ label: String, _ value: String) -> some View {
-        VStack(spacing: 4) {
-            Text(value).font(Theme.mono(20, .bold)).foregroundStyle(Theme.accent)
-            Text(label).font(Theme.mono(9)).tracking(1).foregroundStyle(Theme.dim)
-        }
-    }
-
-    private func chartCard(_ title: String, _ hist: [SyncModel.SessionStat],
-                           _ y: @escaping (SyncModel.SessionStat) -> Double) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(title).font(Theme.mono(10, .bold)).tracking(2).foregroundStyle(Theme.muted)
-            Chart(hist) { s in
-                LineMark(x: .value("Date", s.date), y: .value(title, y(s)))
+    private func comparisonCard(_ points: [Point]) -> some View {
+        let cohort = points[0].cohort
+        let metric = cohort.key.timed ? "BEST HOLD (s)" : "BEST REPS"
+        return VStack(alignment: .leading, spacing: 10) {
+            Text(cohort.conditionLabel).font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
+            Text(metric + (cohort.key.laterality == "unilateral" ? " · PER SIDE" : ""))
+                .font(Theme.mono(10)).foregroundStyle(Theme.muted)
+            Text("Best \(Int(points.map(\.value).max() ?? 0)) · Last \(Int(points.last?.value ?? 0))")
+                .font(Theme.mono(12)).foregroundStyle(Theme.accent)
+            Chart(points) { point in
+                LineMark(x: .value("Date", point.date), y: .value(metric, point.value))
                     .foregroundStyle(Theme.accent)
-                    .interpolationMethod(.catmullRom)
-                PointMark(x: .value("Date", s.date), y: .value(title, y(s)))
+                PointMark(x: .value("Date", point.date), y: .value(metric, point.value))
                     .foregroundStyle(Theme.accent)
             }
-            .chartXAxis { AxisMarks { _ in AxisGridLine().foregroundStyle(Theme.surface2) } }
-            .chartYAxis {
-                AxisMarks { AxisGridLine().foregroundStyle(Theme.surface2)
-                    AxisValueLabel().foregroundStyle(Theme.muted) }
-            }
-            .frame(height: 180)
+            .chartYAxis { AxisMarks { AxisValueLabel().foregroundStyle(Theme.muted) } }
+            .frame(height: 140)
         }
         .padding(16)
         .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func sessionSets(_ sid: String) -> [SetLog] {
+        sync.sets.filter { $0.session_id == sid && $0.exercise_id == exerciseID
+            && $0.is_warmup == 0 && $0.deleted_at == nil }
+            .sorted { $0.set_index < $1.set_index }
     }
 }

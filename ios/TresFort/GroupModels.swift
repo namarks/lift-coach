@@ -214,6 +214,8 @@ struct FeedSessionItem: Codable, Identifiable, Equatable {
         let duration_sec: Int?
         let set_count: Int
         let top_sets: [TopSet]
+        var cohort_top_sets: [TopSet]? = nil
+        var displayTopSets: [TopSet] { cohort_top_sets ?? top_sets }
     }
 
     struct TopSet: Codable, Equatable {
@@ -225,11 +227,16 @@ struct FeedSessionItem: Codable, Identifiable, Equatable {
         let duration_s: Int?
         let is_timed: Bool?
         let est_1rm: Double?
+        var cohort_key: String? = nil
+        var laterality: String? = nil
+        var load_mode: String? = nil
 
         /// The wire keeps zero as a legacy sentinel so installed clients with
         /// a required Double continue decoding the feed during rollout.
         var estimatedOneRepMax: Double? {
-            guard is_timed != true, let est_1rm, est_1rm > 0 else { return nil }
+            guard is_timed != true, weight > 0,
+                  ["barbell", "dumbbell", "machine"].contains(modality ?? ""),
+                  let est_1rm, est_1rm > 0 else { return nil }
             return est_1rm
         }
 
@@ -240,6 +247,9 @@ struct FeedSessionItem: Codable, Identifiable, Equatable {
                 durationSeconds: duration_s,
                 timed: is_timed == true,
                 bodyweight: modality == "bw")
+                + (is_timed == true && weight == 0 && ["bw", "timed"].contains(modality ?? "") ? " · BW" : "")
+                + (load_mode == "per_hand" ? " · each hand" : "")
+                + (laterality == "unilateral" ? " · per side" : "")
         }
     }
 }

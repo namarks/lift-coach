@@ -69,7 +69,6 @@ P1 reuses the completed [shared snapshot/history projection](../completed/revers
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P2 | blocked_by | plan:bodyweight-training-support#P3 | Coaching metrics must use the corrected comparability policy. |
 | P2 | coordinates_with | plan:activity-integration-integrity#P0 | Identity/civil-date fixes and unknown-load labels need consistent source context. |
 
 ## Next step
@@ -78,6 +77,11 @@ P1 reuses the completed [shared snapshot/history projection](../completed/revers
 executable backlog; it does not require the later change-history work to start.
 
 ## Notes / open questions
+
+- [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
+  supplies variation replacement and comparable metrics. Reuse the shared
+  `BodyweightProgress.json` contract for bodyweight PR/hold claims; this is a
+  delivered repository foundation, not an unresolved dependency.
 
 - The [September app review](../../reviews/2026-09-app-review/report.md)
   found that current compact strings omit timed/load semantics and session

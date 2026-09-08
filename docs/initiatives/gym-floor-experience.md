@@ -11,7 +11,6 @@ the next scheduled session.
 
 ## Scope
 
-- plan:bodyweight-training-support
 - plan:member-activation-and-adherence
 - plan:gym-runner-depth
 - plan:workout-library#P0
@@ -21,6 +20,10 @@ the next scheduled session.
 - plan:app-quality-and-maintainability#P2
 
 ## Priority policy
+
+[Completed bodyweight support](../plans/completed/bodyweight-training-support/plan.md)
+provides the comparable-metrics repository foundation. Its Worker/app release
+remains separate from repository completion.
 
 1. Treat completed manual authoring as the shared foundation; prioritize the
    remaining entry, bodyweight-progression, runner, and adherence gaps by their

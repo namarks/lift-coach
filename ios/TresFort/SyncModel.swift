@@ -2151,8 +2151,13 @@ final class SyncModel: ObservableObject {
         }
     }
 
+    func metricCohorts(for sets: [SetLog]) -> [ExerciseMetricCohort] {
+        ExerciseMetrics.cohorts(sets, catalog: catalog)
+    }
+
     func bestHoldSeconds(for sets: [SetLog]) -> Int? {
-        sets.filter(isTimedSet).map { $0.duration_s ?? $0.reps }.max()
+        let holds = metricCohorts(for: sets).filter { $0.key.timed }
+        return holds.count == 1 ? holds[0].bestHoldSeconds : nil
     }
 
     /// Effective positive-load tonnage represented by one rep set. Strict
@@ -2209,9 +2214,8 @@ final class SyncModel: ObservableObject {
         let bestHoldSeconds: Int?
         let hasTimedSets: Bool
         let avgDuration: Int
+        let cohorts: [ExerciseMetricCohort]
     }
-
-    private func epley(_ w: Double, _ r: Int) -> Double { w * (1 + Double(r) / 30) }
 
     /// Exercise ids that have any logged set, most-recent first.
     var loggedExerciseIDs: [String] {
@@ -2231,41 +2235,27 @@ final class SyncModel: ObservableObject {
             guard let date = dateBySession[sid], !rows.isEmpty else { return nil }
             let timedRows = rows.filter(isTimedSet)
             let repRows = rows.filter { !isTimedSet($0) }
-            let top: SetLog
-            if bodyweight, let first = repRows.first {
-                top = repRows.dropFirst().reduce(first) { best, row in
-                    row.reps > best.reps
-                        || (row.reps == best.reps && row.weight > best.weight)
-                        ? row : best
-                }
-            } else if repRows.isEmpty, let first = timedRows.first {
-                top = timedRows.dropFirst().reduce(first) { best, row in
-                    (row.duration_s ?? row.reps) > (best.duration_s ?? best.reps)
-                        ? row : best
-                }
-            } else {
-                top = repRows.max {
-                    epley($0.weight, $0.reps) < epley($1.weight, $1.reps)
-                } ?? rows[0]
-            }
-            let timedDurations = timedRows.map { $0.duration_s ?? $0.reps }
+            let cohorts = metricCohorts(for: rows)
+            let repCohorts = cohorts.filter { !$0.key.timed }
+            let holdCohorts = cohorts.filter { $0.key.timed }
+            let estimated = cohorts.compactMap(\.estimatedOneRepMax).max()
+            // These legacy top fields are only descriptive; UI comparisons use
+            // the keyed cohorts so a different assistance level cannot win.
+            let top = cohorts.max {
+                ($0.estimatedOneRepMax ?? 0) < ($1.estimatedOneRepMax ?? 0)
+            }?.top ?? rows[0]
+            let durations = timedRows.map { $0.duration_s ?? $0.reps }
             return SessionStat(
-                id: sid, date: date,
-                est1RM: !isTimedSet(top) && top.weight > 0
-                    ? epley(top.weight, top.reps).rounded()
-                    : nil,
+                id: sid, date: date, est1RM: estimated,
                 topWeight: top.weight, topReps: top.reps,
-                bestReps: bodyweight && !repRows.isEmpty
-                    ? repRows.map(\.reps).max()
-                    : nil,
-                totalReps: totalReps(for: repRows),
-                volume: totalTonnage(for: repRows),
+                bestReps: bodyweight && repCohorts.count == 1 ? repCohorts[0].bestReps : nil,
+                totalReps: totalReps(for: repRows), volume: totalTonnage(for: repRows),
                 setCount: rows.count,
-                bestHoldSeconds: timedDurations.max(),
+                bestHoldSeconds: holdCohorts.count == 1 ? holdCohorts[0].bestHoldSeconds : nil,
                 hasTimedSets: !timedRows.isEmpty,
-                avgDuration: timedDurations.isEmpty
-                    ? 0
-                    : timedDurations.reduce(0, +) / timedDurations.count)
+                avgDuration: holdCohorts.count == 1 && !durations.isEmpty
+                    ? durations.reduce(0, +) / durations.count : 0,
+                cohorts: cohorts)
         }
         .sorted { $0.date < $1.date }
     }

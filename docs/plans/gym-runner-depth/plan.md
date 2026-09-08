@@ -58,7 +58,6 @@ P0 carries the completed [prescription and recurring-adjustment contract](../com
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P2 | blocked_by | plan:bodyweight-training-support#P3 | New bodyweight PR claims must use the corrected comparability policy. |
 | P2 | feeds | plan:coaching-feedback-loop#P2 | The persisted completion summary provides context for coaching; it does not block runner delivery. |
 
 ## Next step
@@ -69,6 +68,11 @@ reliability phase to finish.
 
 ## Notes / open questions
 
+- [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
+  supplies variation replacement and comparable metrics. Reuse the shared
+  `BodyweightProgress.json` contract for bodyweight PR/hold claims; this is a
+  delivered repository foundation, not an unresolved dependency.
+
 - The [September app review](../../reviews/2026-09-app-review/report.md)
   confirmed prescription seeding and missing failure presentation in source.
   Accessibility and fixture walkthroughs have a cross-app owner in
@@ -78,9 +82,8 @@ reliability phase to finish.
   automatic programming are outside this plan.
 - Added-load and assistance controls for bodyweight exercises and rep-based
   history belong to
-  [Bodyweight training support](../bodyweight-training-support/plan.md); P1
-  here stays barbell loading aids. That plan coordinates with P0 on the
-  runner's value-entry controls.
+  [Bodyweight training support](../completed/bodyweight-training-support/plan.md); P1
+  here stays barbell loading aids. P0 reuses the delivered value-entry controls.
 - Reuse the durable set-intent, checkpoint, and recovery boundary completed in
   [Workout Write Reliability](../completed/workout-write-reliability/plan.md);
   it is historical foundation rather than an unresolved dependency.

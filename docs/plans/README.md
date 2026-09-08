@@ -118,11 +118,11 @@ AI coaching.
   let adjacent slots form a group the runner performs in rotation with rest
   only after the round, authored by the member or Claude, without changing
   how sets log or roll up.
-- [Bodyweight training support](bodyweight-training-support/plan.md) —
-  **active**; holds/catalog, signed-load support, and in-app variation swaps
-  are delivered in the repository. P3 corrects comparisons across
-  assistance/load conditions and unsupported e1RM claims; the P2 endpoint
-  and iOS picker await a separately authorized release.
+
+[Bodyweight training support](completed/bodyweight-training-support/plan.md) is
+retained as completed repository history: holds/catalog, signed load,
+variation replacement and comparable metrics are delivered. Worker/app release
+requires separate owner authority.
 
 ### Connected training (`connected-training`)
 

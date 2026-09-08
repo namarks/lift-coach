@@ -144,7 +144,6 @@ P0 uses the completed [validated atomic writer](../completed/prescription-integr
 |---|---|---|---|
 | P0 | coordinates_with | plan:workouts-and-multi-session#P0 | Both add or rename columns on the same plan-tree tables; whichever lands second rebases onto the other's migration and serializer. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's exercise flow and correction path; share the slice rather than fork the runner. |
-| P1 | coordinates_with | plan:bodyweight-training-support#P1 | Both touch the runner's value-entry controls; serialize the shared surface. |
 | P2 | coordinates_with | plan:workout-library#P0 | Both edit the routine and slot editors; do not run concurrently on the same iOS files. |
 
 ## Next step
@@ -156,6 +155,11 @@ columns omitted, round rest on every member), which is safe but not useful on
 the gym floor.
 
 ## Notes / open questions
+
+- [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
+  supplies variation replacement and comparable metrics. Reuse the shared
+  `BodyweightProgress.json` contract for bodyweight PR/hold claims; this is a
+  delivered repository foundation, not an unresolved dependency.
 
 - Source: owner observation (2026-09-06) while authoring a plan manually: no
   way to stack exercises so a rotation replaces the rest between sets, e.g.

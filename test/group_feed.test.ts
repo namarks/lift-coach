@@ -556,8 +556,9 @@ describe('group feed: top-set semantics', () => {
     });
     expect(r.status).toBe(200);
     const body = await r.json<any>();
-    const topSets = body.items[0].session.top_sets;
-    expect(topSets).toHaveLength(2);
+    const topSets = body.items[0].session.cohort_top_sets;
+    expect(body.items[0].session.top_sets).toEqual([]);
+    expect(topSets).toHaveLength(5);
     expect(topSets.find((set: any) => set.exercise === 'Pull-Up')).toMatchObject({
       weight: -30,
       reps: 12,
@@ -566,7 +567,7 @@ describe('group feed: top-set semantics', () => {
       is_timed: false,
       est_1rm: 0,
     });
-    expect(topSets.find((set: any) => set.exercise === 'Plank')).toMatchObject({
+    expect(topSets.find((set: any) => set.exercise === 'Plank' && set.weight === 0)).toMatchObject({
       weight: 0,
       reps: 60,
       modality: 'timed',

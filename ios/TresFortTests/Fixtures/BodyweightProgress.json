@@ -1,0 +1,482 @@
+[
+  {
+    "name": "reps",
+    "catalog": [
+      {
+        "id": "fixture_reps",
+        "name": "reps",
+        "primary_muscle": "fixture_reps",
+        "modality": "bw",
+        "unit": "lb",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "demo_slug": null
+      }
+    ],
+    "sets": [
+      {
+        "id": "reps_0",
+        "session_id": "reps",
+        "exercise_id": "fixture_reps",
+        "template_exercise_id": null,
+        "set_index": 1,
+        "weight": 0,
+        "reps": 8,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800000,
+        "duration_s": null,
+        "is_timed": 0,
+        "deleted_at": null
+      },
+      {
+        "id": "reps_1",
+        "session_id": "reps",
+        "exercise_id": "fixture_reps",
+        "template_exercise_id": null,
+        "set_index": 2,
+        "weight": -60,
+        "reps": 15,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800001,
+        "duration_s": null,
+        "is_timed": 0,
+        "deleted_at": null
+      },
+      {
+        "id": "reps_2",
+        "session_id": "reps",
+        "exercise_id": "fixture_reps",
+        "template_exercise_id": null,
+        "set_index": 3,
+        "weight": -30,
+        "reps": 10,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800002,
+        "duration_s": null,
+        "is_timed": 0,
+        "deleted_at": null
+      },
+      {
+        "id": "reps_3",
+        "session_id": "reps",
+        "exercise_id": "fixture_reps",
+        "template_exercise_id": null,
+        "set_index": 4,
+        "weight": 0,
+        "reps": 999,
+        "rpe": null,
+        "is_warmup": 1,
+        "logged_at": 1788220800003,
+        "duration_s": null,
+        "is_timed": 0,
+        "deleted_at": null
+      },
+      {
+        "id": "reps_4",
+        "session_id": "reps",
+        "exercise_id": "fixture_reps",
+        "template_exercise_id": null,
+        "set_index": 5,
+        "weight": 0,
+        "reps": 888,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800004,
+        "duration_s": null,
+        "is_timed": 0,
+        "deleted_at": 1788220800100
+      }
+    ],
+    "expected_cohorts": [
+      {
+        "weight": 0,
+        "is_timed": false,
+        "best_reps": 8,
+        "best_duration_s": null,
+        "est_1rm": null,
+        "tonnage": null,
+        "value_label": "Strict BW \u00b7 8 reps",
+        "feed_label": "BW \u00d7 8"
+      },
+      {
+        "weight": -60,
+        "is_timed": false,
+        "best_reps": 15,
+        "best_duration_s": null,
+        "est_1rm": null,
+        "tonnage": null,
+        "value_label": "BW\u221260 lb assist \u00b7 15 reps",
+        "feed_label": "BW\u221260 \u00d7 15"
+      },
+      {
+        "weight": -30,
+        "is_timed": false,
+        "best_reps": 10,
+        "best_duration_s": null,
+        "est_1rm": null,
+        "tonnage": null,
+        "value_label": "BW\u221230 lb assist \u00b7 10 reps",
+        "feed_label": "BW\u221230 \u00d7 10"
+      }
+    ],
+    "expected_tonnage": null
+  },
+  {
+    "name": "added",
+    "catalog": [
+      {
+        "id": "fixture_added",
+        "name": "added",
+        "primary_muscle": "fixture_added",
+        "modality": "bw",
+        "unit": "lb",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "demo_slug": null
+      }
+    ],
+    "sets": [
+      {
+        "id": "added_0",
+        "session_id": "added",
+        "exercise_id": "fixture_added",
+        "template_exercise_id": null,
+        "set_index": 1,
+        "weight": 10,
+        "reps": 5,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800000,
+        "duration_s": null,
+        "is_timed": 0,
+        "deleted_at": null
+      }
+    ],
+    "expected_cohorts": [
+      {
+        "weight": 10,
+        "is_timed": false,
+        "best_reps": 5,
+        "best_duration_s": null,
+        "est_1rm": null,
+        "tonnage": 50,
+        "value_label": "BW+10 lb \u00b7 5 reps",
+        "feed_label": "BW+10 \u00d7 5"
+      }
+    ],
+    "expected_tonnage": 50
+  },
+  {
+    "name": "holds",
+    "catalog": [
+      {
+        "id": "fixture_holds",
+        "name": "holds",
+        "primary_muscle": "fixture_holds",
+        "modality": "timed",
+        "unit": "sec",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "demo_slug": null
+      }
+    ],
+    "sets": [
+      {
+        "id": "holds_0",
+        "session_id": "holds",
+        "exercise_id": "fixture_holds",
+        "template_exercise_id": null,
+        "set_index": 1,
+        "weight": 0,
+        "reps": 45,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800000,
+        "duration_s": 45,
+        "is_timed": 1,
+        "deleted_at": null
+      },
+      {
+        "id": "holds_1",
+        "session_id": "holds",
+        "exercise_id": "fixture_holds",
+        "template_exercise_id": null,
+        "set_index": 2,
+        "weight": 0,
+        "reps": 60,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800001,
+        "duration_s": null,
+        "is_timed": 1,
+        "deleted_at": null
+      },
+      {
+        "id": "holds_2",
+        "session_id": "holds",
+        "exercise_id": "fixture_holds",
+        "template_exercise_id": null,
+        "set_index": 3,
+        "weight": 20,
+        "reps": 30,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800002,
+        "duration_s": 30,
+        "is_timed": 1,
+        "deleted_at": null
+      },
+      {
+        "id": "holds_3",
+        "session_id": "holds",
+        "exercise_id": "fixture_holds",
+        "template_exercise_id": null,
+        "set_index": 4,
+        "weight": -20,
+        "reps": 90,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800003,
+        "duration_s": 90,
+        "is_timed": 1,
+        "deleted_at": null
+      }
+    ],
+    "expected_cohorts": [
+      {
+        "weight": 0,
+        "is_timed": true,
+        "best_reps": null,
+        "best_duration_s": 60,
+        "est_1rm": null,
+        "tonnage": null,
+        "value_label": "Strict BW \u00b7 60s",
+        "feed_label": "60s \u00b7 BW"
+      },
+      {
+        "weight": 20,
+        "is_timed": true,
+        "best_reps": null,
+        "best_duration_s": 30,
+        "est_1rm": null,
+        "tonnage": null,
+        "value_label": "BW+20 lb \u00b7 30s",
+        "feed_label": "30s \u00b7 +20 lb"
+      },
+      {
+        "weight": -20,
+        "is_timed": true,
+        "best_reps": null,
+        "best_duration_s": 90,
+        "est_1rm": null,
+        "tonnage": null,
+        "value_label": "BW\u221220 lb assist \u00b7 90s",
+        "feed_label": "90s \u00b7 20 lb assist"
+      }
+    ],
+    "expected_tonnage": null
+  },
+  {
+    "name": "sides",
+    "catalog": [
+      {
+        "id": "fixture_sides",
+        "name": "sides",
+        "primary_muscle": "fixture_sides",
+        "modality": "dumbbell",
+        "unit": "lb",
+        "laterality": "unilateral",
+        "load_mode": "per_hand",
+        "demo_slug": null
+      }
+    ],
+    "sets": [
+      {
+        "id": "sides_0",
+        "session_id": "sides",
+        "exercise_id": "fixture_sides",
+        "template_exercise_id": null,
+        "set_index": 1,
+        "weight": 45,
+        "reps": 8,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800000,
+        "duration_s": null,
+        "is_timed": 0,
+        "deleted_at": null
+      }
+    ],
+    "expected_cohorts": [
+      {
+        "weight": 45,
+        "is_timed": false,
+        "best_reps": 8,
+        "best_duration_s": null,
+        "est_1rm": 57,
+        "tonnage": 1440,
+        "value_label": "45 lb each hand \u00b7 8 reps per side",
+        "feed_label": "45 \u00d7 8 \u00b7 each hand \u00b7 per side"
+      }
+    ],
+    "expected_tonnage": 1440
+  },
+  {
+    "name": "mixed",
+    "catalog": [
+      {
+        "id": "fixture_mixed",
+        "name": "mixed",
+        "primary_muscle": "fixture_mixed",
+        "modality": "bw",
+        "unit": "lb",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "demo_slug": null
+      }
+    ],
+    "sets": [
+      {
+        "id": "mixed_0",
+        "session_id": "mixed",
+        "exercise_id": "fixture_mixed",
+        "template_exercise_id": null,
+        "set_index": 1,
+        "weight": 0,
+        "reps": 8,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800000,
+        "duration_s": 99,
+        "is_timed": 0,
+        "deleted_at": null
+      },
+      {
+        "id": "mixed_1",
+        "session_id": "mixed",
+        "exercise_id": "fixture_mixed",
+        "template_exercise_id": null,
+        "set_index": 2,
+        "weight": 0,
+        "reps": 45,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800001,
+        "duration_s": null,
+        "is_timed": 1,
+        "deleted_at": null
+      },
+      {
+        "id": "mixed_2",
+        "session_id": "mixed",
+        "exercise_id": "fixture_mixed",
+        "template_exercise_id": null,
+        "set_index": 3,
+        "weight": 10,
+        "reps": 20,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800002,
+        "duration_s": 20,
+        "is_timed": 1,
+        "deleted_at": null
+      }
+    ],
+    "expected_cohorts": [
+      {
+        "weight": 0,
+        "is_timed": false,
+        "best_reps": 8,
+        "best_duration_s": null,
+        "est_1rm": null,
+        "tonnage": null,
+        "value_label": "Strict BW \u00b7 8 reps",
+        "feed_label": "BW \u00d7 8"
+      },
+      {
+        "weight": 0,
+        "is_timed": true,
+        "best_reps": null,
+        "best_duration_s": 45,
+        "est_1rm": null,
+        "tonnage": null,
+        "value_label": "Strict BW \u00b7 45s",
+        "feed_label": "45s \u00b7 BW"
+      },
+      {
+        "weight": 10,
+        "is_timed": true,
+        "best_reps": null,
+        "best_duration_s": 20,
+        "est_1rm": null,
+        "tonnage": null,
+        "value_label": "BW+10 lb \u00b7 20s",
+        "feed_label": "20s \u00b7 +10 lb"
+      }
+    ],
+    "expected_tonnage": null
+  },
+  {
+    "name": "conventional",
+    "catalog": [
+      {
+        "id": "fixture_conventional",
+        "name": "conventional",
+        "primary_muscle": "fixture_conventional",
+        "modality": "barbell",
+        "unit": "lb",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "demo_slug": null
+      }
+    ],
+    "sets": [
+      {
+        "id": "conventional_0",
+        "session_id": "conventional",
+        "exercise_id": "fixture_conventional",
+        "template_exercise_id": null,
+        "set_index": 1,
+        "weight": 100,
+        "reps": 8,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800000,
+        "duration_s": null,
+        "is_timed": 0,
+        "deleted_at": null
+      },
+      {
+        "id": "conventional_1",
+        "session_id": "conventional",
+        "exercise_id": "fixture_conventional",
+        "template_exercise_id": null,
+        "set_index": 2,
+        "weight": 100,
+        "reps": 5,
+        "rpe": null,
+        "is_warmup": 0,
+        "logged_at": 1788220800001,
+        "duration_s": null,
+        "is_timed": 0,
+        "deleted_at": null
+      }
+    ],
+    "expected_cohorts": [
+      {
+        "weight": 100,
+        "is_timed": false,
+        "best_reps": 8,
+        "best_duration_s": null,
+        "est_1rm": 126.7,
+        "tonnage": 1300,
+        "value_label": "100 lb \u00b7 8 reps",
+        "feed_label": "100 \u00d7 8"
+      }
+    ],
+    "expected_tonnage": 1300
+  }
+]

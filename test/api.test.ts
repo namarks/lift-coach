@@ -344,13 +344,13 @@ describe('sessions, idempotent set logging, history, volume', () => {
     ).json<any>();
     expect(pullups.by_session).toHaveLength(1);
     expect(pullups.by_session[0]).toMatchObject({
-      metric: 'reps',
-      best_reps: 12,
+      metric: 'mixed',
+      best_reps: null,
       total_reps: 25,
       best_duration_s: null,
       est_1rm: null,
       tonnage: 225,
-      top: { weight: -30, reps: 12 },
+      top: null,
     });
 
     const holds = await (
@@ -358,13 +358,13 @@ describe('sessions, idempotent set logging, history, volume', () => {
     ).json<any>();
     expect(holds.by_session).toHaveLength(1);
     expect(holds.by_session[0]).toMatchObject({
-      metric: 'duration',
+      metric: 'mixed',
       best_reps: null,
       total_reps: null,
-      best_duration_s: 60,
+      best_duration_s: null,
       est_1rm: null,
       tonnage: null,
-      top: { duration_s: 60, reps: 60, is_timed: 1 },
+      top: null,
     });
 
     const back = await (

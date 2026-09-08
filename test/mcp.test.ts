@@ -173,10 +173,10 @@ describe('mcp tools list', () => {
       .toMatch(/negative = assistance/i);
 
     const history = body.result.tools.find((t: any) => t.name === 'get_history');
-    expect(history.description).toMatch(/best and total reps/i);
-    expect(history.description).toMatch(/best hold/i);
+    expect(history.description).toMatch(/same exercise\/variation, execution mode and exact external load/i);
+    expect(history.description).toMatch(/Bodyweight est_1rm is always null/i);
     const volume = body.result.tools.find((t: any) => t.name === 'get_volume_trend');
-    expect(volume.description).toMatch(/positive-load tonnage/i);
+    expect(volume.description).toMatch(/positive external-load volume/i);
   });
 });
 
