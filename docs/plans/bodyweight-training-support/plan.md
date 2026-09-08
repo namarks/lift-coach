@@ -96,8 +96,8 @@ gymnastic-strength movements.
   - Record the swap in the same audit trail and version bump as other plan
     edits so Claude can see that the member advanced a progression.
   - Validate carried targets for the destination modality and reuse the shared
-    prescription writer. Coordinate with prescription-integrity P0/P1 so the
-    REST exposure does not entrench malformed values or a non-atomic swap.
+    prescription writer. Reuse the completed prescription-integrity contract
+    so REST exposure retains validation and atomic swap semantics.
   - Completion evidence (2026-09-07): exact-slot REST replacement requires the
     observed plan version, validates carried targets, and commits the swap,
     version, audit, and snapshot through the shared writer. iOS provides a
@@ -132,9 +132,10 @@ gymnastic-strength movements.
 
 ## Dependencies
 
+P2 reuses the completed [prescription validation and atomic writer](../completed/prescription-integrity/decisions.md) for carried targets and swap exposure.
+
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P2 | blocked_by | plan:prescription-integrity#P1 | Exposing swap must not entrench invalid carried targets or a non-atomic writer; reuse the repaired boundary. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's value-entry controls; serialize the shared surface. |
 | P1 | feeds | plan:coaching-feedback-loop#P2 | Rep-based and hold-based history gives the coach usable bodyweight progress signals; it does not block coaching work. |
 

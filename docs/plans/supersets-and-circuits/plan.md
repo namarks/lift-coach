@@ -138,11 +138,11 @@ workout is sequenced inside the runner.
 
 ## Dependencies
 
+P0 uses the completed [validated atomic writer](../completed/prescription-integrity/decisions.md). Extend the [canonical snapshot serializer](../completed/reversible-plan-management/decisions.md) to include `group_id` so restoration preserves grouping.
+
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | blocked_by | plan:prescription-integrity#P1 | Group invariants cannot rely on existing slot writers that can lose concurrent edits or partially commit. |
 | P0 | coordinates_with | plan:workouts-and-multi-session#P0 | Both add or rename columns on the same plan-tree tables; whichever lands second rebases onto the other's migration and serializer. |
-| P0 | coordinates_with | plan:reversible-plan-management#P0 | Snapshots must serialize `group_id` or a revert silently ungroups a workout. |
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's exercise flow and correction path; share the slice rather than fork the runner. |
 | P1 | coordinates_with | plan:bodyweight-training-support#P1 | Both touch the runner's value-entry controls; serialize the shared surface. |
 | P2 | coordinates_with | plan:workout-library#P0 | Both edit the routine and slot editors; do not run concurrently on the same iOS files. |

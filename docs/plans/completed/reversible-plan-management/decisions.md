@@ -80,13 +80,13 @@ safe rollback proof. Do not delete snapshots or invalidate grants as a rollback
 shortcut. Nick approved coach inactivity/absolute lifetimes and the existing-
 connection transition; production deployment and one-time clock activation
 remain owner release actions. After activation, recovery must also enforce the
-approved deadlines. Follow the [shared service release procedure](../completed/coach-access-integrity/release.md).
+approved deadlines. Follow the [shared service release procedure](../coach-access-integrity/release.md).
 
 ## 2026-09-07: service released; app and restore canary pending
 
 Nick approved the exact reviewed service source `2e67f93` and migrations through
 `0042`. They were applied and deployed, with independent source/schema
-verification recorded in the [shared release evidence](../completed/coach-access-integrity/decisions.md).
+verification recorded in the [shared release evidence](../coach-access-integrity/decisions.md).
 Health and discovery succeeded; authenticated history remains unexercised because
 an existing client was unavailable. No production plan edit or restore occurred.
 TestFlight and a concrete edit/restore canary remain separate owner decisions.
@@ -274,3 +274,89 @@ generic activity deletion, explicit new-plan lifecycle, and some session
 metadata/restart actions in MCP. These are follow-up scope candidates, not
 additional changes in this correction. Account security, provider credentials,
 HealthKit consent, and infrastructure operations are separate authority domains.
+
+## 2026-09-07: approved coach discard capability released
+
+The owner approved production release of exact merged source
+`4cf2eb307e64dee319603f3da12b4242a7b597d0`, tree
+`37072c1a5293e8a20f8f39c765b84d3e438c17f7`, from
+[PR #145](https://github.com/namarks/tres-fort/pull/145). Independent local Sol
+review passed on the exact PR head `2f2d6c0`; the fetched merge contained that
+head with an identical tree. Required [PR CI](https://github.com/namarks/tres-fort/actions/runs/34180221714)
+passed all 53 suites and 734 tests, and [integration CI](https://github.com/namarks/tres-fort/actions/runs/34180548315)
+passed on the merged source. An exact-lock install and annotated deployment
+dry-run passed before publication.
+
+A single annotated deployment succeeded at `2026-09-08T02:46:17.374991Z`.
+Independent control-plane reads confirmed deployment
+`9b3b3566-0315-4414-944d-d6a8d8cc885d` serving version
+`fbb66a22-9a38-41d3-88e8-9119d5f909c2` at 100%, with the exact approved source
+and tree annotation. Health and OAuth protected-resource discovery returned
+HTTP 200 with their expected content. Direct D1 reads confirmed migrations
+through `0042`, no pending migrations, and the unchanged lifecycle activation
+epoch `1788825997000`; query metadata reported `changed_db=false`, `changes=0`,
+and `rows_written=0`.
+
+This release adds the coach wrapper to the existing discard service. It changes
+no schema, credentials, policy activation, or iOS binary. The preceding Worker
+`58d830ac-6a1f-4bf7-adeb-8b19c6bcba94` remains the compatible rollback source;
+rollback would remove the new coach tool while retaining snapshots and active
+grant-lifetime enforcement. Deployment alone does not establish the authorized
+workout discard or the remaining accepted-edit and app-restore checks.
+
+The existing authenticated Claude conversation initially did not discover the
+new tool. Reloading the page and searching again exposed its required
+`session_id` and `expected_attempt` schema without reconnecting OAuth. Fresh
+connector and independently scoped D1 reads agreed on the exact authorized
+historical session and current attempt. One `discard_workout` call returned
+`ok: true` with the canonical discarded session; it was not retried.
+
+Independent post-write reads confirmed the requested terminal transition, the
+expected soft-deletion of its logged set, unchanged attempt and legacy protocol,
+exactly one service-owned `discard_session` audit, and no duplicate dispatcher
+audit. The owner's restore-blocking session count reached zero. Plan version
+and snapshot count were unchanged, as were the scoped unrelated session/set
+count and timestamp fingerprints. The verification SELECT reported
+`changed_db=false`, `changes=0`, and `rows_written=0`. This establishes the
+authorized discard; it does not yet establish a successful plan restoration.
+
+## 2026-09-07: coordinated coach edit and app restore verified
+
+Fresh authenticated reads pinned the current plan, original baseline snapshot,
+selected slot and exact comparison. The existing app test edit was the only
+baseline difference. One temporary cue-only coach edit then succeeded. A fresh
+comparison showed only that cue change; independent D1 reads confirmed exactly
+one version increment, MCP-authored snapshot, successful mutation audit bound
+to the resulting plan/version, and Claude-authored plan note.
+
+Through iPhone Mirroring, the owner-installed TestFlight build 32 displayed
+the MCP edit, earlier iOS edit and original baseline together in Routine history.
+Before restoration, the app comparison showed precisely the approved original
+test edit and temporary cue. Restoring the reviewed baseline succeeded as a new
+version with iOS attribution and reason `Restored from Routine history`.
+Fresh coach reads showed the complete shared history and an empty comparison
+against the original baseline. Independently, the restored canonical snapshot
+document matched that baseline byte-for-byte, covering plan metadata, ordered
+days, slots and prescriptions. A single restore snapshot, version-bound iOS
+audit and Nick-authored plan note were added; the earlier Claude note remained.
+No active-workout blocker remained. Verification SELECTs reported
+`changed_db=false`, `changes=0`, and `rows_written=0`.
+
+The invalid-prescription and stale-restore rejection probes recorded above had
+already passed without a successful mutation or attribution change. They were
+not repeated: the later release added only the coach discard wrapper. These
+observations complement the deterministic concurrency and rollback tests; they
+do not claim to reproduce every race in production or assess every legacy row.
+The bounded legacy-assessment caveats remain in the
+[prescription evidence](../prescription-integrity/decisions.md), and the
+completed [coach-access evidence](../coach-access-integrity/decisions.md)
+retains the separate grant-lineage and lifetime-activation proof.
+
+For app persistence, the assistant dismissed history and the editor, returned
+to Today, tapped Refresh, then reopened the editor and Routine history. The
+restored version remained visible. Reopening the affected workout also showed
+the original rest target. A later ScreenCaptureKit error prevented reopening
+the deeper slot editor; the empty cue was independently reconfirmed through
+fresh authenticated coach reads and canonical snapshot equality. No further
+write was issued. This completes the approved canary, with installation of
+build 32 established by the owner's report and earlier device evidence.

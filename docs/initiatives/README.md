@@ -42,3 +42,7 @@ Scope entries are exact node references; do not use ranges or prose selectors.
 Initiative order breaks safe scheduling ties but cannot make blocked work ready.
 An initiative grants no implementation, publication, merge, deployment,
 production, or external-closeout authority by itself.
+
+Verified completed initiatives live under `completed/` and are excluded from
+the current graph. [Training Data Trust](completed/training-data-trust.md)
+retains its delivered workstreams and release/verification evidence.

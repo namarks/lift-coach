@@ -174,12 +174,11 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Dependencies
 
+P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer](../completed/prescription-integrity/decisions.md), including prescription creation and session reassignment. Extend [canonical snapshots](../completed/reversible-plan-management/decisions.md) to retain `tags` and `archived_at`.
+
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P1 | blocked_by | plan:prescription-integrity#P1 | New authoring metadata must share validated atomic mutation/version/audit semantics. |
-| P2 | blocked_by | plan:prescription-integrity#P1 | Save-as-workout creates a prescription and session reassignment at a proven commit boundary. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
-| P1 | coordinates_with | plan:reversible-plan-management#P0 | Snapshots must serialize `tags` and `archived_at`; land whichever ships second against the other's serializer. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `day_templates` columns and serializers; whichever lands second rebases onto the other's migration. |
 | P2 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's exercise list and value entry; share the runner slice rather than fork it. |
 | P2 | feeds | plan:coaching-feedback-loop | Freestyle sessions and save-as-workout give the coach evidence of what a member actually does when the plan breaks. |

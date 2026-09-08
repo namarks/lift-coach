@@ -86,21 +86,6 @@ Plans marked **active** are current execution frontiers. Other current plans
 show their exact **gated**, **paused**, or **planned** state and are not eligible
 until their named authority, evidence, or activation condition is satisfied.
 
-### Training trust (`training-trust`)
-
-Make every workout and plan mutation authorized, validated, durable, and
-recoverable before adding product depth.
-
-- [Reversible plan management](reversible-plan-management/plan.md) —
-  **gated**; build 32 installed and app save/history verified; the authorized
-  restore checks need the MCP discard capability to resolve an old active workout.
-- [Prescription integrity](prescription-integrity/plan.md) — **gated**;
-  service live; bounded aggregate checks passed, with the validation/attribution canary pending.
-
-[Coach access integrity](completed/coach-access-integrity/plan.md) is retained as
-completed history after verified production activation and successful client
-reads before and after the transition.
-
 ### Coaching (`coaching`)
 
 Close the feedback loop between what an athlete experiences and what the coach
@@ -169,6 +154,16 @@ and repeatable iOS checks complete that foundation. Library P0 remains a small
 independent presentation improvement; storage/wire rename, multiple sessions
 and engagement features follow their existing decisions and demonstrated need.
 This order does not activate planned work or replace canonical phase readiness.
+
+## Completed foundations
+
+[Training Data Trust](../initiatives/completed/training-data-trust.md) is
+complete after reviewed service/TestFlight delivery and the coordinated live
+canary. Its retained [prescription integrity](completed/prescription-integrity/plan.md),
+[reversible plan management](completed/reversible-plan-management/plan.md), and
+[coach access integrity](completed/coach-access-integrity/plan.md) contracts
+support the current plans. The evidence distinguishes deterministic tests,
+production activation, observed client paths and bounded legacy assessment.
 
 ## Adding a workstream
 

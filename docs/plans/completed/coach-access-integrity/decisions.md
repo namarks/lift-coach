@@ -13,7 +13,7 @@ for a concurrent refresh loser that missed replay detection and a revocation
 whose post-commit audit could falsely report failure. Revocation and its audit
 now share the transaction. The initial baseline passed 672 tests in 47 files;
 the final initiative verification is recorded with the
-[shared delivery evidence](../../reversible-plan-management/decisions.md).
+[shared delivery evidence](../reversible-plan-management/decisions.md).
 
 Code exchange inserts the successor and consumes the validated code in one
 D1 batch. Refresh conditionally replaces the existing token pair and retains
@@ -128,7 +128,7 @@ authorization-server discovery and protected-resource discovery returned HTTP
 migration ledger, disabled policy and unchanged source fence. Every source/schema
 verification SELECT in that independent check reported `changed_db=false` and
 `rows_written=0`. The later prescription diagnostic's import-transport metadata
-caveat is recorded separately in the [prescription evidence](../../prescription-integrity/decisions.md).
+caveat is recorded separately in the [prescription evidence](../prescription-integrity/decisions.md).
 
 The authenticated read check remains **unexercised**. Computer-use inventory
 reported a locked Mac; a normal Claude CLI attempt with read-only tools allowed

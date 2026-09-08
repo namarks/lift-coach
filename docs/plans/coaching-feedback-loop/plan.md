@@ -65,11 +65,12 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 
 ## Dependencies
 
+P1 reuses the completed [shared snapshot/history projection](../completed/reversible-plan-management/decisions.md) for visibility and reversion, preserving one change feed.
+
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P2 | blocked_by | plan:bodyweight-training-support#P3 | Coaching metrics must use the corrected comparability policy. |
 | P2 | coordinates_with | plan:activity-integration-integrity#P0 | Identity/civil-date fixes and unknown-load labels need consistent source context. |
-| P1 | coordinates_with | plan:reversible-plan-management#P2 | Reuse one plan-history projection for visibility and reversion rather than building a second change feed. |
 
 ## Next step
 

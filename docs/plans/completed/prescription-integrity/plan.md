@@ -1,6 +1,6 @@
 # Prescription Integrity
 
-Slug: prescription-integrity · Status: gated · Updated: 2026-09-07 · Theme: training-trust
+Slug: prescription-integrity · Status: done · Updated: 2026-09-07 · Theme: training-trust · Archived: completed
 
 ## Goal
 
@@ -61,47 +61,38 @@ Snapshots and undo complement these guarantees; they do not replace them.
     which dimension changed, the before/after values and persistent scope in
     audit/notes and the returned result. Do not characterize a fixed scalar as
     an individualized physiological deload prescription.
-- [ ] **P3 — Owner-approved production release and legacy assessment**
+- [x] **P3 — Owner-approved production release and legacy assessment**
   - [x] **(a) Release the approved service source and migrations**
     - Source `2e67f93` and migrations through `0042` are live with independent
       deployment/schema verification and a compatible forward-recovery boundary.
-  - [ ] **(b) Verify production behavior and assess legacy prescriptions**
-    - Complete the owner-authorized coordinated canary to verify deployed
-      validation and atomic attribution. The invalid-prescription and stale-
-      restore rejection probes passed without a version or successful-audit
-      change; the app-authored save/history check also passed. Keep diagnostics
-      value-free and approve any legacy correction separately. Local fixtures
-      and deployment do not establish row health.
+  - [x] **(b) Verify production behavior and assess legacy prescriptions**
+    - The owner-authorized coordinated canary verified live rejection of
+      invalid and stale writes without mutation, an accepted coach edit with
+      one version/snapshot/audit/note, and an app restore whose canonical
+      document exactly matched the reviewed baseline. App refresh/reopen and
+      independent authenticated reads confirmed persistence. The shared
+      [evidence](../reversible-plan-management/decisions.md) distinguishes
+      observed production paths from deterministic concurrency/rollback proof.
     - The bounded aggregate assessment found zero violations in its checked
       fields; unassessed cases and an import-transport metadata caveat are
       recorded in [decisions.md](decisions.md). No legacy repair is proposed.
 
-## Execution frontier
+## Delivered contracts
 
-- P3(b)
-
-## Dependencies
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P1 | coordinates_with | plan:reversible-plan-management#P0 | Establish one commit boundary for field edits and snapshots. |
-| P1 | coordinates_with | plan:bodyweight-training-support#P2 | Swap exposure must reuse the repaired writer and destination validation. |
-| P3(b) | gated_by | external:owner-training-trust-discard-service-release | Remaining accepted-write/restore checks depend on the reviewed MCP discard release; the historical workout discard is authorized, while any legacy prescription repair still needs a separate concrete proposal. |
+The shared validated writer and atomic snapshot boundary support the completed
+[reversible-plan work](../reversible-plan-management/plan.md). Future swap and
+authoring surfaces reuse these contracts; they do not reopen this workstream.
 
 ## Next step
 
-**Now (@owner):** Authorize the exact reviewed MCP discard service release,
-then complete the already-authorized P3(b) checks alongside the
-[app restore verification](../reversible-plan-management/plan.md). App save and
-snapshot history, invalid-write rejection, and stale-restore rejection passed.
-The accepted coach mutation and successful restore remain unverified live.
-The [contract and legacy recovery proof](decisions.md) retain the bounded legacy
-assessment; no legacy repair is proposed or authorized.
+Complete. The [contract, production evidence and legacy recovery proof](decisions.md)
+retain the bounded assessment and its exclusions. No legacy repair is proposed
+or authorized.
 
 ## Notes / open questions
 
-- Source: [September app review](../../reviews/2026-09-app-review/report.md).
-  Its [reproducer](../../reviews/2026-09-app-review/evidence/prescription-write-repro.mjs)
+- Source: [September app review](../../../reviews/2026-09-app-review/report.md).
+  Its [reproducer](../../../reviews/2026-09-app-review/evidence/prescription-write-repro.mjs)
   exercises the actual service over in-memory SQLite with all reviewed
   migrations: invalid types persist and two disjoint successful patches lose
   a value. It is not a production or Workers-runtime reproduction.
