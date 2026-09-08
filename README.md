@@ -42,6 +42,7 @@ A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
   `get_session_log`, `get_history`, `get_volume_trend`, `list_exercises`,
   `get_upcoming_rides`, `get_recent_activities`, `get_group_feed`
 - **Write:** `log_set`, `correct_set`, `delete_set`, `log_activity`, `log_workout_complete`,
+  `discard_workout` (explicit session ID and expected attempt; soft-deletes its sets),
   `add_note`, `update_plan` (transactional, `expected_version` → structured
   `{conflict, current_version}` result on mismatch), `update_exercise`,
   `swap_exercise`, `add_exercise`, `add_day`,
@@ -52,9 +53,9 @@ A Streamable-HTTP MCP server at `/mcp` exposing the same service layer:
 - **Resource:** `coach://state/current` — a compact brief Claude can read at
   chat start. Plus a `coach_brief` prompt.
 
-Every write records an `audit_log` row and a Claude-authored note — a
-visible, reversible trail that substitutes for per-tool scopes (recorded
-per user).
+Writes record an `audit_log` trail; plan changes also record a coaching note.
+`discard_workout` uses the shared discard audit and an identical retry adds no
+second entry. These records preserve per-user attribution across clients.
 
 **Auth (dual):**
 - **Static bearer** — trivial for Claude Code / curl.

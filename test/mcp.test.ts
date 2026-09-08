@@ -130,6 +130,7 @@ describe('mcp tools list', () => {
         'log_set',
         'correct_set',
         'delete_set',
+        'discard_workout',
         'log_workout_complete',
         'add_note',
         'update_plan',
@@ -156,7 +157,7 @@ describe('mcp tools list', () => {
         'set_stress_model',
       ]),
     );
-    expect(names).toHaveLength(37);
+    expect(names).toHaveLength(38);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
     const correction = body.result.tools.find((t: any) => t.name === 'correct_set');
     expect(correction.inputSchema.required).toEqual(['set_id']);
