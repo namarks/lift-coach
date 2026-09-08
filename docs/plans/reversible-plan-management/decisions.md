@@ -80,13 +80,20 @@ safe rollback proof. Do not delete snapshots or invalidate grants as a rollback
 shortcut. Nick approved coach inactivity/absolute lifetimes and the existing-
 connection transition; production deployment and one-time clock activation
 remain owner release actions. After activation, recovery must also enforce the
-approved deadlines. Follow the [shared service release procedure](../coach-access-integrity/release.md).
+approved deadlines. Follow the [shared service release procedure](../completed/coach-access-integrity/release.md).
 
 ## 2026-09-07: service released; app and restore canary pending
 
 Nick approved the exact reviewed service source `2e67f93` and migrations through
 `0042`. They were applied and deployed, with independent source/schema
-verification recorded in the [shared release evidence](../coach-access-integrity/decisions.md).
+verification recorded in the [shared release evidence](../completed/coach-access-integrity/decisions.md).
 Health and discovery succeeded; authenticated history remains unexercised because
 an existing client was unavailable. No production plan edit or restore occurred.
 TestFlight and a concrete edit/restore canary remain separate owner decisions.
+
+The existing Claude Desktop connection subsequently read the current plan and
+history successfully before and after coach-policy activation at
+2026-09-08 00:06:37 UTC. The returned history was empty, consistent with no
+post-upgrade plan mutation; this confirms authenticated reads, not production
+snapshot creation or restore behavior. No plan-write canary or TestFlight upload
+was performed.

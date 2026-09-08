@@ -9,9 +9,12 @@ functionality review found real loss or corruption: server writes stay scoped
 and deterministic, gym-floor intents survive interruption, authentication does
 not erase local data, and plan changes can be inspected and restored.
 
+The [completed coach-access workstream](../plans/completed/coach-access-integrity/plan.md)
+retains the authorization, deployment and verified lifetime-activation evidence
+that supports the remaining current workstreams.
+
 ## Scope
 
-- plan:coach-access-integrity
 - plan:prescription-integrity
 - plan:reversible-plan-management
 

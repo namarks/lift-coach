@@ -50,9 +50,9 @@ audit trail rather than rewriting them.
 ## Next step
 
 **Now (@owner):** Authorize P3(b)'s reviewed TestFlight upload and a concrete
-production edit/restore canary after the pending existing-client read check.
-The service release is complete; app release and production restore behavior
-remain unexercised. The [snapshot contract and release evidence](decisions.md)
+production edit/restore canary. The service release and authenticated plan/history
+reads are verified; app release and production restore behavior remain
+unexercised. The [snapshot contract and release evidence](decisions.md)
 distinguish these boundaries.
 
 ## Dependencies

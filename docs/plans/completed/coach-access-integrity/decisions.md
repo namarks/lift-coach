@@ -13,7 +13,7 @@ for a concurrent refresh loser that missed replay detection and a revocation
 whose post-commit audit could falsely report failure. Revocation and its audit
 now share the transaction. The initial baseline passed 672 tests in 47 files;
 the final initiative verification is recorded with the
-[shared delivery evidence](../reversible-plan-management/decisions.md).
+[shared delivery evidence](../../reversible-plan-management/decisions.md).
 
 Code exchange inserts the successor and consumes the validated code in one
 D1 batch. Refresh conditionally replaces the existing token pair and retains
@@ -128,7 +128,7 @@ authorization-server discovery and protected-resource discovery returned HTTP
 migration ledger, disabled policy and unchanged source fence. Every source/schema
 verification SELECT in that independent check reported `changed_db=false` and
 `rows_written=0`. The later prescription diagnostic's import-transport metadata
-caveat is recorded separately in the [prescription evidence](../prescription-integrity/decisions.md).
+caveat is recorded separately in the [prescription evidence](../../prescription-integrity/decisions.md).
 
 The authenticated read check remains **unexercised**. Computer-use inventory
 reported a locked Mac; a normal Claude CLI attempt with read-only tools allowed
@@ -144,3 +144,53 @@ read, run the already-approved single activation statement, then repeat the
 read and record the activation epoch. Preserve this source's deadline and
 lineage guarantees during recovery. Do not treat health/discovery success as
 authenticated client proof.
+
+## 2026-09-08 UTC: verified production activation and closeout
+
+After Nick reported the Mac ready, the existing logged-in Claude Desktop
+Très Fort integration made successful `get_current_plan` and `get_plan_history`
+calls. These were real authenticated tool acknowledgements, with a one-time UI
+permission for the read-only history tool. No connection setup, credential
+inspection, login, settings change or training mutation was needed.
+
+A fresh preflight reconfirmed exact deployed source
+`2e67f93aa8b17058d4f9d99c7b71047bafbfa7f9`, tree
+`4a19ab76bfed5858b78946d5d4b875f1ba38031e`, Worker version
+`58d830ac-6a1f-4bf7-adeb-8b19c6bcba94` and deployment
+`48365148-8109-4c7b-9550-129f6fa1b71f` at 100%. Migrations through `0042` were
+still applied, the policy was disabled, and grant-family/backfill checks were
+consistent. The existing Intervals source fence was unchanged.
+
+The already-approved single conditional UPDATE committed with a definitive
+acknowledgement at **epoch-ms `1788825997000`**, or
+**2026-09-08 00:06:37 UTC / September 7, 17:06:37 Pacific**. Its retained nonsecret
+operation UUID is **`6C670264-90F5-445D-94F6-2301FA2179AE`**. The acknowledged
+three row writes were the singleton plus the two existing live grant families;
+readback matched the exact epoch and nonce. No activation retry was needed.
+
+Existing live grants received the full initial 90-day inactivity and 365-day
+absolute periods. Independent direct-query verification confirmed both
+deadlines on every live grant, no partial deadlines, no invariant failures, no
+orphan tokens and no change to the Intervals fence. The absolute deadline is
+activation +365 days; later successful renewal may advance inactivity while
+remaining capped by that absolute deadline. There were no revoked grants in
+this production snapshot; preservation of revoked grants is also covered by
+the repository tests. Successful direct verification SELECTs in this activation run reported
+`changed_db=false`, `changes=0` and `rows_written=0`.
+
+Fresh postactivation `get_current_plan` and `get_plan_history` calls through the
+same Claude Desktop connection both succeeded. The plan was unchanged and
+history was empty, consistent with lazy baseline capture before the first
+post-upgrade plan mutation. The client showed a pending tool call for roughly
+two minutes before completing without an error or intervention; its cause was
+not established. A bounded count-only check confirmed the active bearer SQL
+and live millisecond clock were consistent with a currently eligible token.
+No raw request tail, credential inspection, auth change or retry was used.
+
+This closes the coach plan's production activation and client-verification
+criteria. It does not claim an observed natural refresh after activation,
+elapsed production expiry, TestFlight delivery or a production plan-write
+canary. The remaining app, prescription and restore checks stay with their
+current plans. Recovery must preserve the active policy epoch, grant deadlines,
+lineage, snapshots and existing source fence; do not rerun activation to renew
+an expired connection.
