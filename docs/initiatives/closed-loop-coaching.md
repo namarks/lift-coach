@@ -16,9 +16,12 @@ are delivered foundations for this remaining work.
 
 - plan:gym-runner-depth#P0
 - plan:coaching-feedback-loop
-- plan:bodyweight-training-support#P3
 
 ## Priority policy
+
+[Completed bodyweight support](../plans/completed/bodyweight-training-support/plan.md)
+provides the comparable-metrics repository foundation. Its Worker/app release
+remains separate from repository completion.
 
 1. Deliver the narrow member-feedback path first; it does not wait for every
    history or revert presentation detail.

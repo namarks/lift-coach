@@ -446,7 +446,11 @@ enum SetValueFormatter {
             // Legacy MCP timed sets stored elapsed seconds in reps before the
             // dedicated duration field existed.
             let seconds = durationSeconds ?? reps
-            if seconds > 0 { return "\(seconds)s" }
+            if seconds > 0 {
+                let load = weight == 0 ? "" : weight > 0
+                    ? " · +\(number(weight)) lb" : " · \(number(abs(weight))) lb assist"
+                return "\(seconds)s\(load)"
+            }
         }
         if bodyweight {
             if weight > 0 { return "BW+\(number(weight)) × \(reps)" }

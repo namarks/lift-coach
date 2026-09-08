@@ -7144,6 +7144,39 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(stat.bestHoldSeconds, 45)
     }
 
+    func testSharedBodyweightFixturesInHistoryAndCompletion() throws {
+        for fixture in try BodyweightProgressFixture.load() {
+            let defaults = defaults()
+            let model = SyncModel(auth: retainedAuth(defaults: defaults), defaults: defaults,
+                                  now: { self.fixedDate })
+            model.catalog = fixture.catalog
+            model.sessions = [session(id: fixture.name, date: "2026-09-01", status: "completed")]
+            model.sets = fixture.sets
+            let stat = try XCTUnwrap(model.history(for: fixture.catalog[0].id).first)
+            let completion = model.metricCohorts(for: model.sets)
+            XCTAssertEqual(stat.cohorts.map(\.id), completion.map(\.id), fixture.name)
+            XCTAssertEqual(stat.volume, fixture.expected_tonnage, fixture.name)
+            XCTAssertEqual(stat.setCount, fixture.sets.filter { $0.is_warmup == 0 && $0.deleted_at == nil }.count)
+            XCTAssertEqual(stat.est1RM, fixture.expected_cohorts.compactMap(\.est_1rm).max())
+            for expected in fixture.expected_cohorts {
+                let cohort = try XCTUnwrap(stat.cohorts.first {
+                    $0.key.weight == expected.weight && $0.key.timed == expected.is_timed
+                })
+                XCTAssertEqual(cohort.bestReps, expected.best_reps, fixture.name)
+                XCTAssertEqual(cohort.bestHoldSeconds, expected.best_duration_s, fixture.name)
+                XCTAssertEqual(cohort.valueLabel, expected.value_label, fixture.name)
+            }
+            if fixture.name == "reps" {
+                XCTAssertNil(stat.bestReps)
+                XCTAssertEqual(stat.totalReps, 33)
+            }
+            if fixture.name == "holds" || fixture.name == "mixed" {
+                XCTAssertNil(stat.bestHoldSeconds)
+                XCTAssertNil(model.bestHoldSeconds(for: fixture.sets))
+            }
+        }
+    }
+
     func testBodyweightBestRepsExcludeSeparateTimedOnlySessions() throws {
         let defaults = defaults()
         let ex = exercise(exerciseID: "exercise-bodyweight", bodyweight: true)

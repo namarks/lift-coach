@@ -593,14 +593,16 @@ private struct WorkoutDoneView: View {
                         // implements when weight is logged per hand.
                         let reps = sync.totalReps(for: todaySets)
                         let repsLabel = reps > 0 ? " · \(reps) REPS" : ""
-                        let holdLabel = sync.bestHoldSeconds(for: todaySets)
-                            .map { " · BEST HOLD \($0)S" } ?? ""
                         let tonnage = sync.totalTonnage(for: todaySets)
-                        let tonnageLabel = tonnage.map { " · \(Int($0)) LB" } ?? ""
-                        Text("✓ \(n) SET\(n == 1 ? "" : "S")\(repsLabel)\(holdLabel)\(tonnageLabel)")
+                        let tonnageLabel = tonnage.map { " · \(Int($0)) LB EXTERNAL LOAD" } ?? ""
+                        Text("✓ \(n) SET\(n == 1 ? "" : "S")\(repsLabel)\(tonnageLabel)")
                             .font(Theme.mono(12, .bold)).tracking(1)
                             .foregroundStyle(Theme.muted)
                             .padding(.top, 2)
+                        ForEach(sync.metricCohorts(for: todaySets)) { cohort in
+                            Text("\(sync.exerciseName(cohort.key.exerciseID)) · \(cohort.valueLabel)")
+                                .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                        }
                     } else {
                         Text("✓ DONE — LOGGED TO YOUR COACH")
                             .font(Theme.mono(12, .bold)).tracking(1)
@@ -1537,14 +1539,14 @@ private struct FinishedView: View {
                     if reps > 0 {
                         sumRow("Total reps", "\(reps)")
                     }
-                    if let bestHold = sync.bestHoldSeconds(for: sets) {
-                        sumRow("Best hold", "\(bestHold)s")
-                    }
                     if let tonnage = sync.totalTonnage(for: sets) {
-                        sumRow("Total volume", "\(Int(tonnage)) lb")
+                        sumRow("External-load volume", "\(Int(tonnage)) lb")
                     }
                 }
                 .padding(.top, 20)
+                ForEach(sync.metricCohorts(for: sets)) { cohort in
+                    sumRow(sync.exerciseName(cohort.key.exerciseID), cohort.valueLabel)
+                }
 
                 Button {
                     guard let target = sync.terminalActionTarget else { return }

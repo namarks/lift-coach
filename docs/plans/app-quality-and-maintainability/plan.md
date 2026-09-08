@@ -74,7 +74,6 @@ P2 preserves the completed [validated atomic prescription writer](../completed/p
 |---|---|---|---|
 | P1 | coordinates_with | plan:gym-runner-depth#P0 | Share runner controls and recovery presentation rather than fork them. |
 | P1 | coordinates_with | plan:member-activation-and-adherence#P0 | Entry copy, errors and large-text layouts touch the same surfaces. |
-| P2 | coordinates_with | plan:bodyweight-training-support#P3 | Share one comparable-metrics implementation and fixture set. |
 
 ## Next step
 
@@ -84,6 +83,11 @@ selecting performance changes. No application code changes are activated by
 the review itself.
 
 ## Notes / open questions
+
+- [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
+  supplies variation replacement and comparable metrics. Reuse the shared
+  `BodyweightProgress.json` contract for bodyweight PR/hold claims; this is a
+  delivered repository foundation, not an unresolved dependency.
 
 - Source: [September app review](../../reviews/2026-09-app-review/report.md).
   The reviewed repository already has substantial XCTest coverage; the gap is

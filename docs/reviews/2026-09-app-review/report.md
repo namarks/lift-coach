@@ -192,7 +192,7 @@ durations across load conditions too. See [backend history](https://github.com/n
 [Swift aggregation](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/ios/TresFort/SyncModel.swift#L2222)
 and [chart](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/ios/TresFort/HistoryView.swift#L172).
 
-**Closure:** new [bodyweight P3](../../plans/bodyweight-training-support/plan.md)
+**Closure:** new [bodyweight P3](../../plans/completed/bodyweight-training-support/plan.md)
 supersedes the completed P1 policy while retaining its delivery history.
 Compare compatible load/assistance/mode cohorts, label pooled work honestly,
 and suppress unsupported bodyweight e1RM. This is a conservative product

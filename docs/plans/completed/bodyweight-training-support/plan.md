@@ -1,6 +1,6 @@
 # Bodyweight Training Support
 
-Slug: bodyweight-training-support · Status: active · Updated: 2026-09-07 · Theme: gym-floor
+Slug: bodyweight-training-support · Status: done · Archived: completed · Updated: 2026-09-07 · Theme: gym-floor
 
 ## Goal
 
@@ -107,7 +107,7 @@ gymnastic-strength movements.
     TypeScript, and all 287 iOS tests, including seven new D1 regressions and
     five new client tests. See [the P2 contract](decisions.md). Repository
     delivery does not deploy the endpoint or publish an iOS build.
-- [ ] **P3 — Compare like-for-like progress**
+- [x] **P3 — Compare like-for-like progress**
   - Supersede P1's positive-added-load Epley policy: added load alone is not
     system load, so suppress bodyweight e1RM until an exercise-specific model
     with required inputs has been justified. Keep the completed P1 delivery as
@@ -126,30 +126,27 @@ gymnastic-strength movements.
     load, not total bodyweight tonnage. Do not create arbitrary normalization
     across equipment or progression variations.
 
-## Execution frontier
-
-- P3
-
-## Dependencies
-
-P2 reuses the completed [prescription validation and atomic writer](../completed/prescription-integrity/decisions.md) for carried targets and swap exposure.
-
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P1 | coordinates_with | plan:gym-runner-depth#P0 | Both change the runner's value-entry controls; serialize the shared surface. |
-| P1 | feeds | plan:coaching-feedback-loop#P2 | Rep-based and hold-based history gives the coach usable bodyweight progress signals; it does not block coaching work. |
+  - Completion evidence (2026-09-07): one pure metric policy per runtime now
+    powers compatible rep/hold history, load-labeled app completion, and group
+    feed summaries. Shared JSON fixtures verify REST/MCP history and volume,
+    feed DTOs/rendering, Swift history and completion, original-record
+    preservation, legacy duration fallback, and per-hand/per-side work. Local
+    TypeScript, all 748 Worker tests across 55 files, all 291 iOS tests, and
+    the plan compiler passed. Required GitHub CI is recorded with the delivery PR. This checked phase
+    lands atomically with that reviewed PR; it does not deploy the Worker or
+    distribute an app build. See [the P3 contract](decisions.md#p3-comparable-metrics-2026-09-07).
 
 ## Next step
 
-**Now (@agent):** P3 is the next repository slice: compare compatible
-bodyweight/load/hold cohorts and suppress unsupported bodyweight e1RM. P2
-implementation is complete; release of its new REST endpoint and iOS picker
-requires separate owner authority, with the Worker deployed before the app.
-The P2 execution request does not authorize P3 implementation or release.
+Repository delivery is complete. Deploy the reviewed Worker before distributing
+an updated iOS build under separate owner release authority. Installed builds
+retain their local P1 history behavior until upgraded. No migration or body-mass
+collection is required. Downstream runner PR presentation and coaching feedback
+reuse this completed metric policy and its shared fixtures.
 
 ## Notes / open questions
 
-- P3 responds to the [September app review](../../reviews/2026-09-app-review/report.md):
+- P3 responds to the [September app review](../../../reviews/2026-09-app-review/report.md):
   the shipped implementation followed P1, but a positive-added-load Epley
   estimate and highest-reps comparison across assistance levels are not
   supported strength claims. The correction preserves P1's signed-load and

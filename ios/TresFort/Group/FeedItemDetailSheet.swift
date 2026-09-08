@@ -47,12 +47,12 @@ struct FeedItemDetailSheet: View {
                              value: FeedFormat.duration(seconds: item.session.duration_sec))
                 }
                 Divider().overlay(Theme.dim)
-                if item.session.top_sets.isEmpty {
+                if item.session.displayTopSets.isEmpty {
                     Text("No top sets reported.")
                         .font(Theme.mono(12))
                         .foregroundStyle(Theme.muted)
                 } else {
-                    ForEach(item.session.top_sets, id: \.exercise) { s in
+                    ForEach(Array(item.session.displayTopSets.enumerated()), id: \.offset) { _, s in
                         HStack(alignment: .firstTextBaseline) {
                             Text(s.exercise.uppercased())
                                 .font(Theme.mono(12, .bold))
@@ -67,11 +67,11 @@ struct FeedItemDetailSheet: View {
                                         .font(Theme.mono(9))
                                         .foregroundStyle(Theme.dim)
                                 } else if s.is_timed == true {
-                                    Text("BEST HOLD")
+                                    Text("BEST HOLD AT THIS LOAD")
                                         .font(Theme.mono(9))
                                         .foregroundStyle(Theme.dim)
                                 } else if s.modality == "bw" {
-                                    Text("BEST SET")
+                                    Text("BEST REPS AT THIS LOAD")
                                         .font(Theme.mono(9))
                                         .foregroundStyle(Theme.dim)
                                 }

@@ -138,5 +138,5 @@ TestFlight distribution remain separate release actions and were not performed.
   `member-activation-and-adherence#P2`; it cannot gate manual creation.
 - The bodyweight walkthrough depends only on the existing catalog. Added load,
   assistance, rep-based history, and the missing gymnastic movements belong to
-  [Bodyweight training support](../../bodyweight-training-support/plan.md), not
+  [Bodyweight training support](../bodyweight-training-support/plan.md), not
   to this plan.

@@ -1,5 +1,6 @@
 // Service layer: all D1 access goes through here so REST (now) and MCP
 // (milestone b) share identical behavior. Timestamps are epoch-ms integers.
+import { metricCohorts, estimatedOneRepMax, positiveSetTonnage, type MetricExercise } from './metrics';
 import type {
   ActivityRow,
   DayConflict,
@@ -6789,71 +6790,6 @@ export async function adjustToday(
   };
 }
 
-const epley = (w: number, r: number) => Math.round(w * (1 + r / 30) * 10) / 10;
-
-type ExerciseMetricSemantics = {
-  modality: string;
-  laterality: string;
-  load_mode: string;
-};
-
-type HistorySessionSummary = {
-  date: string;
-  top: SetLogRow;
-  metric: 'load' | 'reps' | 'duration';
-  est_1rm: number | null;
-  best_reps: number | null;
-  total_reps: number | null;
-  best_duration_s: number | null;
-  tonnage: number | null;
-};
-
-function positiveSetTonnage(
-  set: Pick<SetLogRow, 'weight' | 'reps' | 'is_timed'>,
-  exercise: Pick<ExerciseMetricSemantics, 'laterality' | 'load_mode'>,
-): number | null {
-  if (set.is_timed === 1 || set.weight <= 0) return null;
-  const sides = exercise.laterality === 'unilateral' ? 2 : 1;
-  const implementsUsed = exercise.load_mode === 'per_hand' ? 2 : 1;
-  return set.weight * set.reps * sides * implementsUsed;
-}
-
-function timedDurationSeconds(
-  set: Pick<SetLogRow, 'duration_s' | 'reps'>,
-): number {
-  // Older MCP clients logged elapsed seconds in reps before duration_s was
-  // added. Keep those valid timed sets visible in history and feeds.
-  return set.duration_s ?? set.reps;
-}
-
-function chooseHistoryTop(
-  rows: SetLogRow[],
-  modality: string,
-): { top: SetLogRow; metric: HistorySessionSummary['metric'] } {
-  const timed = rows.filter((row) => row.is_timed === 1);
-  const repBased = rows.filter((row) => row.is_timed !== 1);
-
-  if (modality === 'bw' && repBased.length > 0) {
-    const top = repBased.reduce((best, row) =>
-      row.reps > best.reps || (row.reps === best.reps && row.weight > best.weight)
-        ? row
-        : best,
-    );
-    return { top, metric: 'reps' };
-  }
-  if (timed.length > 0 && repBased.length === 0) {
-    const top = timed.reduce((best, row) =>
-      timedDurationSeconds(row) > timedDurationSeconds(best) ? row : best,
-    );
-    return { top, metric: 'duration' };
-  }
-  const candidates = repBased.length > 0 ? repBased : rows;
-  const top = candidates.reduce((best, row) =>
-    epley(row.weight, row.reps) > epley(best.weight, best.reps) ? row : best,
-  );
-  return { top, metric: 'load' };
-}
-
 export async function getHistory(
   db: D1Database,
   userId: string,
@@ -6863,10 +6799,11 @@ export async function getHistory(
 ) {
   const exercise =
     (await db
-      .prepare('SELECT modality, laterality, load_mode FROM exercises WHERE id = ?1')
+      .prepare('SELECT modality, unit, laterality, load_mode FROM exercises WHERE id = ?1')
       .bind(exerciseId)
-      .first<ExerciseMetricSemantics>()) ?? {
+      .first<MetricExercise>()) ?? {
       modality: 'unknown',
+      unit: 'lb',
       laterality: 'bilateral',
       load_mode: 'total',
     };
@@ -6888,40 +6825,30 @@ export async function getHistory(
     rowsBySession.set(s.session_date, rows);
   }
 
-  const bySession: HistorySessionSummary[] = [...rowsBySession].map(([date, rows]) => {
-    const { top, metric } = chooseHistoryTop(rows, exercise.modality);
-    const timedRows = rows.filter((row) => row.is_timed === 1);
-    const repRows = rows.filter((row) => row.is_timed !== 1);
-    const tonnages = repRows
-      .map((row) => positiveSetTonnage(row, exercise))
+  const bySession = [...rowsBySession].map(([date, rows]) => {
+    const cohorts = metricCohorts(rows, exercise);
+    const repCohorts = cohorts.filter((cohort) => !cohort.is_timed);
+    const timedCohorts = cohorts.filter((cohort) => cohort.is_timed);
+    const estimated = rows.filter((row) => estimatedOneRepMax(row, exercise) != null);
+    const estimatedTop = estimated.length ? estimated.reduce((best, row) =>
+      estimatedOneRepMax(row, exercise)! > estimatedOneRepMax(best, exercise)! ? row : best) : null;
+    // Preserve conventional Epley summaries. Incompatible BW/hold conditions
+    // have no overall winner; callers use the explicitly keyed cohorts.
+    const top = cohorts.length === 1 ? cohorts[0]!.top : estimatedTop;
+    const tonnages = rows.map((row) => positiveSetTonnage(row, exercise))
       .filter((value): value is number => value != null);
-    const est1rm = top.is_timed !== 1 && top.weight > 0
-      ? epley(top.weight, top.reps)
-      : null;
     return {
-      date,
-      top: metric === 'duration'
-        ? { ...top, duration_s: timedDurationSeconds(top) }
-        : top,
-      metric,
-      est_1rm: est1rm,
-      best_reps:
-        exercise.modality === 'bw' && repRows.length > 0
-          ? Math.max(...repRows.map((row) => row.reps))
-          : null,
-      total_reps:
-        exercise.modality === 'bw'
-          ? repRows.reduce(
-              (total, row) =>
-                total + row.reps * (exercise.laterality === 'unilateral' ? 2 : 1),
-              0,
-            )
-          : null,
-      best_duration_s:
-        timedRows.length > 0
-          ? Math.max(...timedRows.map(timedDurationSeconds))
-          : null,
-      tonnage: tonnages.length > 0 ? tonnages.reduce((total, value) => total + value, 0) : null,
+      date, top,
+      metric: top == null ? 'mixed' : estimatedTop ? 'load' : cohorts[0]!.metric,
+      est_1rm: estimatedTop ? estimatedOneRepMax(estimatedTop, exercise) : null,
+      best_reps: exercise.modality === 'bw' && repCohorts.length === 1
+        ? repCohorts[0]!.best_reps : null,
+      total_reps: exercise.modality === 'bw'
+        ? repCohorts.reduce((sum, cohort) => sum + (cohort.total_reps ?? 0), 0) : null,
+      best_duration_s: timedCohorts.length === 1 ? timedCohorts[0]!.best_duration_s : null,
+      tonnage: tonnages.length ? tonnages.reduce((a, b) => a + b, 0) : null,
+      tonnage_basis: 'external_load',
+      cohorts,
     };
   });
   return {
@@ -6940,6 +6867,7 @@ export async function getVolume(
 ): Promise<
   | {
       muscle_group: string;
+      tonnage_basis: 'external_load';
       buckets: { week: string; hard_sets: number; tonnage: number | null }[];
     }
   | { error: 'unknown_muscle'; query: string }
@@ -6975,7 +6903,7 @@ export async function getVolume(
     )
     .bind(userId, normalizedMuscle, from, to)
     .all<{ week: string; hard_sets: number; tonnage: number | null }>();
-  return { muscle_group: normalizedMuscle, buckets: rows.results };
+  return { muscle_group: normalizedMuscle, tonnage_basis: 'external_load', buckets: rows.results };
 }
 
 // ---- weekly schedule + future-calendar projection ------------------------
@@ -10391,7 +10319,8 @@ export async function getRideConflicts(
 // the feature ship):
 //   * Strength sessions: SHARE date, completed_at, day_name, set_count,
 //     duration_sec, per-exercise top set (exercise name + load/reps or hold
-//     duration, plus Epley est_1rm only for positive rep-based loads). HIDE
+//     duration per compatible load/mode, plus Epley only for conventional
+//     positive-load rep work). HIDE
 //     session.notes, session.perceived_fatigue, every
 //     set's `notes`, every set's `rpe`.
 //   * Intervals.icu rides: SHARE all the ride metrics (these are not
@@ -10423,7 +10352,12 @@ export interface FeedSessionItem {
     day_label: string | null;
     duration_sec: number | null;
     set_count: number;
+    cohort_top_sets: FeedSessionItem['session']['top_sets'];
     top_sets: Array<{
+      cohort_key: string;
+      exercise_id: string;
+      laterality: string;
+      load_mode: string;
       exercise: string;
       weight: number;
       reps: number;
@@ -10669,7 +10603,8 @@ export async function getGroupFeed(
                 sl.is_timed,
                 e.name AS exercise_name,
                 e.unit AS exercise_unit,
-                e.modality AS exercise_modality
+                e.modality AS exercise_modality,
+                e.laterality, e.load_mode
            FROM set_logs sl
            JOIN exercises e ON e.id = sl.exercise_id
           WHERE sl.session_id IN (${setPlaceholders})
@@ -10687,80 +10622,63 @@ export async function getGroupFeed(
         exercise_name: string;
         exercise_unit: string;
         exercise_modality: string;
+        laterality: string;
+        load_mode: string;
       }>();
-    // Aggregate per exercise using the metric that represents its work:
-    // longest hold for timed sets, most reps for bodyweight work, and Epley
-    // for externally loaded rep work. Cross-modality scores are never mixed.
-    type FeedSetCandidate = {
-      exercise: string;
-      unit: string | null;
-      modality: string;
-      weight: number;
-      reps: number;
-      duration_s: number | null;
-      is_timed: boolean;
-    };
-    const acc = new Map<string, Map<string, FeedSetCandidate[]>>();
-    for (const r of sets.results) {
-      setCountBySession.set(r.session_id, (setCountBySession.get(r.session_id) ?? 0) + 1);
-      let perSession = acc.get(r.session_id);
-      if (!perSession) {
-        perSession = new Map();
-        acc.set(r.session_id, perSession);
-      }
-      const candidates = perSession.get(r.exercise_id) ?? [];
-      candidates.push({
-        exercise: r.exercise_name,
-        unit: r.exercise_unit,
-        modality: r.exercise_modality,
-        weight: r.weight,
-        reps: r.reps,
-        duration_s: r.duration_s,
-        is_timed: r.is_timed === 1,
-      });
-      perSession.set(r.exercise_id, candidates);
+    const acc = new Map<string, Map<string, typeof sets.results>>();
+    for (const row of sets.results) {
+      setCountBySession.set(row.session_id, (setCountBySession.get(row.session_id) ?? 0) + 1);
+      const perSession = acc.get(row.session_id) ?? new Map();
+      const candidates = perSession.get(row.exercise_id) ?? [];
+      candidates.push(row);
+      perSession.set(row.exercise_id, candidates);
+      acc.set(row.session_id, perSession);
     }
-    for (const [sid, perEx] of acc) {
-      const list = [...perEx.values()].map((rows) => {
-        const repRows = rows.filter((row) => !row.is_timed);
-        const timedRows = rows.filter((row) => row.is_timed);
-        let top: FeedSetCandidate;
-        if (rows[0]!.modality === 'bw' && repRows.length > 0) {
-          top = repRows.reduce((best, row) =>
-            row.reps > best.reps || (row.reps === best.reps && row.weight > best.weight)
-              ? row
-              : best,
-          );
-        } else if (timedRows.length > 0 && repRows.length === 0) {
-          top = timedRows.reduce((best, row) =>
-            timedDurationSeconds(row) > timedDurationSeconds(best) ? row : best,
-          );
-        } else {
-          const candidates = repRows.length > 0 ? repRows : rows;
-          top = candidates.reduce((best, row) => {
-            const score = epley(row.weight, row.reps);
-            const bestScore = epley(best.weight, best.reps);
-            return score > bestScore || (score === bestScore && row.reps > best.reps)
-              ? row
-              : best;
-          });
-        }
-        return {
-          ...top,
-          duration_s: top.is_timed ? timedDurationSeconds(top) : top.duration_s,
-          // The shipped iOS decoder requires a number here. Preserve that
-          // wire contract with zero as the legacy unavailable sentinel; new
-          // clients use is_timed/load semantics to hide the estimate.
-          est_1rm: !top.is_timed && top.weight > 0
-            ? epley(top.weight, top.reps)
-            : 0,
-        };
+    for (const [sid, perExercise] of acc) {
+      const list = [...perExercise.values()].flatMap((rows) => {
+        const exercise = rows[0]!;
+        return metricCohorts(rows, {
+          modality: exercise.exercise_modality, unit: exercise.exercise_unit,
+          laterality: exercise.laterality, load_mode: exercise.load_mode,
+        }).map((cohort) => ({
+          cohort_key: cohort.key,
+          exercise_id: exercise.exercise_id,
+          exercise: exercise.exercise_name,
+          unit: exercise.exercise_unit,
+          modality: exercise.exercise_modality,
+          laterality: exercise.laterality,
+          load_mode: exercise.load_mode,
+          weight: cohort.top.weight,
+          reps: cohort.top.reps,
+          duration_s: cohort.top.duration_s,
+          is_timed: cohort.is_timed,
+          // Installed clients require a number: zero is the unavailable sentinel.
+          est_1rm: cohort.est_1rm ?? 0,
+        }));
       });
-      list.sort((a, b) => a.exercise.localeCompare(b.exercise));
+      list.sort((a, b) => a.exercise.localeCompare(b.exercise)
+        || Number(a.is_timed) - Number(b.is_timed) || a.weight - b.weight);
       topSetsBySession.set(sid, list);
     }
   }
 
+  // Older clients key top_sets by exercise name. Keep one conventional
+  // estimate, or a single comparable condition; omit incompatible BW/holds
+  // rather than imply an overall winner. New clients use cohort_top_sets.
+  const legacyTopSets = (sets: FeedSessionItem['session']['top_sets']) => {
+    const byExercise = new Map<string, typeof sets>();
+    for (const set of sets) {
+      const rows = byExercise.get(set.exercise_id) ?? [];
+      rows.push(set);
+      byExercise.set(set.exercise_id, rows);
+    }
+    return [...byExercise.values()].flatMap((rows) => {
+      if (rows.length === 1) return rows;
+      const estimated = rows.filter((row) => row.est_1rm > 0);
+      return estimated.length ? [estimated.reduce((best, row) =>
+        row.est_1rm > best.est_1rm ? row : best)] : [];
+    });
+  };
   const sessionItems: FeedSessionItem[] = sessionRows.results.map((s) => ({
     type: 'session',
     id: s.id,
@@ -10779,7 +10697,8 @@ export async function getGroupFeed(
           ? Math.max(0, Math.round((s.completed_at - s.started_at) / 1000))
           : null,
       set_count: setCountBySession.get(s.id) ?? 0,
-      top_sets: topSetsBySession.get(s.id) ?? [],
+      top_sets: legacyTopSets(topSetsBySession.get(s.id) ?? []),
+      cohort_top_sets: topSetsBySession.get(s.id) ?? [],
     },
   }));
 
