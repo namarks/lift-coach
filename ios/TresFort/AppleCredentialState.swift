@@ -14,6 +14,13 @@ protocol AppleCredentialStateChecking {
 
 struct AppleCredentialStateChecker: AppleCredentialStateChecking {
     func state(for appleUserID: String) async -> AppAppleCredentialState {
+        #if DEBUG && targetEnvironment(simulator)
+        // Simulator credential-state lookup can report revoked immediately
+        // after a successful Apple sign-in. Treat this device-local check as
+        // unavailable in Debug simulators; Apple sign-in and server session
+        // validation remain required. Device and Release builds use Apple below.
+        return .unavailable
+        #else
         await withCheckedContinuation { continuation in
             ASAuthorizationAppleIDProvider().getCredentialState(
                 forUserID: appleUserID
@@ -36,5 +43,6 @@ struct AppleCredentialStateChecker: AppleCredentialStateChecking {
                 }
             }
         }
+        #endif
     }
 }

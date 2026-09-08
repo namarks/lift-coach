@@ -468,6 +468,54 @@ final class AuthModelTests: XCTestCase {
         XCTAssertNil(model.reauthenticationReason)
     }
 
+    #if DEBUG && targetEnvironment(simulator)
+    func testDebugSimulatorPreservesServerAuthenticatedSessionAcrossCredentialChecks() async {
+        let defaults = defaults()
+        let tokens = MemoryTokenStore()
+        let api = AuthAPIStub()
+        let token = sessionToken(for: "user-a")
+        api.authResult = .success(response(jwt: token, userID: "user-a"))
+        // Use the production checker, so this exercises the simulator boundary
+        // that previously signed the user straight back out after exchange.
+        let model = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+
+        await model.exchange(
+            identityToken: "apple-identity-token",
+            fullName: nil,
+            appleUserID: "apple-user-a",
+            authorizationCode: "single-use-authorization-code")
+        await model.checkAppleCredentialState()
+        await model.checkAppleCredentialState()
+
+        XCTAssertEqual(api.appleAuthCalls.count, 1)
+        XCTAssertEqual(model.jwt, token)
+        XCTAssertEqual(tokens.token, token)
+        XCTAssertEqual(model.phase, .signedIn)
+        XCTAssertNil(model.reauthenticationReason)
+    }
+
+    func testDebugSimulatorStillRejectsFailedServerAuthentication() async {
+        let tokens = MemoryTokenStore()
+        let api = AuthAPIStub()
+        api.authResult = .failure(APIError.http(401, "invalid_apple_token"))
+        let model = AuthModel(api: api, tokenStore: tokens, defaults: defaults())
+
+        await model.exchange(
+            identityToken: "invalid-apple-identity-token",
+            fullName: nil,
+            appleUserID: "apple-user-a",
+            authorizationCode: "single-use-authorization-code")
+        await model.checkAppleCredentialState()
+
+        XCTAssertEqual(api.appleAuthCalls.count, 1)
+        XCTAssertNil(model.jwt)
+        XCTAssertNil(tokens.token)
+        guard case .error = model.phase else {
+            return XCTFail("Server rejection must keep the simulator signed out")
+        }
+    }
+    #endif
+
     func testTransferredAppleCredentialPreservesUsableSession() async {
         let defaults = defaults()
         defaults.set("user-a", forKey: AuthModel.userIDKey)
