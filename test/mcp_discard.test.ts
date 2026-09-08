@@ -84,47 +84,9 @@ async function discardAuditCount(sessionId: string) {
 }
 
 describe('discard_workout MCP tool', () => {
-  it('uses the owned discard transaction with mandatory generation CAS and no duplicate audit', async () => {
+  it('requires an explicit session and safe current attempt without writing', async () => {
     const owner = await seedOwner();
     const legacy = await seedSession(owner.user_id, owner.id, '2039-01-01');
-    const v1 = await seedSession(owner.user_id, owner.id, '2039-01-02');
-    const unrelated = await seedSession(owner.user_id, owner.id, '2039-01-03');
-    const stale = await seedSession(owner.user_id, owner.id, '2039-01-04', 1);
-
-    const foreignUserId = crypto.randomUUID();
-    const foreignPlanId = crypto.randomUUID();
-    await env.DB.batch([
-      env.DB.prepare(
-        'INSERT INTO users (id,apple_sub,display_name,created_at) VALUES (?1,?2,?3,?4)',
-      ).bind(foreignUserId, `apple-${foreignUserId}`, 'Other', Date.now() + 1),
-      env.DB.prepare(
-        "INSERT INTO plans (id,user_id,name,status,version,created_at,updated_at) VALUES (?1,?2,'Other','active',1,?3,?3)",
-      ).bind(foreignPlanId, foreignUserId, Date.now() + 1),
-    ]);
-    const foreign = await seedSession(foreignUserId, foreignPlanId, '2039-01-05');
-
-    await env.DB.prepare(
-      'UPDATE workout_write_fence SET enabled=1, activated_at=?1 WHERE id=1',
-    ).bind(Date.now()).run();
-    for (const candidate of [
-      { sessionId: v1.sessionId, attempt: 0 },
-      { sessionId: stale.sessionId, attempt: 1 },
-    ]) {
-      const claim = await SELF.fetch(
-        `${BASE}/api/sessions/${candidate.sessionId}?expected_attempt=${candidate.attempt}`,
-        {
-        method: 'PATCH',
-        headers: {
-          'content-type': 'application/json',
-          Authorization: `Bearer ${owner.jwt}`,
-          'X-TresFort-Write-Protocol': 'attempt-v1',
-        },
-        body: JSON.stringify({ notes: 'claim protocol for test' }),
-        },
-      );
-      expect(claim.status).toBe(200);
-    }
-
     const malformed = await call('discard_workout', {
       session_id: legacy.sessionId,
       expected_attempt: '0',
@@ -139,7 +101,17 @@ describe('discard_workout MCP tool', () => {
       fields: ['session_id'],
     });
     expect(await discardAuditCount(legacy.sessionId)).toBe(0);
+    expect(
+      await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+        .bind(legacy.sessionId)
+        .first(),
+    ).toEqual({ status: 'in_progress' });
+  });
 
+  it('discards a legacy session once while preserving unrelated work', async () => {
+    const owner = await seedOwner();
+    const legacy = await seedSession(owner.user_id, owner.id, '2039-01-01');
+    const unrelated = await seedSession(owner.user_id, owner.id, '2039-01-02');
     const legacyResult = await call('discard_workout', {
       session_id: legacy.sessionId,
       expected_attempt: 0,
@@ -160,7 +132,48 @@ describe('discard_workout MCP tool', () => {
       await env.DB.prepare("SELECT COUNT(*) AS count FROM audit_log WHERE tool='discard_workout'")
         .first<{ count: number }>(),
     ).toEqual({ count: 0 });
+    expect(
+      await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+        .bind(unrelated.sessionId)
+        .first(),
+    ).toEqual({ status: 'in_progress' });
+    expect(
+      await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+        .bind(legacy.setId)
+        .first(),
+    ).toEqual({ deleted_at: expect.any(Number) });
+    expect(
+      await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+        .bind(unrelated.setId)
+        .first(),
+    ).toEqual({ deleted_at: null });
+  });
 
+  it('supports attempt-v1 and rejects a truly stale generation without writes', async () => {
+    const owner = await seedOwner();
+    const v1 = await seedSession(owner.user_id, owner.id, '2039-01-01');
+    const stale = await seedSession(owner.user_id, owner.id, '2039-01-02', 1);
+    await env.DB.prepare(
+      'UPDATE workout_write_fence SET enabled=1, activated_at=?1 WHERE id=1',
+    ).bind(Date.now()).run();
+    for (const candidate of [
+      { sessionId: v1.sessionId, attempt: 0 },
+      { sessionId: stale.sessionId, attempt: 1 },
+    ]) {
+      const claim = await SELF.fetch(
+        `${BASE}/api/sessions/${candidate.sessionId}?expected_attempt=${candidate.attempt}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'content-type': 'application/json',
+            Authorization: `Bearer ${owner.jwt}`,
+            'X-TresFort-Write-Protocol': 'attempt-v1',
+          },
+          body: JSON.stringify({ notes: 'claim protocol for test' }),
+        },
+      );
+      expect(claim.status).toBe(200);
+    }
     const v1Result = await call('discard_workout', {
       session_id: v1.sessionId,
       expected_attempt: 0,
@@ -181,40 +194,52 @@ describe('discard_workout MCP tool', () => {
       current_session: { id: stale.sessionId, status: 'in_progress', attempt: 1 },
     });
     expect(await discardAuditCount(stale.sessionId)).toBe(0);
+    expect(
+      await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+        .bind(stale.sessionId)
+        .first(),
+    ).toEqual({ status: 'in_progress' });
+    expect(
+      await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+        .bind(v1.setId)
+        .first(),
+    ).toEqual({ deleted_at: expect.any(Number) });
+    expect(
+      await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+        .bind(stale.setId)
+        .first(),
+    ).toEqual({ deleted_at: null });
+  });
 
+  it('returns not-found for foreign and missing sessions without touching them', async () => {
+    await seedOwner();
+    const foreignUserId = crypto.randomUUID();
+    const foreignPlanId = crypto.randomUUID();
+    await env.DB.batch([
+      env.DB.prepare(
+        'INSERT INTO users (id,apple_sub,display_name,created_at) VALUES (?1,?2,?3,?4)',
+      ).bind(foreignUserId, `apple-${foreignUserId}`, 'Other', Date.now() + 1),
+      env.DB.prepare(
+        "INSERT INTO plans (id,user_id,name,status,version,created_at,updated_at) VALUES (?1,?2,'Other','active',1,?3,?3)",
+      ).bind(foreignPlanId, foreignUserId, Date.now() + 1),
+    ]);
+    const foreign = await seedSession(foreignUserId, foreignPlanId, '2039-01-01');
     expect(
       await call('discard_workout', { session_id: foreign.sessionId, expected_attempt: 0 }),
     ).toEqual({ error: 'not_found', session_id: foreign.sessionId });
     expect(
       await call('discard_workout', { session_id: crypto.randomUUID(), expected_attempt: 0 }),
     ).toMatchObject({ error: 'not_found' });
-
-    const rows = await env.DB.prepare(
-      `SELECT id,status,write_protocol FROM sessions
-       WHERE id IN (?1,?2,?3,?4,?5) ORDER BY date`,
-    )
-      .bind(legacy.sessionId, v1.sessionId, unrelated.sessionId, stale.sessionId, foreign.sessionId)
-      .all<{ id: string; status: string; write_protocol: string }>();
-    expect(rows.results).toEqual([
-      { id: legacy.sessionId, status: 'discarded', write_protocol: 'legacy' },
-      { id: v1.sessionId, status: 'discarded', write_protocol: 'attempt-v1' },
-      { id: unrelated.sessionId, status: 'in_progress', write_protocol: 'legacy' },
-      { id: stale.sessionId, status: 'in_progress', write_protocol: 'attempt-v1' },
-      { id: foreign.sessionId, status: 'in_progress', write_protocol: 'legacy' },
-    ]);
-    for (const item of [legacy, v1]) {
-      expect(
-        await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
-          .bind(item.setId)
-          .first<{ deleted_at: number | null }>(),
-      ).toEqual({ deleted_at: expect.any(Number) });
-    }
-    for (const item of [unrelated, stale, foreign]) {
-      expect(
-        await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
-          .bind(item.setId)
-          .first<{ deleted_at: number | null }>(),
-      ).toEqual({ deleted_at: null });
-    }
+    expect(await discardAuditCount(foreign.sessionId)).toBe(0);
+    expect(
+      await env.DB.prepare('SELECT status FROM sessions WHERE id=?1')
+        .bind(foreign.sessionId)
+        .first(),
+    ).toEqual({ status: 'in_progress' });
+    expect(
+      await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?1')
+        .bind(foreign.setId)
+        .first(),
+    ).toEqual({ deleted_at: null });
   });
 });
