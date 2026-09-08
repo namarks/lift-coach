@@ -212,6 +212,14 @@ private final class SetCatalogAPIStub: ExerciseCatalogAPI {
 
 @MainActor
 private final class SetPlanEditingAPIStub: PlanEditingAPI {
+    var replaceHandler: ((String, String, String, Int, String) async throws -> APIClient.SlotIDRow)?
+    private(set) var replaceCalls = 0
+    func replaceExerciseSlot(dayID: String, teID: String, exercise: String,
+                             expectedVersion: Int, jwt: String) async throws -> APIClient.SlotIDRow {
+        replaceCalls += 1
+        guard let replaceHandler else { throw URLError(.badServerResponse) }
+        return try await replaceHandler(dayID, teID, exercise, expectedVersion, jwt)
+    }
     var addHandler: (() async throws -> APIClient.SlotIDRow)?
     var updateHandler: (() async throws -> APIClient.SlotIDRow)?
     var deleteHandler: (() async throws -> Void)?
@@ -3984,6 +3992,129 @@ final class SetOutboxTests: XCTestCase {
             ensuredPlanID: "plan-a",
             loadedPlanID: "plan-b",
             loadedDayCount: 0))
+    }
+
+    func testReplacementPinsSlotAndVersionThenAdoptsServerState() async {
+        let defaults = defaults()
+        let original = exercise(bodyweight: true)
+        let replacement = exercise(exerciseID: "ring-row", bodyweight: true)
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.replaceHandler = { dayID, slotID, exerciseID, version, _ in
+            XCTAssertEqual(dayID, "day-a")
+            XCTAssertEqual(slotID, original.id)
+            XCTAssertEqual(exerciseID, "ring-row")
+            XCTAssertEqual(version, 1)
+            return APIClient.SlotIDRow(id: original.id)
+        }
+        let api = SetWriteAPIStub()
+        api.stateHandler = { [self] _ in
+            state(session: s, sets: [], days: [day(with: [replacement])], planVersion: 2)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: original))
+        let saved = await model.replaceSlot(dayID: "day-a", teID: original.id,
+                                            exercise: "ring-row", expectedVersion: 1)
+        XCTAssertTrue(saved)
+        XCTAssertEqual(editor.replaceCalls, 1)
+        XCTAssertEqual(model.plan?.days[0].exercises[0].exercise_id, "ring-row")
+        XCTAssertEqual(model.plan?.version, 2)
+        XCTAssertFalse(model.workoutEditorRefreshNeeded)
+    }
+
+    func testAcknowledgedReplacementBlocksFurtherEditsWhenRefreshFails() async {
+        let defaults = defaults()
+        let ex = exercise(bodyweight: true)
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.replaceHandler = { _, _, _, _, _ in APIClient.SlotIDRow(id: ex.id) }
+        let api = SetWriteAPIStub()
+        api.stateHandler = { _ in throw URLError(.timedOut) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+        let saved = await model.replaceSlot(dayID: "day-a", teID: ex.id,
+                                            exercise: "ring-row", expectedVersion: 1)
+        let repeated = await model.replaceSlot(dayID: "day-a", teID: ex.id,
+                                               exercise: "ring-row", expectedVersion: 1)
+        XCTAssertTrue(saved)
+        XCTAssertFalse(repeated)
+        XCTAssertEqual(editor.replaceCalls, 1)
+        XCTAssertTrue(model.workoutEditorRefreshNeeded)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertEqual(model.plan?.days[0].exercises[0], ex)
+    }
+
+    func testReplacementConflictRefreshesWithoutReapplyingStaleSelection() async {
+        let defaults = defaults()
+        let ex = exercise(bodyweight: true)
+        let changed = exercise(bodyweight: true, targetSets: 5)
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.replaceHandler = { _, _, _, _, _ in
+            throw APIError.http(409, #"{"conflict":true,"current_version":2}"#)
+        }
+        let api = SetWriteAPIStub()
+        api.stateHandler = { [self] _ in
+            state(session: s, sets: [], days: [day(with: [changed])], planVersion: 2)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+        let saved = await model.replaceSlot(dayID: "day-a", teID: ex.id,
+                                            exercise: "ring-row", expectedVersion: 1)
+        XCTAssertFalse(saved)
+        XCTAssertEqual(editor.replaceCalls, 1)
+        XCTAssertEqual(model.plan?.days[0].exercises[0], changed)
+        XCTAssertTrue(model.loadError?.contains("Workout changed") == true)
+    }
+
+    func testRejectedReplacementKeepsOriginalSlotAndErrorVisible() async {
+        let defaults = defaults()
+        let ex = exercise(bodyweight: true)
+        let s = session(status: "planned", attempt: 0)
+        let editor = SetPlanEditingAPIStub()
+        editor.replaceHandler = { _, _, _, _, _ in
+            throw APIError.http(400, #"{"error":"invalid_fields","fields":["target_weight"]}"#)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: SetWriteAPIStub(),
+                              planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+        let saved = await model.replaceSlot(dayID: "day-a", teID: ex.id,
+                                            exercise: "bench", expectedVersion: 1)
+        XCTAssertFalse(saved)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertEqual(model.plan?.days[0].exercises[0], ex)
+        XCTAssertFalse(model.workoutEditorRefreshNeeded)
+    }
+
+    func testReplacementAcknowledgementCannotMutateSignedOutModel() async {
+        let defaults = defaults()
+        let ex = exercise(bodyweight: true)
+        let s = session(status: "planned", attempt: 0)
+        let auth = retainedAuth(defaults: defaults)
+        let entered = SetAsyncLatch()
+        let release = SetAsyncLatch()
+        let editor = SetPlanEditingAPIStub()
+        editor.replaceHandler = { _, _, _, _, _ in
+            await entered.open()
+            await release.wait()
+            return APIClient.SlotIDRow(id: ex.id)
+        }
+        let api = SetWriteAPIStub()
+        let model = SyncModel(auth: auth, setWriteAPI: api, planEditingAPI: editor,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+        let task = Task { await model.replaceSlot(dayID: "day-a", teID: ex.id,
+                                                  exercise: "ring-row", expectedVersion: 1) }
+        await entered.wait()
+        auth.signOut()
+        await release.open()
+        let saved = await task.value
+        XCTAssertFalse(saved)
+        XCTAssertEqual(api.stateCalls, 0)
+        XCTAssertFalse(model.workoutEditorRefreshNeeded)
     }
 
     func testAcknowledgedExerciseAddSucceedsWhenPostMutationRefreshFails() async {

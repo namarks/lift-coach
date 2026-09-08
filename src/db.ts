@@ -6526,19 +6526,36 @@ export async function deleteTemplateExercise(
 export async function swapExercise(
   db: D1Database,
   userId: string,
-  ref: { day: string; from_exercise: string; to_exercise: string; carry_targets?: boolean },
+  ref: {
+    template_exercise_id?: string; day_template_id?: string;
+    day?: string; from_exercise?: string; to_exercise: string;
+    expected_version?: number;
+  },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'swap_exercise' },
   retryLegacyConflict = true,
-): Promise<TemplateExerciseRow | PrescriptionValidationError | null> {
+): Promise<TemplateExerciseRow | PlanVersionConflict | PrescriptionValidationError | null> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
-  const slot = await findSlot(db, userId, { day: ref.day, exercise: ref.from_exercise });
-  if (!slot) return null;
+  const slot = await findSlot(db, userId, { ...ref, exercise: ref.from_exercise });
+  if (!slot || !await getDayTemplateInPlan(db, plan.id, slot.day_template_id)) return null;
+  if (ref.expected_version !== undefined) {
+    if (!Number.isSafeInteger(ref.expected_version) || ref.expected_version < 1) {
+      return { error: 'invalid_fields', fields: ['expected_version'] };
+    }
+    if (ref.expected_version !== plan.version) {
+      return { conflict: true, current_version: plan.version };
+    }
+  }
+  if (typeof ref.to_exercise !== 'string' || !ref.to_exercise.trim()) {
+    return { error: 'invalid_fields', fields: ['to_exercise'] };
+  }
   const destination = await resolveExercise(db, ref.to_exercise) as { id: string; modality: string } | null;
-  if (!destination) throw new Error(`unknown_exercise:${ref.to_exercise}`);
+  if (!destination) return { error: 'invalid_fields', fields: ['to_exercise'] };
   const progression = slot.progression === null ? null : JSON.parse(slot.progression) as unknown;
   const invalid = validateExercisePrescription({ ...slot, progression }, { modality: destination.modality });
   if (invalid) return invalid;
+  // A replacement always preserves the saved prescription and slot identity.
+  // Historical logs retain their original exercise_id and values.
   const ts = now();
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
@@ -6556,9 +6573,9 @@ export async function swapExercise(
   statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
   if ((results[0]?.meta.changes ?? 0) !== 1) {
-    return retryLegacyConflict
+    return ref.expected_version === undefined && retryLegacyConflict
       ? swapExercise(db, userId, ref, attribution, false)
-      : null;
+      : currentPlanVersion(db, userId, plan.version);
   }
   if ((results[2]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) return null;
   return { ...slot, exercise_id: destination.id, updated_at: ts };

@@ -243,6 +243,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `DELETE /api/days/{id}?expected_version=` | Remove a day and scrub its recurring assignments. Completed history is detached, direct or same-plan schedule-resolved planned sessions become explicit rest, and removal is rejected while that day has a direct, same-plan schedule-resolved, or locally running workout. |
 | `POST /api/days/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
 | `PATCH /api/days/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
+| `POST /api/days/{id}/exercises/{teId}/swap` | `{to_exercise, expected_version}` — replace the exact caller-owned active slot, preserving its saved prescription, position, warm-up flag, and identity. Invalid carried targets return 400; a stale plan version returns 409. Historical sets retain their original exercise and values. |
 | `DELETE /api/days/{id}/exercises/{teId}` | Remove a slot; detaches (NULLs) historical `set_logs.template_exercise_id`. |
 | `PUT /api/plan/schedule` | Replace the recurring weekday → day/rest map with optimistic concurrency on both `expected_plan_id` and `expected_version`. |
 | `PUT /api/calendar/{date}` | Assign one concrete date to a day (`day_template_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
@@ -311,7 +312,7 @@ Claude context-aware with zero tool calls.
 - `add_note({scope, ref_id?, body})`
 - `update_plan({plan:<full tree>, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies).
 - `update_exercise({target, patch})` → one slot (`target` = template_exercise_id or {day, exercise}).
-- `swap_exercise({day, from_exercise, to_exercise, carry_targets?})`
+- `swap_exercise({day, from_exercise, to_exercise})` — always preserves saved targets; validates them against the destination modality. The formerly ignored `carry_targets` option is no longer advertised.
 - `add_exercise({day, exercise, target_sets, target_reps, target_reps_max?, rest_seconds?, target_rpe?, progression?, order_index?})`
 - `add_day({name, day_label, order_index?, exercises?})`  ← "add a deadlift day"
 - `adjust_today({intent:"deload|reduce_volume|reduce_intensity", magnitude?, day_label?})`
@@ -500,7 +501,7 @@ SwiftUI, iOS 17+, SwiftData as a cache mirroring the server tree. A
   chime/haptic/speech, headphone-aware), last-time chips per exercise. Per-set
   completion keys on `template_exercise_id` (the slot), not `exercise_id`, so the
   same movement in two slots / out-of-order logging never mis-completes.
-- **Edit workout:** in-app add/remove/reorder of exercises + warm-ups
+- **Edit workout:** in-app add/remove/reorder/replace of exercises + warm-ups
   (`EditWorkoutSheet`), editing the active plan's day template via the REST
   editor endpoints. Claude still owns programming/analysis; this is the executor
   letting you tweak the session in front of you.

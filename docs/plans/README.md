@@ -134,9 +134,10 @@ AI coaching.
   only after the round, authored by the member or Claude, without changing
   how sets log or roll up.
 - [Bodyweight training support](bodyweight-training-support/plan.md) —
-  **active**; holds/catalog and signed-load support are delivered. Variation
-  swaps remain at P2, now blocked on prescription integrity; P3 corrects
-  comparisons across assistance/load conditions and unsupported e1RM claims.
+  **active**; holds/catalog, signed-load support, and in-app variation swaps
+  are delivered in the repository. P3 corrects comparisons across
+  assistance/load conditions and unsupported e1RM claims; the P2 endpoint
+  and iOS picker await a separately authorized release.
 
 ### Connected training (`connected-training`)
 

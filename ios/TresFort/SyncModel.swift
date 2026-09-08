@@ -4541,6 +4541,44 @@ final class SyncModel: ObservableObject {
         } catch { handle(error, jwt: jwt) }
     }
 
+    @discardableResult
+    func replaceSlot(dayID: String, teID: String, exercise: String,
+                     expectedVersion: Int) async -> Bool {
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT,
+              !workoutEditorRefreshNeeded else { return false }
+        do {
+            _ = try await planEditingAPI.replaceExerciseSlot(
+                dayID: dayID, teID: teID, exercise: exercise,
+                expectedVersion: expectedVersion, jwt: jwt)
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return false
+            }
+            workoutEditorRefreshNeeded = true
+            await loadAfterMutation()
+            guard canInitiateBoundFeatureAction else {
+                auth.noteAccountStatePersisted(for: accountID)
+                return false
+            }
+            // The swap is committed even if the following pull fails. Close
+            // the picker and require a refresh before allowing further edits.
+            return true
+        } catch {
+            guard canInitiateBoundFeatureAction else { return false }
+            if case APIError.http(409, _) = error {
+                workoutEditorRefreshNeeded = true
+                await loadAfterMutation()
+                guard canInitiateBoundFeatureAction else { return false }
+                loadError = "Workout changed. Close and reopen Replace with… to review the latest targets."
+            } else if case APIError.http(400, _) = error {
+                loadError = "The saved targets cannot be used for this replacement. Edit the targets first or choose another exercise."
+            } else {
+                handle(error, jwt: jwt)
+            }
+            return false
+        }
+    }
+
     /// Move a slot to a new position. The backend densifies sibling
     /// order_index values around the requested destination.
     func moveSlot(dayID: String, teID: String, toIndex: Int) async {

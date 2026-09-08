@@ -932,13 +932,12 @@ const TOOLS: Record<string, Tool> = {
     note: (_a, r) => (r?.conflict || r?.error ? null : `Updated slot ${r.id}.`),
   },
   swap_exercise: {
-    description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday). Both names must match the closed catalog — use list_exercises to discover valid names.',
+    description: 'Replace an exercise in a day with another (e.g. RDL → good mornings on Wednesday), preserving its targets, order, warm-up flag, and slot identity. Carried targets must be valid for the destination modality. Historical sets keep their original exercise. Both names must match the closed catalog — use list_exercises to discover valid names.',
     inputSchema: obj(
       {
         day: { type: 'string', description: 'day label or name' },
         from_exercise: { type: 'string' },
         to_exercise: { type: 'string' },
-        carry_targets: { type: 'boolean' },
       },
       ['day', 'from_exercise', 'to_exercise'],
     ),
@@ -949,7 +948,6 @@ const TOOLS: Record<string, Tool> = {
         day: String(a.day),
         from_exercise: String(a.from_exercise),
         to_exercise: String(a.to_exercise),
-        carry_targets: a.carry_targets === true,
       }, {
         actor: 'mcp', operation: 'swap_exercise', args: a,
         note: `Swapped ${a.from_exercise} → ${a.to_exercise} on ${a.day}.`,
