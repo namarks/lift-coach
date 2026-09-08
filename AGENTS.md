@@ -184,8 +184,8 @@ clocks for existing authorized grants; successful refresh moves only inactivity.
 Bearer validation and refresh enforce both deadlines. Activation retries cannot
 restart clocks, and revoked/expired grants require new authorization. Static MCP
 bearers and Apple/app sessions keep their separate lifecycles. See the
-[coach contract](docs/plans/coach-access-integrity/decisions.md) and
-[release procedure](docs/plans/coach-access-integrity/release.md).
+[coach contract](docs/plans/completed/coach-access-integrity/decisions.md) and
+[release procedure](docs/plans/completed/coach-access-integrity/release.md).
 
 **MCP transport** (`src/mcp/server.ts`): stateless JSON-RPC 2.0 over
 Streamable HTTP, single `application/json` responses (no server-initiated

@@ -1,5 +1,9 @@
 # Training Data Trust service release
 
+The approved production execution is complete; retained deployment, activation
+and client-verification evidence is in [decisions.md](decisions.md). This
+procedure is historical and must not be rerun to restart existing grant clocks.
+
 This is the reviewable procedure for the owner release gate in the
 [coach plan](plan.md) and the other Training Data Trust member plans. It does
 not authorize execution. Policy approval covers 90 elapsed days without

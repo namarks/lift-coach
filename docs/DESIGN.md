@@ -348,7 +348,7 @@ models, lifecycles, and revocation paths → decoupled on purpose.
   or revoked grant. Access tokens remain capped at 30 days and must also satisfy
   the grant deadlines. Static bearers and Apple/app sessions remain separate.
   A lost successful exchange response requires
-  reauthorization. See the [coach contract](plans/coach-access-integrity/decisions.md).
+  reauthorization. See the [coach contract](plans/completed/coach-access-integrity/decisions.md).
 - **No per-tool scopes.** Per connected user there is one principal → scopes would add complexity with little security gain at this scale. The trust substitute is the per-user `audit_log` + Claude-written notes (visible, reversible).
 - **Rate limit:** soft cap (~600 req/min) via a Cloudflare rate-limit rule on `/mcp` or a KV counter — a runaway-loop guard, not a security boundary. Optional-but-recommended for v1.
 

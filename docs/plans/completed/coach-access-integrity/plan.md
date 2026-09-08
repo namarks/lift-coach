@@ -1,6 +1,6 @@
 # Coach Access Integrity
 
-Slug: coach-access-integrity · Status: gated · Updated: 2026-09-07 · Theme: training-trust
+Slug: coach-access-integrity · Status: done · Updated: 2026-09-07 · Theme: training-trust · Archived: completed
 
 ## Goal
 
@@ -8,7 +8,7 @@ Make a coach authorization code and refresh token single-use under concurrent
 requests, preserve the authorized user/client/scope through renewal, and let a
 member reliably end a coach grant. Keep the existing per-user MCP architecture
 and Apple/app-session lifecycle; this is a focused repair of the OAuth grant
-boundary uncovered in the [September app review](../../reviews/2026-09-app-review/report.md).
+boundary uncovered in the [September app review](../../../reviews/2026-09-app-review/report.md).
 
 ## Phases
 
@@ -55,41 +55,41 @@ boundary uncovered in the [September app review](../../reviews/2026-09-app-revie
     activation atomic and idempotent, including repeated identical requests.
   - Prove deadline equality, sliding inactivity, fixed absolute expiry, legacy
     adoption, replay/deletion fences, and activation/expiry interleavings in D1.
-- [ ] **P3 — Owner-approved production release and activation**
+- [x] **P3 — Owner-approved production release and activation**
   - [x] **(a) Release the approved service source and schema**
     - Nick approved source `2e67f93`, migrations `0040`–`0042`, the client check
       and one-time activation with compatible forward recovery. The exact
       reviewed Worker is deployed and its source/schema independently verified.
-  - [ ] **(b) Verify an existing client and activate the approved policy**
+  - [x] **(b) Verify an existing client and activate the approved policy**
     - Complete a real authenticated read through an existing client, then
       activate once and repeat the read. Activation is already authorized.
       Do not reset clocks on retry or revive revoked/expired grants.
-
-## Execution frontier
-
-- P3(b)
 
 ## Dependencies
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P1 | coordinates_with | plan:member-activation-and-adherence#P0 | Both touch Coach Connect and first-use connection state. |
-| P3(b) | gated_by | external:existing-authorized-coach-client | Activation is approved, but the required authenticated client check is unexercised: the Mac was locked and the normal CLI client was logged out. |
 
-## Next step
+## Completion evidence
 
-**Now (@owner):** Make an existing authorized client available for P3(b)'s
-read-only check, for example by unlocking the Mac. The agent can then finish
-the already-approved activation and postactivation read using the
-[release procedure](release.md), without another release approval. The service
-and migrations are live; the policy remains disabled. TestFlight is separate.
-See [decisions.md](decisions.md).
+The approved policy was activated at **2026-09-08 00:06:37 UTC** (September 7,
+17:06:37 Pacific), after an existing Claude Desktop connection successfully read
+the current plan and history. Independent verification confirmed the unchanged
+reviewed Worker, exact activation epoch and valid grant deadlines. Fresh reads
+through the same connection also succeeded after activation. See
+[decisions.md](decisions.md) for retained evidence and [release.md](release.md)
+for the one-time procedure and recovery boundary.
+
+TestFlight and production prescription/edit/restore canaries remain in the
+current prescription and reversible-plan workstreams; they do not reopen the
+completed coach lifecycle transition.
 
 ## Notes / open questions
 
 - Original failure evidence: `src/oauth.ts` at the September review's code
   source `696c1d34` and the runnable
-  [OAuth reproducer](../../reviews/2026-09-app-review/evidence/oauth-consumption-repro.mjs).
+  [OAuth reproducer](../../../reviews/2026-09-app-review/evidence/oauth-consumption-repro.mjs).
   It exercises the actual Hono route with a synthetic D1 interleaving, not a
   deployed service. This is the pre-fix review baseline, not delivery evidence.
   No compromise or production exploitation was established.

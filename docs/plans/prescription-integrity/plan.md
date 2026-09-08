@@ -87,8 +87,8 @@ Snapshots and undo complement these guarantees; they do not replace them.
 
 ## Next step
 
-**Now (@owner):** Authorize a concrete P3(b) validation/attribution canary after
-the pending existing-client read check. The service release is complete;
+**Now (@owner):** Authorize a concrete P3(b) validation/attribution canary.
+The existing-client reads and service release are verified;
 production write behavior and any legacy correction remain unexercised. The
 [contract and legacy recovery proof](decisions.md) preserve compatibility and
 the production boundary; local tests do not establish production row health.

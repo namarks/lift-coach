@@ -49,7 +49,7 @@ health of production rows or authorize modifying them.
 
 Nick approved exact source `2e67f93` and migrations through `0042`. Production
 now serves that source at 100%, with independent source/schema verification
-recorded in the [shared release evidence](../coach-access-integrity/decisions.md).
+recorded in the [shared release evidence](../completed/coach-access-integrity/decisions.md).
 No production prescription was edited or corrected, and no validation or
 attribution canary was executed. A concrete production canary and any legacy
 repair remain separate owner decisions.

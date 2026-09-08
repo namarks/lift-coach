@@ -93,10 +93,12 @@ recoverable before adding product depth.
 
 - [Reversible plan management](reversible-plan-management/plan.md) —
   **gated**; service live, with TestFlight and the edit/restore canary awaiting approval.
-- [Coach access integrity](coach-access-integrity/plan.md) — **gated**;
-  verify an existing client, then finish the already-approved policy activation.
 - [Prescription integrity](prescription-integrity/plan.md) — **gated**;
   service live; bounded aggregate checks passed, with the validation/attribution canary pending.
+
+[Coach access integrity](completed/coach-access-integrity/plan.md) is retained as
+completed history after verified production activation and successful client
+reads before and after the transition.
 
 ### Coaching (`coaching`)
 

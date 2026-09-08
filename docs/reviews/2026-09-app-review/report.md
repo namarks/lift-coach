@@ -127,7 +127,7 @@ Refresh also accepted an unrelated supplied client identifier. That binding
 gap alone is not evidence of unauthenticated takeover: these are public clients.
 See [token exchange](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/src/oauth.ts#L324).
 
-**Closure:** new [coach-access-integrity](../../plans/coach-access-integrity/plan.md)
+**Closure:** new [coach-access-integrity](../../plans/completed/coach-access-integrity/plan.md)
 covers atomic validated consumption/issuance, replay handling and scoped
 revocation. Refresh lifetime and legacy production transition remain explicit
 decisions. The design should follow grant-family replay protection in
