@@ -21,7 +21,7 @@ Two model corrections that the workout library exposed:
 ## Phases
 
 - [ ] **P0 — Rename `day_templates` to `workouts` end to end**
-  - [ ] **(a) Repository implementation and rollout verification**
+  - [x] **(a) Repository implementation and rollout verification**
     - Migration: `ALTER TABLE day_templates RENAME TO workouts`; rename
       `template_exercises.day_template_id` and `sessions.day_template_id` to
       `workout_id`; recreate `ix_te_day` under the new column. SQLite rewrites
@@ -197,7 +197,7 @@ Two model corrections that the workout library exposed:
 
 ## Execution frontier
 
-- P0(a)
+- P0(b)
 
 ## Dependencies
 
@@ -215,13 +215,22 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 ## Next step
 
-**Now (@agent):** Implement and verify P0(a), then coordinate Library P0 on
-its compatible API/model vocabulary. The 2026-09-09 goal authorizes isolated
-repository implementation, tests, independent review, PRs and merge, and accepts
-the three-stage server-first design with one TestFlight compatibility cycle.
-Prepare concrete release/rollback instructions. P0(b) remains a separate
-production/app release gate; P0(c) requires the observed cycle. P1 is outside
-this goal and stays unselected.
+**Now (@owner):** After PR #161 passes current-head review/CI and merges,
+authorize the concrete release-A deployment in [the rollout runbook](rollout.md)
+when ready. P0(a) delivers the adaptive Worker, migration 0045 plus rollback,
+canonical service/wire vocabulary, compatible iOS decoding and Library P0.
+Production migration/deployment and TestFlight distribution have not run in
+this workstream. P0(b) remains open; P0(c) requires a later canonical-writing
+app and the observed compatibility cycle. P1 remains outside this goal.
+
+Repository verification (2026-09-09, [PR #161](https://github.com/namarks/tres-fort/pull/161)):
+`npm run typecheck`, `npm test` (896 tests / 61 files, plus upload and query-plan
+checks), `npm run plans:check`, and Wrangler deploy dry-run passed. The local
+same-Worker migration/rename/rollback rehearsal passed. iOS unit coverage passed
+397 tests; all 20 relevant creation, group and library UI journeys passed across
+the final runs. The independent review approved the implementation; the final
+head and CI remain merge gates. No production changes or app distribution are
+claimed by this repository milestone.
 
 ## Notes / open questions
 

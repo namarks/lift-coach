@@ -136,7 +136,7 @@ CREATE TABLE sessions (
   id                TEXT PRIMARY KEY,
   user_id           TEXT NOT NULL REFERENCES users(id),
   plan_id           TEXT NOT NULL REFERENCES plans(id),
-  workout_id   TEXT REFERENCES workouts(id),   -- NULL = ad-hoc
+  workout_id   TEXT REFERENCES workouts(id),   -- NULL = unpinned (status/schedule decide rest)
   date              TEXT NOT NULL,                        -- 'YYYY-MM-DD' device-local
   status            TEXT NOT NULL DEFAULT 'planned',      -- planned|in_progress|completed|skipped
   started_at        INTEGER,

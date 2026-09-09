@@ -34,7 +34,7 @@ final class WorkoutLibraryJourneyTests: XCTestCase {
         let image = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         image.name = "workout-library"; image.lifetime = .keepAlways; add(image)
         app.navigationBars["Workouts"].buttons["Done"].tap()
-        XCTAssertTrue(app.staticTexts["HOTEL"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["TODAY · HOTEL"].waitForExistence(timeout: 5))
     }
 
     func testDeleteIsExplicitAndSeparateFromUnschedule() {

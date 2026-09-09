@@ -53,17 +53,30 @@ describe.each([false, true])('wire contracts with migrated=%s', (migrated) => {
     tree = (await api('plan/active')).body;
   });
 
-  it('accepts both authoring routes and MCP tool names with correct audit attribution', async () => {
+  it('accepts the released REST authoring route', async () => {
     expect((await api(`days/${hotel}`, 'PATCH', { name: 'Travel' })).status).toBe(200);
-    const oldTool = await tool('add_day', { name: 'Old coach' });
-    const newTool = await tool('add_workout', { name: 'New coach' });
-    expect(oldTool.id).toBeTruthy(); expect(newTool.id).toBeTruthy();
-    expect(await tool('update_workout', { workout_id: hotel, patch: { notes: 'On demand' } })).not.toHaveProperty('error');
-    expect(await tool('update_day', { day_template_id: hotel, patch: { name: 'Travel' } })).not.toHaveProperty('error');
+    expect((await api('plan/active')).body.workouts.find((w: any) => w.id === hotel).name).toBe('Travel');
+  });
+
+  it.each(['add_day', 'add_workout'])('audits the called %s name', async (name) => {
+    const added = await tool(name, { name: 'Coach workout' });
+    expect(added.id).toBeTruthy();
+    const audit = await env.DB.prepare('SELECT tool FROM audit_log WHERE user_id=? AND tool=?')
+      .bind(tree.user_id, name).all<{ tool: string }>();
+    expect(audit.results).toContainEqual({ tool: name });
+  });
+
+  it.each(['update_day', 'update_workout'])('accepts the %s selector', async (name) => {
+    const key = name === 'update_day' ? 'day_template_id' : 'workout_id';
+    expect(await tool(name, { [key]: hotel, patch: { notes: 'On demand' } })).not.toHaveProperty('error');
+    expect((await api('plan/active')).body.workouts.find((w: any) => w.id === hotel).notes).toBe('On demand');
+  });
+
+  it('deletes through the canonical MCP tool at the observed plan version', async () => {
+    expect(await tool('delete_workout', { workout_id: hotel, expected_version: tree.version })).toMatchObject({ ok: true });
     const latest = (await api('plan/active')).body;
-    expect(await tool('delete_workout', { workout_id: newTool.id, expected_version: latest.version })).toMatchObject({ ok: true });
-    const audit = await env.DB.prepare('SELECT tool FROM audit_log WHERE user_id=? ORDER BY created_at').bind(tree.user_id).all<{ tool: string }>();
-    expect(audit.results.map(r => r.tool)).toEqual(expect.arrayContaining(['add_day', 'add_workout', 'update_day', 'update_workout', 'delete_workout']));
+    expect(latest.workouts.map((w: any) => w.id)).toEqual([gym.id]);
+    expect(latest.version).toBe(tree.version + 1);
   });
 
   it('assigns an on-demand workout over the scheduled workout without changing the recurring plan', async () => {

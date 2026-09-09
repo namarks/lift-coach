@@ -10,12 +10,13 @@ and run a genuinely unplanned session when life or travel breaks the pattern.
 The recurring weekly schedule becomes one optional way to use the library, not
 the frame every workout must fit into.
 
-## Why this is a framing change, not a new data model
+## Library model
 
-The backend already stores what a library needs:
+The shared versioned plan tree supplies the library. The coordinated rename
+changes its vocabulary without creating a second workout store:
 
-- `day_templates` are reusable workouts. Nothing about a row ties it to a
-  weekday; `plans.meta.schedule` is a separate weekday → `day_template_id`
+- `workouts` are reusable workouts. Nothing about a row ties it to a
+  weekday; `plans.meta.schedule` is a separate weekday → `workout_id`
   map, and a day with no schedule entry is already valid and runnable
   (manual-workout-authoring P0 verified "an unscheduled day remains available
   in the routine but does not appear in Today by itself").
@@ -26,10 +27,9 @@ The backend already stores what a library needs:
 - `projectCalendar` already prefers a real session over the schedule, so a
   library workout dropped on a scheduled day simply wins for that date.
 
-What is missing is the product framing and three capabilities the framing
-exposes:
+The original gaps were product framing and three capabilities it exposes:
 
-1. **The UI names everything "Routine."** The `RoutineView` add flow says
+1. **The UI named everything "Routine."** The prior `RoutineView` add flow says
    "adds a reusable workout to your routine", deletion says "recurring
    weekdays using this workout become rest days", and a workout with no
    weekday has no visible identity of its own. A member reads this as "every
@@ -37,8 +37,8 @@ exposes:
 2. **No library metadata.** A member with a hotel workout, a 20-minute
    bodyweight session, and three gym days has no way to tag, group, or retire
    workouts. The only exit is delete, which is framed around the schedule.
-3. **No true one-off session.** A session with `day_template_id = NULL` today
-   is not "freestyle": `deleteDayTemplate`'s scope predicate and the runner
+3. **No true one-off session.** A session with `workout_id = NULL` today
+   is not "freestyle": `deleteWorkout`'s scope predicate and the runner
    both resolve a null-template session through the weekly schedule. There is
    no way to walk into a gym, log whatever the equipment allows, and
    optionally save what you did as a new library workout.
@@ -48,13 +48,13 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Phases
 
-- [ ] **P0 — Present the library as the primary object**
+- [x] **P0 — Present the library as the primary object**
   - Rename the routine surface to **Workouts**. Each workout card shows its
     own identity plus a schedule badge ("Mon · Thu" or "On demand"). The
     schedule becomes a section of that screen, not its frame.
   - Split the destructive action: **Unschedule** clears weekday entries only
     (existing `PUT /api/plan/schedule`); **Delete workout** keeps the current
-    `DELETE /api/days/{id}` semantics and copy. The add flow stops implying
+    `DELETE /api/workouts/{id}` semantics and copy. The add flow stops implying
     that a new workout must be scheduled.
   - Make "put this workout on a date" a first-class calendar gesture for any
     today-or-future date that is not inside a `can_train_light=false` trip,
@@ -72,23 +72,23 @@ No second editor, no per-session template copies, no weeks table.
   - Reuse prescription-integrity's validated atomic writer contract for every
     new metadata mutation, including conflicts and audit. P0 presentation work
     remains independent of this backend prerequisite.
-  - Add `day_templates.tags` (JSON array of short strings such as `travel`,
-    `quick`, `bodyweight`, `hotel`) and `day_templates.archived_at`
+  - Add `workouts.tags` (JSON array of short strings such as `travel`,
+    `quick`, `bodyweight`, `hotel`) and `workouts.archived_at`
     (nullable epoch-ms) in one migration. Both are plan-tree fields: every
     write goes through the existing atomic plan-version writer, bumps
     `plans.version`, and audits as the calling actor.
   - Archiving hides a workout from pickers and Today while preserving every
-    completed or in-progress `sessions.day_template_id` and
+    completed or in-progress `sessions.workout_id` and
     `set_logs.template_exercise_id` reference. In the same write it clears
     the workout's weekday entries and resolves its future dated assignments
-    the way `deleteDayTemplate` already does: a `planned` session pointing
+    the way `deleteWorkout` already does: a `planned` session pointing
     at the workout becomes explicit rest with its attempt advanced, because
     `projectCalendar` gives a real session precedence over the schedule and
     would otherwise keep showing the archived workout. Archiving is rejected
     while the workout has an in-progress session, matching delete.
   - Every assignment resolver rejects an archived workout, not only the
     updated pickers: `setPlanSchedule`, `setPlannedSession`,
-    `getDayTemplateInPlan` as used by `POST /api/sessions` and
+    `getWorkoutInPlan` as used by `POST /api/sessions` and
     `PUT /api/calendar/{date}`, and the MCP day-ref lookup all treat
     `archived_at IS NOT NULL` as unknown. Otherwise an older iOS build that
     ignores the field, or any caller still holding the id, can reassign it
@@ -97,7 +97,7 @@ No second editor, no per-session template copies, no weeks table.
     an archived id.
     `update_plan`'s rebuild must carry both fields through the day remap.
   - Expose both fields through `get_current_plan`, `add_day`, `update_day`,
-    and `PATCH /api/days/{id}`; `/api/state` carries them in the plan tree.
+    and `PATCH /api/workouts/{id}`; `/api/state` carries them in the plan tree.
   - When a date falls inside a `plans.meta.trips` range, the calendar and
     Today pickers surface `travel`-tagged workouts first. This is ordering,
     not a rule engine.
@@ -114,9 +114,9 @@ No second editor, no per-session template copies, no weeks table.
     the archived case explicit and keep the two in parity).
 - [ ] **P2 — Freestyle session and "save as workout"**
   - Add an explicit `sessions.kind` (`'planned' | 'freestyle'`, default
-    `'planned'`) so a freestyle session with `day_template_id = NULL` never
+    `'planned'`) so a freestyle session with `workout_id = NULL` never
     resolves through the weekly schedule. Update the scope predicate in
-    `deleteDayTemplate`, the runner's template inference, and
+    `deleteWorkout`, the runner's template inference, and
     `projectCalendar` (a freestyle session is a real session and wins for its
     date; it renders with its logged exercises rather than a template name).
     Released-client compatibility: the current runner infers a template from
@@ -170,7 +170,7 @@ No second editor, no per-session template copies, no weeks table.
 
 ## Execution frontier
 
-- P0
+- P1
 
 ## Dependencies
 
@@ -184,17 +184,27 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 |---|---|---|---|
 | P0 | blocked_by | plan:workouts-and-multi-session#P0(a) | The selected goal establishes canonical workout terminology and compatible clients before the library UI. Production rollout and compatibility cleanup do not block this repository slice. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
-| P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `day_templates` columns and serializers; whichever lands second rebases onto the other's migration. |
+| P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `workouts` columns and serializers; whichever lands second rebases onto the other's migration. |
 | P2 | feeds | plan:coaching-feedback-loop | Freestyle sessions and save-as-workout give the coach evidence of what a member actually does when the plan breaks. |
 
 ## Next step
 
-**Now (@agent):** After the rename's P0(a) repository contract is verified,
-implement Library P0 using the shared workout vocabulary and existing assignment
-and schedule endpoints. The 2026-09-09 goal activates P0 only; tags/archive,
-freestyle and multi-session behavior remain outside scope. Keep the first iOS
-build compatible with the deployed Worker and coordinate UI delivery with the
-server-first rollout, without waiting for compatibility cleanup.
+**Now (@owner):** Library P0 is implemented and locally verified in
+[PR #161](https://github.com/namarks/tres-fort/pull/161), pending final-head review,
+CI and merge. The Workouts surface includes schedule badges, separate Unschedule
+and Delete workout actions, and a today-or-future date picker using the shared
+assignment guard and attempt-CAS writer. The first build keeps released outgoing
+request shapes and can ship during the rename's compatibility window after
+separate TestFlight authorization. Follow the [staged rollout](../workouts-and-multi-session/rollout.md).
+
+Validation: 397 iOS unit tests, the two new library journeys, and the 18 existing
+creation/group journeys passed across the final runs; the full backend suite
+passed 896 tests, including both physical schemas and old/new wire contracts.
+Unschedule retains the workout and dated session while clearing its recurring
+entries. The library-date assignment appears in Today and the coach's current
+workout response without changing the recurring plan. Tags/archive (P1),
+freestyle (P2), and multiple sessions per date remain unimplemented and outside
+the completed goal's scope.
 
 ## Notes / open questions
 
@@ -202,10 +212,10 @@ server-first rollout, without waiting for compatibility cleanup.
   around the routine or block day, which is too rigid for travel and ad-hoc
   adjustment. The backend already treats days as reusable and the schedule as
   optional; the gap is presentation plus tags, archive, and freestyle.
-- Rejected: a separate `workouts` table beside `day_templates`. It would fork
+- Rejected: a second workout table beside the old `day_templates` store. It would fork
   the versioned tree, force every editor and MCP tool to handle two shapes,
   and break `set_logs.template_exercise_id` history for one of them.
-  `day_templates` is the library.
+  The renamed `workouts` table is the same library.
 - Rejected: per-session copies of a template for one-off edits. Editing
   today's slot in `EditWorkoutSheet` already edits the library workout, which
   is the right default for a coach-owned plan; a member who wants a
@@ -218,12 +228,12 @@ server-first rollout, without waiting for compatibility cleanup.
   template name for `get_group_feed`; show "Freestyle · N exercises" and
   revisit with `group-experience-and-governance`.
 - Naming and one-session-per-date are both real constraints this plan works
-  within: `day_templates` is a historical name for what is really a workout,
+  within: `day_templates` was the historical name for a reusable workout,
   and `ux_session_user_date` (migration `0029`) forbids two strength sessions
   on one civil date. Both are addressed by
   [Workouts and multi-session days](../workouts-and-multi-session/plan.md);
-  P0 here uses "workout" in every member- and coach-facing string but keeps
-  the storage and API names until that plan's rename lands.
+  The coordinated P0 delivery uses canonical workout terms while retaining
+  the released aliases for the server-first rollout and compatibility cycle.
 - `sessions.kind` is the one new session-log column. It is set at creation
   and never changes, so it does not disturb the attempt CAS or the
   `(user_id, date)` uniqueness rule.

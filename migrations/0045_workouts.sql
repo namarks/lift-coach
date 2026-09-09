@@ -1,5 +1,5 @@
 -- Release B only: deploy the schema-adaptive release-A Worker BEFORE applying.
--- See docs/plans/workouts-and-multi-session/release.md. SQLite updates foreign
+-- See docs/plans/workouts-and-multi-session/rollout.md. SQLite updates foreign
 -- keys and trigger references; IDs, session attempts and logged values survive.
 ALTER TABLE day_templates RENAME TO workouts;
 ALTER TABLE template_exercises RENAME COLUMN day_template_id TO workout_id;
