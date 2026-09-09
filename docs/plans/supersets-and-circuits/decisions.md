@@ -9,8 +9,9 @@ equal round counts, and equal group rests. Each set retains its own slot ID;
 sessions, logged sets, and analytics do not acquire a grouping identity.
 
 `db.ts` remains the public service facade. `exerciseGroups.ts` owns pure group
-validation and singleton normalization; `exerciseGroupWrites.ts` reuses the
-existing plan claim, mutation, version, audit, note, and snapshot transaction.
+validation and singleton normalization. Group writes and receipt lookup stay
+in `db.ts`, reusing its existing plan claim, mutation, version, audit, note,
+and snapshot transaction.
 Existing slot, rebuild, restore, and recurring-adjustment paths also validate
 the final group structure. Removing the penultimate member dissolves the
 remaining singleton without changing its ordinary rest.
