@@ -118,58 +118,15 @@ private struct ExerciseDetailView: View {
     @ObservedObject var sync: SyncModel
     let exerciseID: String
 
-    private struct Point: Identifiable {
-        let id: String
-        let date: String
-        let cohort: ExerciseMetricCohort
-        var value: Double { Double(cohort.bestHoldSeconds ?? cohort.bestReps ?? 0) }
-    }
-    private struct Comparison: Identifiable {
-        let points: [Point]
-        var id: ExerciseMetricCohort.Key { points[0].cohort.key }
-    }
-
-    private func comparisons(_ history: [SyncModel.SessionStat]) -> [Comparison] {
-        let points = history.flatMap { session in
-            session.cohorts.map { Point(id: session.id, date: session.date, cohort: $0) }
-        }
-        return Dictionary(grouping: points, by: { $0.cohort.key }).values
-            .map { Comparison(points: $0.sorted { $0.date < $1.date }) }
-            .sorted {
-                let a = $0.id, b = $1.id
-                return a.timed == b.timed ? a.weight < b.weight : !a.timed
-            }
-    }
+    @State private var selectedProgress: ExerciseHistoryProgress.ID?
 
     var body: some View {
         let hist = sync.history(for: exerciseID)
-        let estimated = hist.filter { $0.est1RM != nil }
+        let options = ExerciseHistoryProgress.options(hist)
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
-                if !estimated.isEmpty {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("ESTIMATED 1RM").font(Theme.mono(10, .bold))
-                        Chart(estimated) { session in
-                            LineMark(x: .value("Date", session.date),
-                                     y: .value("Estimated 1RM", session.est1RM ?? 0))
-                            PointMark(x: .value("Date", session.date),
-                                      y: .value("Estimated 1RM", session.est1RM ?? 0))
-                        }
-                        .chartXAxis {
-                            AxisMarks(values: axisDates(estimated.map(\.date))) { value in
-                                AxisGridLine()
-                                AxisValueLabel(anchor: value.index == 0 ? .topLeading
-                                    : value.index == value.count - 1 ? .topTrailing : .top)
-                                    .foregroundStyle(Theme.muted)
-                            }
-                        }
-                        .frame(height: 180)
-                    }.foregroundStyle(Theme.accent)
-                }
-                Text("Compare the same movement, load and rep or hold mode. Total reps describe work logged.")
-                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
-                ForEach(comparisons(hist)) { comparison in
-                    comparisonCard(comparison.points)
+                if let progress = ExerciseHistoryProgress.selected(selectedProgress, from: options) {
+                    progressCard(progress, options: options)
                 }
                 ForEach(hist.reversed()) { session in
                     DisclosureGroup("SESSION · \(session.date) · \(session.setCount) sets") {
@@ -200,31 +157,55 @@ private struct ExerciseDetailView: View {
         .preferredColorScheme(.dark)
     }
 
-    private func comparisonCard(_ points: [Point]) -> some View {
-        let cohort = points[0].cohort
-        let metric = cohort.key.timed ? "BEST HOLD (s)" : "BEST REPS"
-        return VStack(alignment: .leading, spacing: 10) {
-            Text(cohort.conditionLabel).font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
-            Text(metric + (cohort.key.laterality == "unilateral" ? " · PER SIDE" : ""))
-                .font(Theme.mono(10)).foregroundStyle(Theme.muted)
-            Text("Best \(Int(points.map(\.value).max() ?? 0)) · Last \(Int(points.last?.value ?? 0))")
-                .font(Theme.mono(12)).foregroundStyle(Theme.accent)
-            Chart(points) { point in
-                LineMark(x: .value("Date", point.date), y: .value(metric, point.value))
-                    .foregroundStyle(Theme.accent)
-                PointMark(x: .value("Date", point.date), y: .value(metric, point.value))
-                    .foregroundStyle(Theme.accent)
+    private func progressCard(_ progress: ExerciseHistoryProgress,
+                              options: [ExerciseHistoryProgress]) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("PROGRESS").font(Theme.mono(10, .bold)).tracking(2)
+                .foregroundStyle(Theme.muted)
+            if options.count > 1 {
+                Picker("Progress", selection: Binding(
+                    get: { progress.id },
+                    set: { selectedProgress = $0 }
+                )) {
+                    ForEach(options) { option in
+                        Text(option.title).tag(option.id)
+                    }
+                }
+                .pickerStyle(.menu)
+                .tint(Theme.accent)
+                .accessibilityIdentifier("history.progress.selector")
+            } else {
+                Text(progress.title).font(Theme.mono(13, .bold)).foregroundStyle(Theme.text)
             }
-            .chartXAxis {
-                AxisMarks(values: axisDates(points.map(\.date))) { value in
-                    AxisGridLine()
-                    AxisValueLabel(anchor: value.index == 0 ? .topLeading
-                                    : value.index == value.count - 1 ? .topTrailing : .top)
-                                    .foregroundStyle(Theme.muted)
+            if let last = progress.points.last {
+                if progress.hasTrend {
+                    Text("Best \(fmtW(progress.points.map(\.value).max() ?? 0)) · Latest \(fmtW(last.value)) \(progress.unit)")
+                        .font(Theme.mono(12)).foregroundStyle(Theme.accent)
+                    Chart(progress.points) { point in
+                        LineMark(x: .value("Date", point.date), y: .value(progress.title, point.value))
+                            .foregroundStyle(Theme.accent)
+                        PointMark(x: .value("Date", point.date), y: .value(progress.title, point.value))
+                            .foregroundStyle(Theme.accent)
+                    }
+                    .chartXAxis {
+                        AxisMarks(values: axisDates(progress.points.map(\.date))) { value in
+                            AxisGridLine()
+                            AxisValueLabel(anchor: value.index == 0 ? .topLeading
+                                : value.index == value.count - 1 ? .topTrailing : .top)
+                                .foregroundStyle(Theme.muted)
+                        }
+                    }
+                    .chartYAxis { AxisMarks { AxisValueLabel().foregroundStyle(Theme.muted) } }
+                    .frame(height: 180)
+                    .accessibilityIdentifier("history.progress.chart")
+                } else {
+                    Text("\(fmtW(last.value)) \(progress.unit) · \(last.date)")
+                        .font(Theme.mono(14)).foregroundStyle(Theme.accent)
+                        .accessibilityIdentifier("history.progress.summary")
+                    Text("Log another day to see a trend.")
+                        .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                 }
             }
-            .chartYAxis { AxisMarks { AxisValueLabel().foregroundStyle(Theme.muted) } }
-            .frame(height: 140)
         }
         .padding(16)
         .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))

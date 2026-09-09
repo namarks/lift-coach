@@ -9,7 +9,9 @@ enum UIFixtureScenario: String, CaseIterable {
     case ordinary, bodyweight, timed, pending, onboarding, groups
     case historySmall = "history-small", historyLarge = "history-large"
 
-    var isHistory: Bool { self == .historySmall || self == .historyLarge }
+    case historyProgress = "history-progress"
+
+    var isHistory: Bool { self == .historySmall || self == .historyLarge || self == .historyProgress }
     case correctionFailure = "correction-failure", readyToFinish = "ready-to-finish"
 
     static let selected: Self? = {
@@ -47,7 +49,8 @@ enum UIFixtureModel {
         }
         if let scenario = UIFixtureScenario.selected, scenario.isHistory,
            ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_HISTORY"] != "1" {
-            let history = HistoryFixtureData.dataset(sessionCount: scenario == .historySmall ? 12 : 1_040)
+            let history = scenario == .historyProgress ? HistoryFixtureData.progressDataset()
+                : HistoryFixtureData.dataset(sessionCount: scenario == .historySmall ? 12 : 1_040)
             let state = StateResponse(plan: PlanTree(id: "synthetic-plan", name: "Synthetic history", version: 1, days: [], meta: nil),
                 plan_version: 1, sessions: history.sessions, sets: history.sets,
                 external_events: [], external_activities: [], activities: [], server_time: history.server_time)
