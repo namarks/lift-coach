@@ -2445,7 +2445,9 @@ final class SetOutboxTests: XCTestCase {
         let ex = exercise(targetSets: 1)
         let s = session(status: "in_progress")
         let api = SetWriteAPIStub()
+        let releaseRejection = SetAsyncLatch()
         api.logHandler = { _, _, _ in
+            await releaseRejection.wait()
             throw APIError.http(422, "stale_template_exercise")
         }
         let model = SyncModel(
@@ -2456,7 +2458,10 @@ final class SetOutboxTests: XCTestCase {
 
         await model.logCurrentSet(
             expected: ex, expectedSetNumber: 1)
+        // Delivery runs in the background. Observe the optimistic state
+        // before allowing the rejection to reopen the failed slot.
         XCTAssertTrue(model.finished)
+        await releaseRejection.open()
         await model.drainSetOutbox()
 
         XCTAssertFalse(model.finished)
