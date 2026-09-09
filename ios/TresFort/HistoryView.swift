@@ -207,16 +207,17 @@ private struct ExerciseDetailView: View {
                 }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(16)
         .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    /// Categorical civil dates retain every plotted point; sparse labels keep
-    /// multi-year history readable at ordinary phone widths.
+    /// Retain every plotted day, but label only the range endpoints so full
+    /// civil dates stay readable inside the progress card at phone widths.
     private func axisDates(_ dates: [String]) -> [String] {
         let unique = Array(Set(dates)).sorted()
-        guard unique.count > 3 else { return unique }
-        return [unique[0], unique[unique.count / 2], unique[unique.count - 1]]
+        guard unique.count > 2 else { return unique }
+        return [unique[0], unique[unique.count - 1]]
     }
 
     private func sessionSets(_ sid: String) -> [SetLog] {
