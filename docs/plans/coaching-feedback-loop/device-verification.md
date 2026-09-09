@@ -1,44 +1,36 @@
 # Physical iPhone feedback verification
 
-Use the separate `FeedbackVerification` development target to exercise the
-production `WorkoutFeedbackEditor` and `OnDeviceFeedbackTranscriber` without
-loading Tres Fort's account, API, local history or release scheme. It keeps
-approved test text only in screen memory. Use synthetic phrases.
+Use a future Tres Fort TestFlight build containing PR #163 after separate
+release authorization. Deploy the compatible Worker before distributing that
+build: older Workers can reject its `expected_feedback` finish field. Record
+the app version/build, device, iOS version and observed permission state with
+the results. Use short test phrases rather than sensitive details.
 
-Generate and build with existing local signing assets:
+The canonical plan records the owner decision to defer these checks until
+TestFlight. These instructions do not authorize deployment or distribution.
 
-```sh
-cd ios
-xcodegen generate --spec feedback-verification.yml
-xcodebuild -project FeedbackVerification.xcodeproj -scheme FeedbackVerification \
-  -configuration Debug -destination generic/platform=iOS \
-  -derivedDataPath ../.artifacts/feedback-device build
-```
+1. Open workout feedback and type a short note before choosing **Talk about
+   your workout**. Deny speech or microphone access when prompted. Confirm the
+   note remains, **Type instead** works, and **Skip** permits completion without
+   adding or clearing feedback. Record which permission was denied; check the
+   other prompt when available. Do not describe an existing permission setting
+   as a fresh-install prompt.
+2. With speech and microphone permissions enabled in Settings, choose **Talk
+   about your workout**, speak a short phrase, then **Stop recording**. Confirm
+   the final words arrive and microphone capture stops. Edit the transcript and
+   optionally choose a fatigue rating. Only **Save feedback** approves the words.
+3. Start another recording and **Cancel recording**. Confirm the earlier text
+   returns. Start again, switch apps, then return. Capture must have stopped;
+   a typed correction must not be replaced by a late recognition result.
+4. Save feedback, leave and relaunch before finishing. Resume the workout and
+   confirm the approved words remain. Finish, then verify the exact words and
+   optional rating in private history and the coach's session/brief reads.
+   Check the last-completed brief path when a newer session is unfinished or
+   skipped. The production app intentionally preserves approved feedback
+   through relaunch; recording audio must not be retained.
 
-Install on the already registered, unlocked development iPhone with Xcode or
-`devicectl`. Do not add `-allowProvisioningUpdates`, alter credentials, upload
-to TestFlight, or replace the Tres Fort app. If a private development installer
-is needed for a remote device, obtain authorization for the actual download
-audience, serve only that installer and its manifest, and remove the temporary
-endpoint after the check. Build artifacts and provisioning material stay out
-of Git.
-
-Perform and record the observed result in the canonical plan:
-
-1. On a fresh permission state, type a short note before choosing Talk. Deny
-   speech or microphone access when prompted. Confirm the typed text remains,
-   Type instead works, and Skip can finish the check.
-2. With permission granted, choose Talk, speak a short synthetic phrase, and
-   Stop. Confirm the final words arrive, capture stops, the text can be edited,
-   and only Save feedback displays the approved text.
-3. Start another recording and Cancel. Confirm the earlier typed text returns.
-   Start again and background the app. Confirm capture stops and late results
-   cannot replace a typed correction after returning.
-4. Relaunch the checker. Its prior test text must be gone. Remove the checker
-   when testing is finished. This target does not verify persisted finish
-   delivery; the app's simulator journeys and shared D1/MCP fixture cover that
-   separate boundary.
-
-An unavailable language/model is a valid fallback observation, but does not
-prove successful on-device transcription. Simulator permission substitutes
-do not count as fresh physical-device grant/denial evidence.
+An unavailable language/model is a fallback observation, not evidence of
+successful on-device transcription. Report the failing step and any visible
+message. Automated simulator recognition substitutes and D1/MCP fixtures cover
+delivery, conflicts and delayed acknowledgments separately; they do not prove
+physical microphone or fresh-permission behavior.

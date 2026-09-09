@@ -1,6 +1,6 @@
 # Coaching Feedback Loop
 
-Slug: coaching-feedback-loop · Status: active · Updated: 2026-09-09 · Theme: coaching
+Slug: coaching-feedback-loop · Status: paused · Updated: 2026-09-09 · Theme: coaching
 
 ## Goal
 
@@ -12,7 +12,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 
 ## Phases
 
-- [ ] **P0 — Workout feedback reaches the coach**
+- [x] **P0 — Workout feedback reaches the coach**
   - [x] **(a) Coach-facing feedback reads**
     - Expose the existing session fatigue and note fields through the relevant
       history, current-state, and coaching-brief reads so the next coaching
@@ -22,7 +22,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
       brief paths. Verify a skipped/in-progress latest session does not hide the
       prior completed session's feedback. This read-path slice can be implemented
       independently of the iOS runner and finish flow.
-  - [ ] **(b) Voice and typed finish input**
+  - [x] **(b) Voice and typed finish input**
     - Add an optional, quick finish flow for perceived fatigue and a short note;
       pain can be described in the note, and completing a workout must not
       require a questionnaire.
@@ -36,7 +36,8 @@ surfaces without adding AI to the Worker or creating a second coaching record.
       and any required speech permission only after the member chooses to talk.
       Add `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription`
       purpose strings in `ios/TresFort/Info.plist` before requesting permission,
-      and verify fresh-install grant and denial paths on the supported iPhone.
+      with fresh-install grant and denial checks on the supported iPhone
+      deferred by the owner to a future TestFlight build (2026-09-09).
       If permission is denied or recognition is unavailable, preserve any text
       draft and offer typing or skipping. No cloud transcription fallback or
       audio upload is included in this scope.
@@ -91,7 +92,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 
 ## Execution frontier
 
-- P0(b)
+- P1
 
 ## Dependencies
 
@@ -105,21 +106,22 @@ P0(b) reuses the completed [superset runner/editor integration](../completed/sup
 
 ## Next step
 
-**Now (@agent):** Finish the exact-head CI/review gates for
-[PR #163](https://github.com/namarks/tres-fort/pull/163). Complete the physical
-permission check with the owner before merging, then verify the merged tree on
-main. The owner approved a local-only checker; its remote private-tailnet
-installer link needs the additional audience approval requested after automatic
-approval review rejected that exposure. P0 remains incomplete until that device
-check and repository delivery are verified. P1/P2, production deployment and
-TestFlight distribution are outside this goal.
+**Now (@owner):** After a separately authorized Worker release and TestFlight
+build containing [PR #163](https://github.com/namarks/tres-fort/pull/163), perform
+the [physical iPhone feedback checks](device-verification.md). The owner
+explicitly deferred these checks until that build; they no longer block
+repository delivery. P0 implementation and automated verification are complete;
+delivery still requires exact-head review/CI, merge and integration verification
+under the existing authorization. Keep this workstream paused after P0; P1/P2
+need explicit activation. Production deployment and TestFlight distribution
+remain outside this goal.
 
 ## Notes / open questions
 
 - P0(a) implementation milestone (2026-09-09): session notes/fatigue now travel
   through private exercise history and both brief paths. Focused real-D1/MCP
   checks passed 20/20, including skipped/in-progress latest sessions and group
-  privacy. Repository delivery still awaits the coherent P0 PR and merge.
+  privacy. The coherent P0 delivery is tracked in PR #163.
 - P0(b) uses a local approved-feedback checkpoint and immutable terminal
   envelope. Explicitly saved empty fields clear feedback; Skip omits feedback.
   Finish requests compare the original note/rating in the same atomic write,
@@ -134,20 +136,22 @@ TestFlight distribution are outside this goal.
   passed all 419 unit tests and all 5 feedback UI journeys, including both
   conflict choices. The broader smoke run passed 9 UI journeys. Recovery covers
   approved feedback before any sets, relaunch, stale app views and first-set
-  session binding. Independent code review cleared implementation `38456d1`;
-  later head changes still need fresh review and all configured CI gates.
+  session binding. Independent review cleared `6a2606a` against main `fd560e4`,
+  and every configured check passed in [CI run 34391201635](https://github.com/namarks/tres-fort/actions/runs/34391201635).
+  The final owner-decision/cleanup commit still requires fresh exact-head
+  review and CI before merge; PR #163 carries that live evidence.
 - Release ordering after separate owner authorization: deploy the compatible
   Worker before distributing the iOS build that sends `expected_feedback`.
   Older Workers can reject that new field. No schema migration is required;
   no production or TestFlight action is part of repository delivery.
-- The owner authorized a separate local-only physical iPhone permission check.
-  Its [reproducible checker](device-verification.md) links the production
-  transcriber/editor without the account/API stack. A development archive and
-  installer were signed with existing assets; no provisioning updates or
-  TestFlight upload ran. The remote phone answers Tailscale, but Xcode cannot
-  connect. Automatic approval review requires explicit owner approval before
-  temporarily exposing the installer to the broader private tailnet. Physical
-  fresh-permission evidence remains pending.
+- Owner decision (2026-09-09): proceed through PR, merge and integration
+  verification now; the owner will test on a future TestFlight version. Fresh
+  physical permission and successful on-device transcription evidence remains
+  unverified and is a release follow-up, not a pre-merge gate. The temporary
+  separate checker and installer are retired; no tailnet link was hosted and
+  no TestFlight upload ran. This decision does not authorize deployment or app
+  distribution. Synthetic recognition, simulator and D1/MCP tests remain the
+  repository evidence and must not be described as physical-device results.
 
 - Owner decision (2026-09-08): offer spoken feedback because talking after
   training may be easier than typing. This is an adoption hypothesis to check
