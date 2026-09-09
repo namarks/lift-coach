@@ -95,12 +95,7 @@ private struct SignedOutView: View {
                     .foregroundStyle(.orange)
             }
 
-            SignInWithAppleButton(.signIn,
-                                  onRequest: { req in
-                                      req.requestedScopes = [.fullName, .email]
-                                  },
-                                  onCompletion: model.handleAppleResult)
-                .signInWithAppleButtonStyle(.white)
+            signInControl
                 .frame(height: 50)
                 .cornerRadius(10)
 
@@ -111,5 +106,34 @@ private struct SignedOutView: View {
                     .multilineTextAlignment(.center)
             }
         }
+    }
+
+    @ViewBuilder private var signInControl: some View {
+#if DEBUG && targetEnvironment(simulator)
+        if UIFixtureScenario.selected != nil {
+            // A synthetic intent must never launch a real Apple exchange,
+            // including when someone manually explores the fixture screen.
+            Button {
+                model.phase = .working("Sign-in requested (synthetic)")
+            } label: {
+                Label("Sign in with Apple", systemImage: "apple.logo")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .foregroundStyle(.black).background(.white)
+            }
+        } else {
+            nativeSignInControl
+        }
+#else
+        nativeSignInControl
+#endif
+    }
+
+    private var nativeSignInControl: some View {
+        SignInWithAppleButton(.signIn,
+                                  onRequest: { req in
+                                      req.requestedScopes = [.fullName, .email]
+                                  },
+                                  onCompletion: model.handleAppleResult)
+                .signInWithAppleButtonStyle(.white)
     }
 }

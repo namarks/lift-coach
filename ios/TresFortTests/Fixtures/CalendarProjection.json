@@ -1,0 +1,748 @@
+{
+  "weekdays": [
+    {
+      "date": "1970-01-05",
+      "weekday": "mon"
+    },
+    {
+      "date": "2000-01-01",
+      "weekday": "sat"
+    },
+    {
+      "date": "2024-02-29",
+      "weekday": "thu"
+    },
+    {
+      "date": "2026-03-08",
+      "weekday": "sun"
+    },
+    {
+      "date": "2026-11-01",
+      "weekday": "sun"
+    },
+    {
+      "date": "2026-12-31",
+      "weekday": "thu"
+    }
+  ],
+  "projections": [
+    {
+      "name": "past empty is absent",
+      "date": "2026-05-11",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [],
+      "trips": [],
+      "expected_status": "none",
+      "expected_suppressed": false
+    },
+    {
+      "name": "past planned",
+      "date": "2026-05-11",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-11",
+          "status": "planned",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [],
+      "expected_status": "none",
+      "expected_suppressed": false
+    },
+    {
+      "name": "past discarded",
+      "date": "2026-05-11",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-11",
+          "status": "discarded",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [],
+      "expected_status": "none",
+      "expected_suppressed": false
+    },
+    {
+      "name": "past completed",
+      "date": "2026-05-11",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-11",
+          "status": "completed",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [],
+      "expected_status": "completed",
+      "expected_suppressed": false
+    },
+    {
+      "name": "past in_progress",
+      "date": "2026-05-11",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-11",
+          "status": "in_progress",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [],
+      "expected_status": "in_progress",
+      "expected_suppressed": false
+    },
+    {
+      "name": "past skipped",
+      "date": "2026-05-11",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-11",
+          "status": "skipped",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [],
+      "expected_status": "skipped",
+      "expected_suppressed": false
+    },
+    {
+      "name": "today schedule",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [],
+      "trips": [],
+      "expected_status": "projected",
+      "expected_suppressed": false
+    },
+    {
+      "name": "future schedule",
+      "date": "2026-05-20",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [],
+      "trips": [],
+      "expected_status": "projected",
+      "expected_suppressed": false
+    },
+    {
+      "name": "explicit rest",
+      "date": "2026-05-19",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [],
+      "trips": [],
+      "expected_status": "rest",
+      "expected_suppressed": false
+    },
+    {
+      "name": "dangling schedule",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [],
+      "sessions": [],
+      "trips": [],
+      "expected_status": "rest",
+      "expected_suppressed": false
+    },
+    {
+      "name": "discarded resumes schedule",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-18",
+          "status": "discarded",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [],
+      "expected_status": "projected",
+      "expected_suppressed": false
+    },
+    {
+      "name": "real skipped wins",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-18",
+          "status": "skipped",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [],
+      "expected_status": "skipped",
+      "expected_suppressed": false
+    },
+    {
+      "name": "light trip blanks schedule",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [],
+      "trips": [
+        {
+          "id": "t-fixture",
+          "start": "2026-05-18",
+          "end": "2026-05-18",
+          "type": "travel",
+          "can_train_light": true
+        }
+      ],
+      "expected_status": "light",
+      "expected_suppressed": false
+    },
+    {
+      "name": "pinned session survives light trip",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-18",
+          "status": "planned",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [
+        {
+          "id": "t-fixture",
+          "start": "2026-05-18",
+          "end": "2026-05-18",
+          "type": "travel",
+          "can_train_light": true
+        }
+      ],
+      "expected_status": "planned",
+      "expected_suppressed": false
+    },
+    {
+      "name": "blackout None",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [],
+      "trips": [
+        {
+          "id": "t-fixture",
+          "start": "2026-05-18",
+          "end": "2026-05-18",
+          "type": "travel",
+          "can_train_light": false
+        }
+      ],
+      "expected_status": "unavailable",
+      "expected_suppressed": true
+    },
+    {
+      "name": "blackout planned",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-18",
+          "status": "planned",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [
+        {
+          "id": "t-fixture",
+          "start": "2026-05-18",
+          "end": "2026-05-18",
+          "type": "travel",
+          "can_train_light": false
+        }
+      ],
+      "expected_status": "unavailable",
+      "expected_suppressed": true
+    },
+    {
+      "name": "blackout skipped",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-18",
+          "status": "skipped",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [
+        {
+          "id": "t-fixture",
+          "start": "2026-05-18",
+          "end": "2026-05-18",
+          "type": "travel",
+          "can_train_light": false
+        }
+      ],
+      "expected_status": "unavailable",
+      "expected_suppressed": true
+    },
+    {
+      "name": "blackout discarded",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-18",
+          "status": "discarded",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [
+        {
+          "id": "t-fixture",
+          "start": "2026-05-18",
+          "end": "2026-05-18",
+          "type": "travel",
+          "can_train_light": false
+        }
+      ],
+      "expected_status": "unavailable",
+      "expected_suppressed": true
+    },
+    {
+      "name": "blackout in_progress",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-18",
+          "status": "in_progress",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [
+        {
+          "id": "t-fixture",
+          "start": "2026-05-18",
+          "end": "2026-05-18",
+          "type": "travel",
+          "can_train_light": false
+        }
+      ],
+      "expected_status": "in_progress",
+      "expected_suppressed": true
+    },
+    {
+      "name": "blackout completed",
+      "date": "2026-05-18",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-18",
+          "status": "completed",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [
+        {
+          "id": "t-fixture",
+          "start": "2026-05-18",
+          "end": "2026-05-18",
+          "type": "travel",
+          "can_train_light": false
+        }
+      ],
+      "expected_status": "completed",
+      "expected_suppressed": true
+    },
+    {
+      "name": "past history ignores future rules",
+      "date": "2026-05-11",
+      "today": "2026-05-18",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [
+        {
+          "id": "s-fixture",
+          "date": "2026-05-11",
+          "status": "completed",
+          "day_template_id": "d_push"
+        }
+      ],
+      "trips": [
+        {
+          "id": "t-fixture",
+          "start": "2026-05-11",
+          "end": "2026-05-11",
+          "type": "travel",
+          "can_train_light": false
+        }
+      ],
+      "expected_status": "completed",
+      "expected_suppressed": false
+    },
+    {
+      "name": "DST spring civil Sunday",
+      "date": "2026-03-08",
+      "today": "2026-03-08",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [],
+      "trips": [],
+      "expected_status": "rest",
+      "expected_suppressed": false
+    },
+    {
+      "name": "DST autumn civil Sunday",
+      "date": "2026-11-01",
+      "today": "2026-11-01",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [],
+      "trips": [],
+      "expected_status": "rest",
+      "expected_suppressed": false
+    },
+    {
+      "name": "leap day civil Thursday",
+      "date": "2024-02-29",
+      "today": "2024-02-29",
+      "week": {
+        "mon": "d_push",
+        "tue": null,
+        "wed": "d_pull",
+        "thu": null,
+        "fri": "d_legs",
+        "sat": null,
+        "sun": null
+      },
+      "live": [
+        "d_push",
+        "d_pull",
+        "d_legs"
+      ],
+      "sessions": [],
+      "trips": [],
+      "expected_status": "rest",
+      "expected_suppressed": false
+    }
+  ]
+}

@@ -48,6 +48,13 @@ struct AccountExportFile: Equatable {
 struct APIClient {
     var baseURL = Config.apiBaseURL
 
+    private static var session: URLSession {
+#if DEBUG && targetEnvironment(simulator)
+        if UIFixtureScenario.selected != nil { return UIFixtureProtocol.session }
+#endif
+        return .shared
+    }
+
     /// Marks writes that carry migration-0032 attempt tokens. The compatibility
     /// Worker uses this explicit declaration to atomically claim a legacy
     /// generation; absence remains the released app's tokenless protocol.
@@ -104,7 +111,7 @@ struct APIClient {
         req.httpMethod = "GET"
         req.setValue("Bearer \(jwt)", forHTTPHeaderField: "Authorization")
         req.setValue(TimeZone.current.identifier, forHTTPHeaderField: "X-Device-TZ")
-        let (data, response) = try await URLSession.shared.data(for: req)
+        let (data, response) = try await Self.session.data(for: req)
         guard let http = response as? HTTPURLResponse else {
             throw APIError.http(-1, "missing HTTP response")
         }
@@ -630,7 +637,7 @@ struct APIClient {
     }
 
     func send<T: Decodable>(_ req: URLRequest) async throws -> T {
-        let (data, resp) = try await URLSession.shared.data(for: req)
+        let (data, resp) = try await Self.session.data(for: req)
         let http = resp as? HTTPURLResponse
         let code = http?.statusCode ?? -1
         guard (200..<300).contains(code) else {

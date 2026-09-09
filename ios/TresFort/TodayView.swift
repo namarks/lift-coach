@@ -268,6 +268,7 @@ struct TodayView: View {
                             Label(sync.plan == nil ? "Build routine" : "Edit routine",
                                   systemImage: "calendar.badge.clock")
                         }
+                        .disabled(sync.plan == nil && (sync.isLoading || sync.loadError != nil))
                         if let id = sync.running ? sync.selectedDay?.id : sync.todayResolvedDay?.id {
                             Button {
                                 editTarget = EditDayTarget(id: id)
@@ -349,6 +350,17 @@ struct TodayView: View {
             FinishedView(sync: sync)
         } else if sync.running {
             RunnerView(sync: sync, auth: auth)
+        } else if sync.plan == nil, let error = sync.loadError {
+            VStack(spacing: 14) {
+                Text("COULDN’T LOAD YOUR PLAN")
+                    .font(Theme.display(28)).foregroundStyle(Theme.text)
+                Text(error)
+                    .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                    .multilineTextAlignment(.center)
+                Button("Try again") { Task { await sync.load() } }
+                    .frame(minHeight: 44)
+            }
+            .padding(24)
         } else if sync.plan == nil {
             VStack(spacing: 14) {
                 Text("NO PLAN YET").font(Theme.display(28)).foregroundStyle(Theme.text)
@@ -860,9 +872,9 @@ private struct RunnerView: View {
             let displayedSetNumber = sync.currentSetNumber
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
-                    if let ws = sync.workoutStart {
-                        TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                            let e = max(0, Int(ctx.date.timeIntervalSince(ws)))
+                    if sync.workoutStart != nil {
+                        TimelineView(.periodic(from: .now, by: 1)) { _ in
+                            let e = sync.workoutElapsedSeconds
                             Text("WORKOUT  \(e / 60):\(String(format: "%02d", e % 60))")
                                 .font(Theme.mono(11, .bold)).tracking(2)
                                 .foregroundStyle(Theme.muted)

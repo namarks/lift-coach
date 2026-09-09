@@ -24,3 +24,6 @@ ios/fastlane/test_output/
 ios/.bundle/
 ios/vendor/bundle/
 .env
+
+# Disposable verification evidence (never real account data)
+.artifacts/

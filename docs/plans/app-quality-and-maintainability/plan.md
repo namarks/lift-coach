@@ -1,6 +1,6 @@
 # App Quality and Maintainability
 
-Slug: app-quality-and-maintainability · Status: planned · Updated: 2026-09-07 · Theme: platform
+Slug: app-quality-and-maintainability · Status: active · Updated: 2026-09-08 · Theme: platform
 
 ## Goal
 
@@ -80,10 +80,11 @@ P2 preserves the completed [validated atomic prescription writer](../completed/p
 
 ## Next step
 
-**Now (@owner):** Activate P0 to make the existing iOS verification repeatable
-and visible. Accessibility fixes follow the fixture baseline; measure P2 before
-selecting performance changes. No application code changes are activated by
-the review itself.
+**Now (@agent):** Land P0 through current-head independent review and all three
+CI jobs, then continue P1 accessibility from the synthetic fixture baseline.
+The September 8 instruction activates this plan until human input is needed.
+Physical-device walkthroughs remain owner work; measure P2 before choosing
+performance changes.
 
 ## Notes / open questions
 
@@ -101,3 +102,11 @@ the review itself.
 - [Apple design guidance](https://developer.apple.com/design/tips/) supplies
   control/legibility criteria. A compile, unit test or screenshot alone does
   not establish screen-reader or gym usability.
+
+- P0 implementation: [verification command and CI contract](../../IOS-VERIFICATION.md),
+  simulator-only synthetic UI fixtures and smoke suite, shared calendar cases
+  alongside the existing bodyweight numerical fixtures. The
+  [synthetic simulator baseline](evidence/p0/README.md) retains the passing
+  walkthrough screenshots and exact copied-source hashes. A confirmed initial-load
+  failure now offers retry instead of claiming an empty plan. Repository delivery
+  and P0 completion remain pending current-head review and terminal-green CI.

@@ -20,7 +20,9 @@
     "release:preflight": "npm run typecheck && npm test && wrangler deploy --dry-run",
     "release": "npm run release:preflight && npm run db:migrate:remote && npm run deploy",
     "ios:testflight": "./scripts/upload-testflight.sh",
-    "beta:feedback": "node scripts/beta-feedback-to-issues.mjs"
+    "beta:feedback": "node scripts/beta-feedback-to-issues.mjs",
+    "ios:verify": "bash scripts/verify-ios.sh",
+    "plans:check": "node scripts/vendor/planning/plan-graph.mjs check"
   },
   "dependencies": {
     "hono": "^4.12.34",

@@ -217,3 +217,8 @@ Post-milestone additions:
 
 Personal project. Bundled fonts (Bebas Neue, JetBrains Mono) are SIL Open
 Font License — see `ios/TresFort/Fonts/OFL-*.txt`.
+
+### Reproducible iOS verification
+
+See [iOS verification](docs/IOS-VERIFICATION.md) for the unsigned simulator command,
+synthetic UI fixtures, retained evidence, and required CI checks.
