@@ -105,11 +105,14 @@ P0(b) reuses the completed [superset runner/editor integration](../completed/sup
 
 ## Next step
 
-**Now (@agent):** Complete the authorized P0 from main `ff51282`: first
-private history/brief reads, then optional typed and on-device spoken feedback
-through the durable finish path. Verify, independently review, open a focused
-PR, merge after all exact-head gates pass, and verify integration. P1/P2,
-production deployment and TestFlight distribution are outside this goal.
+**Now (@agent):** Finish the exact-head CI/review gates for
+[PR #163](https://github.com/namarks/tres-fort/pull/163). Complete the physical
+permission check with the owner before merging, then verify the merged tree on
+main. The owner approved a local-only checker; its remote private-tailnet
+installer link needs the additional audience approval requested after automatic
+approval review rejected that exposure. P0 remains incomplete until that device
+check and repository delivery are verified. P1/P2, production deployment and
+TestFlight distribution are outside this goal.
 
 ## Notes / open questions
 
@@ -127,10 +130,16 @@ production deployment and TestFlight distribution are outside this goal.
   capture resources. The draft comparison baseline belongs to the editor's
   lifetime. Only explicitly approved text is persisted.
 - Verification milestone (2026-09-09): typecheck, plan graph, and the full
-  backend suite passed (62 files / 906 tests). Synthetic iPhone journeys passed
-  voice editing, fatigue, denial/typing, cancellation, unavailability, Skip and
-  acknowledged finish. Recovery/ownership fixes and the full iOS suite remain
-  under verification; independent review must be repeated at the final head.
+  backend suite passed (62 files / 906 tests). Final iPhone 17 simulator checks
+  passed all 419 unit tests and all 5 feedback UI journeys, including both
+  conflict choices. The broader smoke run passed 9 UI journeys. Recovery covers
+  approved feedback before any sets, relaunch, stale app views and first-set
+  session binding. Independent code review cleared implementation `38456d1`;
+  later head changes still need fresh review and all configured CI gates.
+- Release ordering after separate owner authorization: deploy the compatible
+  Worker before distributing the iOS build that sends `expected_feedback`.
+  Older Workers can reject that new field. No schema migration is required;
+  no production or TestFlight action is part of repository delivery.
 - The owner authorized a separate local-only physical iPhone permission check.
   Its [reproducible checker](device-verification.md) links the production
   transcriber/editor without the account/API stack. A development archive and
