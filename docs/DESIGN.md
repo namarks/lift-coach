@@ -1,6 +1,7 @@
 # tres-fort — Design Doc
 
-> Claude is the coach. It owns the plan and adapts it through conversation.
+> Claude is the coach. It adapts the shared plan through conversation; members
+> can also author routines and workout dates directly in iOS.
 > You execute and log in a native iOS app. A Cloudflare backend is the
 > single source of truth that both Claude (via MCP) and the app read/write.
 
@@ -40,10 +41,10 @@ That split is what makes two-writer sync simple (§7).
 | Decision | Verdict |
 |---|---|
 | Cloudflare Workers + D1 as source of truth | ✅ Correct. SQLite semantics and MCP-from-Worker remain the natural fit. The account moved to Workers Paid on 2026-09-05 after a natural hourly cron exceeded Free's CPU target; the delta and no-op work still reduce latency and usage. |
-| CloudKit rejected for source of truth | ✅ Agree. Claude needs first-class writes from outside Apple's ecosystem; CloudKit S2S is awkward and Apple-bound. SwiftData as **local cache only** is right. |
+| CloudKit rejected for source of truth | ✅ Agree. Claude needs first-class writes from outside Apple's ecosystem; CloudKit S2S is awkward and Apple-bound. The current client uses account-scoped JSON snapshots and in-memory presentation; SwiftData was an early proposal. |
 | **Two separate Workers (REST + MCP)** | ⚠️ **Pushing back → one Worker, two route groups** (`/api/*`, `/mcp`). They share the D1 binding, schema, domain model, and service layer. Splitting doubles deploy/secret/observability surface for zero isolation benefit in a single-user system. Splitting later is a routing change, not a rewrite. |
 | MCP auth = "bearer token in connector settings" | ⚠️ **Refining.** Fine for Claude Code; claude.ai/desktop custom connectors expect OAuth. Plan: implement a lightweight Cloudflare OAuth provider **and** accept a static bearer. Every surface works; CLI/curl testing stays trivial. (§6) |
-| SwiftData "sync on open + on write" | ⚠️ **Refining.** Add an outbox + client-generated set IDs so a set logged on flaky gym wifi is never lost. Cheap; removes the only real data-loss path. (§7) |
+| Original SwiftData sync proposal | Superseded by account-scoped snapshots and durable client-UUID outboxes in UserDefaults; current ordering and retry behavior are described in §7. |
 | Rich plan schema for periodization | ⚠️ **Right-sizing.** Periodization stays **out of rigid columns**. Progression/deload/mesocycle live in a per-exercise `progression` JSON + Claude-written notes. Claude is the periodization engine; the schema just faithfully stores and versions its decisions. |
 
 Net new spend: **$5/month + usage** for Workers Paid — Apple Developer is
@@ -479,8 +480,11 @@ Reconciliation passes the seen-id collection as one JSON-bound value expanded
 through `json_each`; the constant five-bind statement avoids D1's
 100-bound-parameter ceiling and materializes the membership list once.
 
-Local set writes are optimistic (write SwiftData + enqueue outbox + POST;
-reconcile on success, retry-with-backoff on failure). Post-outbox reconciliation
+Local set writes synchronously persist an account/attempt-bound outbox intent
+before POST. Pending progress is presented separately from acknowledged sets;
+accepted responses advance the newest account snapshot before removing the
+intent. Transient failures retain that intent for bounded backoff and retry.
+Post-outbox reconciliation
 uses the same delta pull. A successful POST acknowledgement is the mutation
 boundary: if a genuinely new or newer ACK is absent from the following delta,
 the app retains it, retires the durable intent, reports success, clears cursors
@@ -542,8 +546,32 @@ edits = right-sized.
 
 ## 9. iOS app
 
-SwiftUI, iOS 17+, SwiftData as a cache mirroring the server tree. A
-`SyncService` actor owns networking + reconcile; views use `@Query`.
+SwiftUI, iOS 17+. The main-actor `SyncModel` publishes in-memory presentation
+arrays and coordinates networking, account epochs, attempt-bound writes and
+reconciliation. `StateSnapshotStore` persists an account-scoped JSON envelope in
+UserDefaults; separate stores own the catalog, outboxes and runner checkpoint.
+There is no SwiftData store, `SyncService` actor or `@Query` path.
+
+`TrainingHistoryIndex` is a disposable pure read model for session/date/exercise
+lookups and history metrics. Changes to published sessions, sets or catalog
+invalidate it and the requested summary caches. Calendar truth-table rules stay
+in `CalendarProjection`. Exercise rows are lazy and calculate only their latest
+session summary. The snapshot store retains one live envelope, guarded by
+defaults identity, user ID and equality with the current persisted bytes.
+Revisions, account/attempt guards and tombstone ordering remain authoritative.
+Large snapshot envelopes use a lossless LZFSE wrapper. If a packed value still
+exceeds the observed 4 MiB platform boundary, all store writes persist a small
+ordering/invalidation marker and retain the latest validated rows in that one
+process-local envelope. Reads and mutation ACKs can therefore advance together
+without trusting an older model fallback. No delta cursor claims those rows
+survived relaunch. A cold process sees only the marker and reloads fully;
+explicit invalidation or external replacement discards the live envelope too.
+Legacy JSON still decodes. A failed ordering write preserves its durable intent.
+No server history is trimmed.
+Serialization remains synchronous on the main actor and proportional to retained
+history; incremental network pulls do not make it constant-cost. See the
+[measured client evidence](plans/completed/app-quality-and-maintainability/evidence/p2/README.md)
+for datasets, budgets and memory tradeoffs.
 
 - **Today:** exercise list, big weight/reps steppers, log-set button, rest
   timer overlay + Live Activity trigger + **audio cue when rest ends** (RestCue:
@@ -552,10 +580,11 @@ SwiftUI, iOS 17+, SwiftData as a cache mirroring the server tree. A
   same movement in two slots / out-of-order logging never mis-completes.
 - **Edit workout:** in-app add/remove/reorder/replace of exercises + warm-ups
   (`EditWorkoutSheet`), editing the active plan's day template via the REST
-  editor endpoints. Claude still owns programming/analysis; this is the executor
+  editor endpoints. Members and Claude share the versioned prescription; this is the executor
   letting you tweak the session in front of you.
 - **History:** per-exercise Swift Charts trend, last-session preview.
-- **Plan:** read-mostly tree; inline rename/reorder (PATCH) + the editor above.
+- **Routine:** create and order workouts, edit prescriptions, assign the recurring
+  schedule and manage the shared plan; calendar exceptions remain date-scoped.
 - **Auth:** Sign in with Apple → Keychain JWT; 401 → re-auth.
 - **No in-app chat** (by design — you chat in the Claude app; this reflects state).
 - UI per the React artifact (dark scoreboard, condensed display type, mono

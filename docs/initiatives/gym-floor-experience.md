@@ -1,6 +1,6 @@
 # Gym-Floor Experience
 
-Slug: gym-floor-experience · Status: planned · Updated: 2026-09-07
+Slug: gym-floor-experience · Status: planned · Updated: 2026-09-08
 
 ## Objective
 
@@ -14,11 +14,13 @@ the next scheduled session.
 - plan:member-activation-and-adherence
 - plan:workout-library#P0
 - plan:supersets-and-circuits
-- plan:app-quality-and-maintainability#P0
-- plan:app-quality-and-maintainability#P1
-- plan:app-quality-and-maintainability#P2
 
 ## Priority policy
+
+[Completed app quality and maintainability](../plans/completed/app-quality-and-maintainability/plan.md)
+provides current-iPhone CI, basic usability and measured history performance.
+Its app release remains separate from repository completion.
+
 
 [Completed Gym Runner Depth](../plans/completed/gym-runner-depth/plan.md)
 provides prescription fidelity, durable corrections, bounded loading/timing
@@ -54,7 +56,9 @@ are loggable, and history reports numbers that mean something for zero-load
 work. Claude can read and edit the same plan, but no step requires AI.
 The same journey distinguishes empty/loading/failure/pending/saved states,
 honors new targets, permits correction at the finish boundary, and passes the
-documented VoiceOver/large-text/Reduce Motion matrix. Representative history
+documented current-iPhone, normal-text behavioral suite. Basic contrast, control
+labels/targets and Reduce Motion improvements remain; older-device/extreme-font
+matrices and physical accessibility walkthroughs are not delivery gates. Representative history
 size has measured client performance and reproducible iOS verification.
 
 ## Stop rules

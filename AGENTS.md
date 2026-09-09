@@ -4,8 +4,9 @@ Durable repository guidance for coding agents working in this repository.
 
 ## What this is
 
-An AI-coached lifting system. Claude (via MCP) owns and adapts the training
-plan through conversation; a native iOS app is the gym executor; a single
+An AI-coached lifting system. Claude (via MCP) adapts the training plan
+through conversation; members can also author routines and workout dates in
+the native iOS gym executor; a single
 Cloudflare Worker + D1 database is the source of truth both sides read/write.
 The backend contains **no AI** — it is pure data. Full rationale, schema, and
 the API/MCP surface live in `docs/DESIGN.md` (read it before non-trivial
@@ -113,6 +114,18 @@ design and dictates how you mutate things:
 
 `GET /api/state?since=&sets_since=` is the single sync pull: full plan tree
 only when its version moved, sessions/sets as deltas.
+
+**Client state.** `SyncModel` publishes in-memory arrays. Account-scoped JSON
+snapshots, outboxes and runner checkpoints live in UserDefaults, with no
+SwiftData or `@Query` path. `StateSnapshotStore` owns revision/ACK/tombstone
+ordering; its live envelope checks current persisted bytes before reuse. Large
+envelopes are losslessly compressed. If packing exceeds the platform limit,
+every writer can advance a small durable ordering/invalidation marker while
+retaining one process-local live envelope. A cold process must fetch fully;
+explicit invalidation or external replacement also discards that live value.
+`TrainingHistoryIndex` and requested summaries are disposable read models,
+invalidated on every published session/set/catalog mutation. Keep these caches
+out of write-authority decisions and preserve the calendar parity contract.
 
 **Weekly schedule & calendar projection.** The recurring weekly pattern
 (weekday → `day_template_id`, `null` = rest) lives in `plans.meta.schedule`

@@ -97,7 +97,7 @@ correction recovery, and reachability of the remaining fixtures. XCTest audits
 check hit regions and descriptions in the visible
 entry/runner viewports. Resolved palette colors have deterministic AA contrast
 checks. The native iOS 26.2 contrast heuristic produced false positives over the
-dark gradient; [measured evidence](plans/app-quality-and-maintainability/evidence/p1/README.md#contrast-verification)
+dark gradient; [measured evidence](plans/completed/app-quality-and-maintainability/evidence/p1/README.md#contrast-verification)
 records its limits and why it is not a CI assertion. These audits do not exercise VoiceOver focus or speech.
 
 `ios/TresFortTests/Fixtures/CalendarProjection.json` supplies the same civil-date,
@@ -131,3 +131,20 @@ usability, physical-device keyboard reachability, audio/lock-screen cues, or
 interruption behavior. P1 records simulator evidence separately from the
 optional physical-device observations. Per the September 8 owner steering,
 those observations are not a delivery gate.
+
+## History measurements
+
+`HistoryPerformanceTests` records five raw samples per component for 12-session
+and five-year synthetic histories; `HistoryJourneyTests` exercises two cached
+process launches per dataset, calendar scrolling and exercise detail. Both use
+the current iPhone at normal text sizes. `history-small` and `history-large` are
+simulator-only fixtures; their transport rejects every request. A seed launch
+resets the synthetic namespace; `TRESFORT_UI_REUSE_HISTORY=1` retains that seed
+for measured cached launches only. Tests explicitly select the seeding mode
+for each dataset and assert the row count before and after relaunch.
+
+The [measurement record](plans/completed/app-quality-and-maintainability/evidence/p2/README.md)
+separates main-actor component costs from XCTest/animation wall times, and records
+first reads, cache reuse, snapshot size, investigation budgets and limitations.
+Performance times are reported rather than asserted on shared CI hardware;
+behavioral correctness remains required.
