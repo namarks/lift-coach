@@ -994,3 +994,28 @@ extension WorkoutRecoveryStoreTests {
         XCTAssertEqual(legacy.currentSlotID, "slot-b")
     }
 }
+
+extension WorkoutRecoveryStoreTests {
+    func testCheckpointDeferredGroupRepairRoundTripsAndLegacyCheckpointDecodes() throws {
+        let repairJSON = """
+        {"dayID":"day-a","groupID":"group-a","members":[
+          {"slotID":"slot-a","exerciseID":"exercise-a","warmup":false,"timed":false},
+          {"slotID":"slot-b","exerciseID":"exercise-b","warmup":false,"timed":false}
+        ]}
+        """
+        let repair = try JSONDecoder().decode(RunnerGroupRepair.self, from: Data(repairJSON.utf8))
+        let checkpoint = WorkoutRunnerCheckpoint(date: "2033-05-18", sessionID: "session-a",
+            selectedDayID: "day-a", currentSlotID: "slot-c", skippedSlotIDs: [],
+            workoutStartedAtMS: 2_000_000_000_000, finished: false, sessionAttempt: 2,
+            deferredGroupRepair: repair)
+        let encoded = try JSONEncoder().encode(checkpoint)
+        XCTAssertEqual(try JSONDecoder().decode(WorkoutRunnerCheckpoint.self, from: encoded), checkpoint)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        json.removeValue(forKey: "deferredGroupRepair")
+        let legacy = try JSONDecoder().decode(WorkoutRunnerCheckpoint.self,
+            from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(legacy.deferredGroupRepair)
+        XCTAssertEqual(legacy.currentSlotID, "slot-c")
+        XCTAssertEqual(legacy.sessionAttempt, 2)
+    }
+}

@@ -102,6 +102,10 @@ the revision at durable enqueue. Checkpoints preserve explicit focus and its
 revision so an older deletion acknowledgement or live tombstone cannot override
 a newer choice, including one within the same group. Deletions requested after
 the selection remain eligible to repair their group at a stable runner boundary.
+A repair deferred by an active timed hold stays durable before its correction
+intent retires, so process termination cannot lose the affected group. Later
+manual navigation cancels that repair durably; cold recovery still requires live
+session and attempt validation.
 New local execution and skip resume automatic sequencing. Value-only corrections
 preserve focus and rest.
 

@@ -436,7 +436,9 @@ round rest when it completes the derived round, including a repaired round with
 uneven member counts; otherwise it cues transition rest, where zero skips the
 cue. Rest and Live Activity point to the resulting next member. Selection
 revisions preserve newer manual focus across older pending deletions and cold
-recovery. Acknowledgements never restart a rest timer.
+recovery. Repairs deferred by a timed hold survive process termination, and a
+later manual choice cancels them durably. Acknowledgements never restart a rest
+timer.
 The workout editor selects adjacent slots and moves each group as one card,
 with rounds, round rest and transition rest edited together. Ordinary slot rest
 stays intact and inactive until ungrouping.
