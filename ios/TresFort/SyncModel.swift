@@ -190,6 +190,10 @@ final class SyncModel: ObservableObject {
 
     // Timers.
     @Published var workoutStart: Date?      // whole-session stopwatch
+    var workoutElapsedSeconds: Int {
+        guard let workoutStart else { return 0 }
+        return max(0, Int(now().timeIntervalSince(workoutStart)))
+    }
     @Published var timedActive = false      // a timed exercise is running
     @Published var timedEndDate: Date?
     @Published var timedStartDate: Date?    // wall-clock start of the hold

@@ -11,7 +11,61 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
+  plans:
+    name: plan graph
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm run plans:check
+
+  ios:
+    name: iOS build + tests
+    # Standard public-repository capacity only; never opt into a paid runner.
+    if: github.event.repository.private == false
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+      IOS_KEEP_RESULTS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install pinned XcodeGen
+        shell: bash
+        run: |
+          generator_dir="$(mktemp -d "$RUNNER_TEMP/xcodegen.XXXXXX")"
+          trap 'rm -rf "$generator_dir"' EXIT
+          curl --fail --location --silent --show-error \
+            https://github.com/yonaskolb/XcodeGen/releases/download/2.45.3/xcodegen.zip \
+            -o "$generator_dir/xcodegen.zip"
+          echo "0c90f4d28ca57335f9fa78cf5bf6dabfe20a232036dabe36de2eef79cb7c0878  $generator_dir/xcodegen.zip" | shasum -a 256 -c -
+          unzip -q "$generator_dir/xcodegen.zip" -d "$generator_dir"
+          mkdir -p "$RUNNER_TEMP/tres-fort-tools"
+          cp -R "$generator_dir/xcodegen" "$RUNNER_TEMP/tres-fort-tools/"
+          echo "$RUNNER_TEMP/tres-fort-tools/xcodegen/bin" >> "$GITHUB_PATH"
+      - name: Unsigned simulator build and tests
+        run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17
+      - name: Retain synthetic screenshots and test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-verification
+          path: .artifacts/ios
+          include-hidden-files: true
+          retention-days: 7
+      - name: Clean verification tools
+        if: always()
+        run: rm -rf "$RUNNER_TEMP/tres-fort-tools"
+
   backend:
     name: typecheck + tests
     runs-on: ubuntu-latest
@@ -25,6 +79,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Verification command failure and cleanup checks
+        run: python3 test/verify-ios.test.py
 
       - name: Typecheck
         run: npm run typecheck

@@ -58,6 +58,19 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         CODE_SIGNING_ALLOWED: NO
 
+  TresFortUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - TresFortUITests
+    dependencies:
+      - target: TresFort
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nmarkspdx.tresfort.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+
 # Only the app gets a run scheme. The widget extension is built+embedded
 # via the dependency above — never run it directly (doing so triggers the
 # "Failed to show Widget / get descriptors" SpringBoard error).
@@ -72,5 +85,6 @@ schemes:
       config: Debug
       targets:
         - TresFortTests
+        - TresFortUITests
     archive:
       config: Release

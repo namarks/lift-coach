@@ -14,6 +14,25 @@ import {
 } from '../src/db';
 import type { ExternalEventRow, SessionRow, Trip, WeeklySchedule } from '../src/types';
 import { parsePlanMeta } from '../src/types';
+import sharedCalendar from '../ios/TresFortTests/Fixtures/CalendarProjection.json';
+
+describe('shared TypeScript/Swift calendar fixtures', () => {
+  for (const fixture of sharedCalendar.weekdays) {
+    it(`civil weekday ${fixture.date}`, () => {
+      expect(weekdayOf(fixture.date)).toBe(fixture.weekday);
+    });
+  }
+  for (const fixture of sharedCalendar.projections) {
+    it(fixture.name, () => {
+      const sessions = fixture.sessions.map((row) => sess(row.date, row.status, row.day_template_id));
+      const cells = projectCalendar({ id: 'p' }, { version: 1, week: fixture.week },
+        sessions, fixture.date, fixture.date, fixture.today, fixture.live,
+        fixture.trips as Trip[]);
+      expect(cells[0]?.status ?? 'none').toBe(fixture.expected_status);
+      expect(cells[0]?.suppresses_schedule_and_endurance ?? false).toBe(fixture.expected_suppressed);
+    });
+  }
+});
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
