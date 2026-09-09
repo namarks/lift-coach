@@ -41,9 +41,13 @@ enum StateSnapshotStore {
         let setsCommittedThrough: Int?
     }
 
-    /// One decoded envelope, shared by models using the same defaults object.
+    /// One live envelope, shared by models using the same defaults object.
     /// Always compare persisted bytes first: another defaults instance/process,
     /// deletion, corruption or a legacy writer must supersede this read cache.
+    /// When packing exceeds the platform limit, rows stay here while `data`
+    /// contains only the durable invalidation/ordering marker. This lets all
+    /// mutation paths transform the latest live rows without trusting a stale
+    /// model fallback. A cold process sees only the marker and must reload.
     /// Weak ownership and a single slot bound lifetime and account retention.
     private final class DecodedCache {
         weak var defaults: UserDefaults?
@@ -246,27 +250,8 @@ enum StateSnapshotStore {
             mutationGeneration: ticket.mutationGeneration,
             watermarks: nextWatermarks,
             setsCommittedThrough: response.server_time)
-        if !write(stored, userID: ticket.userID, defaults: defaults) {
-            // Cache encodability must not hide an authoritative live response.
-            // Commit a small browse-cache invalidation at this request's own
-            // revision, then return the merged rows for current presentation.
-            // The next request is full; stale requests/ACK fallbacks remain
-            // fenced out, and no cursor claims these rows survived relaunch.
-            let marker = StoredStateSnapshot(
-                revision: ticket.revision, state: nil, invalidated: true,
-                latestFullRequestRevision: ticket.revision,
-                mutationGeneration: ticket.mutationGeneration,
-                watermarks: nil, setsCommittedThrough: nil)
-            guard write(marker, userID: ticket.userID, defaults: defaults) else { return nil }
-            return StateSnapshotValue(
-                revision: ticket.revision, state: state,
-                watermarks: nil, setsCommittedThrough: nil)
-        }
-        return StateSnapshotValue(
-            revision: ticket.revision,
-            state: state,
-            watermarks: nextWatermarks,
-            setsCommittedThrough: response.server_time)
+        guard write(stored, userID: ticket.userID, defaults: defaults) else { return nil }
+        return load(userID: ticket.userID, defaults: defaults)
     }
 
     /// Accepted mutation responses have no full-state ticket. Advance the
@@ -310,11 +295,7 @@ enum StateSnapshotStore {
         guard write(stored, userID: userID, defaults: defaults) else {
             return nil
         }
-        return StateSnapshotValue(
-            revision: stored.revision,
-            state: state,
-            watermarks: stored.watermarks,
-            setsCommittedThrough: stored.setsCommittedThrough)
+        return load(userID: userID, defaults: defaults)
     }
 
     /// Advance the shared ordering revision while removing presentation data.
@@ -519,10 +500,32 @@ enum StateSnapshotStore {
         userID: String,
         defaults: UserDefaults
     ) -> Bool {
-        guard let json = try? JSONEncoder().encode(stored),
-              let data = encodedEnvelope(json) else { return false }
+        guard let json = try? JSONEncoder().encode(stored) else { return false }
+        let data: Data
+        let live: StoredStateSnapshot
+        if let packed = encodedEnvelope(json) {
+            data = packed
+            live = stored
+        } else {
+            guard let state = stored.state else { return false }
+            // The durable marker preserves every ordering field, but never
+            // claims a browse snapshot or delta cursors survived this write.
+            let marker = StoredStateSnapshot(
+                revision: stored.revision, state: nil, invalidated: true,
+                latestFullRequestRevision: stored.latestFullRequestRevision,
+                mutationGeneration: stored.mutationGeneration,
+                watermarks: nil, setsCommittedThrough: nil)
+            guard let markerData = try? JSONEncoder().encode(marker) else { return false }
+            data = markerData
+            live = StoredStateSnapshot(
+                revision: stored.revision, state: state,
+                invalidated: stored.invalidated,
+                latestFullRequestRevision: stored.latestFullRequestRevision,
+                mutationGeneration: stored.mutationGeneration,
+                watermarks: nil, setsCommittedThrough: stored.setsCommittedThrough)
+        }
         defaults.set(data, forKey: scopedKey(userID: userID))
-        decodedCache = DecodedCache(defaults: defaults, userID: userID, data: data, stored: stored)
+        decodedCache = DecodedCache(defaults: defaults, userID: userID, data: data, stored: live)
         return true
     }
 }

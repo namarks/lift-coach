@@ -118,10 +118,11 @@ only when its version moved, sessions/sets as deltas.
 **Client state.** `SyncModel` publishes in-memory arrays. Account-scoped JSON
 snapshots, outboxes and runner checkpoints live in UserDefaults, with no
 SwiftData or `@Query` path. `StateSnapshotStore` owns revision/ACK/tombstone
-ordering; its decoded cache checks current persisted bytes before reuse. Large
-envelopes are losslessly compressed; legacy plain JSON remains readable and
-oversized/invalid values preserve pending writes, or require a durable full-reload
-marker before an acknowledged correction retires its intent.
+ordering; its live envelope checks current persisted bytes before reuse. Large
+envelopes are losslessly compressed. If packing exceeds the platform limit,
+every writer can advance a small durable ordering/invalidation marker while
+retaining one process-local live envelope. A cold process must fetch fully;
+explicit invalidation or external replacement also discards that live value.
 `TrainingHistoryIndex` and requested summaries are disposable read models,
 invalidated on every published session/set/catalog mutation. Keep these caches
 out of write-authority decisions and preserve the calendar parity contract.

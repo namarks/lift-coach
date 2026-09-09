@@ -556,17 +556,18 @@ There is no SwiftData store, `SyncService` actor or `@Query` path.
 lookups and history metrics. Changes to published sessions, sets or catalog
 invalidate it and the requested summary caches. Calendar truth-table rules stay
 in `CalendarProjection`. Exercise rows are lazy and calculate only their latest
-session summary. The snapshot store retains one decoded envelope, guarded by
-defaults identity, user ID and equality with the current persisted bytes. It
-does not cache write authority or skip revision/attempt/tombstone checks.
-Large snapshot envelopes use a versioned lossless LZFSE wrapper so their
-UserDefaults Data values stay below the observed 4 MiB platform boundary. Small
-and legacy plain JSON still decode; codec or size failures retain existing
-failed-save behavior. A live response that cannot be packed still renders after
-a small durable invalidation marker commits at its request revision; future
-requests reload fully and offline browsing waits for a cacheable response.
-Corrections retire only after a snapshot or durable invalidation marker is
-stored. No server rows are trimmed.
+session summary. The snapshot store retains one live envelope, guarded by
+defaults identity, user ID and equality with the current persisted bytes.
+Revisions, account/attempt guards and tombstone ordering remain authoritative.
+Large snapshot envelopes use a lossless LZFSE wrapper. If a packed value still
+exceeds the observed 4 MiB platform boundary, all store writes persist a small
+ordering/invalidation marker and retain the latest validated rows in that one
+process-local envelope. Reads and mutation ACKs can therefore advance together
+without trusting an older model fallback. No delta cursor claims those rows
+survived relaunch. A cold process sees only the marker and reloads fully;
+explicit invalidation or external replacement discards the live envelope too.
+Legacy JSON still decodes. A failed ordering write preserves its durable intent.
+No server history is trimmed.
 Serialization remains synchronous on the main actor and proportional to retained
 history; incremental network pulls do not make it constant-cost. See the
 [measured client evidence](plans/completed/app-quality-and-maintainability/evidence/p2/README.md)

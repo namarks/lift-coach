@@ -89,15 +89,15 @@ Both merge trees matched their reviewed heads.
 P2 delivers the measured `TrainingHistoryIndex`, requested summaries, lazy
 exercise rows, sparse chart date labels, and cohesive `StateSnapshotStore`
 extraction. Five-year calendar preparation fell from a 2,899 ms median to a
-30 ms first read; the full losslessly packed cache is 264,174 bytes. Fresh-process
+24 ms first read; the full losslessly packed cache is 279,858 bytes. Fresh-process
 checks discovered and fixed rejected large preference values that previously
 looked saved only in process. No history is trimmed. Whole-snapshot writes remain
 linear and synchronous; [measurements, budgets, source manifests and limits](evidence/p2/README.md)
 retain that tradeoff.
 
 Local verification passed 326 unit and 18 UI tests on iPhone 17 / iOS 26.2 at
-normal text size. All 329 unit tests then passed after independent review added
-failed-snapshot correction recovery and oversized live-response coverage. This includes durable account/
+normal text size. All 330 unit tests then passed after independent review added
+failed-snapshot recovery and a complete oversized-cache workout-flow regression. This includes durable account/
 attempt writes and shared numerical/calendar contracts. The completion PR records independent review and terminal
 required CI for its exact current head. P2's checked phase and archive land
 atomically with that implementation.

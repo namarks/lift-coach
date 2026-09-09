@@ -10017,7 +10017,9 @@ extension SetOutboxTests {
     }
 
     func testCorrectionPackingFailurePersistsInvalidationBeforeRetiringIntent() async throws {
-        let defaults = defaults(), ex = exercise()
+        let suite = "OversizedSnapshot.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!, ex = exercise()
+        defer { defaults.removePersistentDomain(forName: suite) }
         let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
         let api = SetWriteAPIStub()
         api.correctionHandler = { [self] intent, _ in corrected(original, intent: intent, session: active) }
@@ -10037,26 +10039,29 @@ extension SetOutboxTests {
         XCTAssertTrue(model.setCorrections.isEmpty)
         XCTAssertEqual(model.sets.first?.weight, 135)
         XCTAssertEqual(api.correctionCalls.count, 1)
-        XCTAssertTrue(model.correctionRefreshNeeded)
+        XCTAssertFalse(model.correctionRefreshNeeded)
         XCTAssertFalse(StateSnapshotStore.isCurrent(oldTicket, defaults: defaults))
-        XCTAssertNil(StateSnapshotStore.load(userID: "user-a", defaults: defaults))
+        XCTAssertEqual(StateSnapshotStore.load(userID: "user-a", defaults: defaults)?.state.sets.first?.weight, 135)
         let marker = try XCTUnwrap(defaults.data(forKey: StateSnapshotStore.scopedKey(userID: "user-a")))
         XCTAssertLessThan(marker.count, 1_024)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: marker) as? [String: Any])
         XCTAssertEqual(json["invalidated"] as? Bool, true)
-        // Neither a replacement model nor a delayed ACK may resurrect stale
-        // browse data; the next authenticated state request must be full.
-        let cold = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        // A new defaults object bypasses the process-local live envelope,
+        // modeling a cold read of only the durable marker.
+        let coldDefaults = UserDefaults(suiteName: suite)!
+        let cold = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: coldDefaults, now: { self.fixedDate })
         XCTAssertTrue(cold.sets.isEmpty)
         XCTAssertTrue(cold.setCorrections.isEmpty)
         XCTAssertNil(StateSnapshotStore.mergeAcknowledgement(userID: "user-a",
-            fallback: state(session: active, sets: [original], exercise: ex), defaults: defaults) { $0 })
-        let next = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "user-a", defaults: defaults))
+            fallback: state(session: active, sets: [original], exercise: ex), defaults: coldDefaults) { $0 })
+        let next = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "user-a", defaults: coldDefaults))
         XCTAssertEqual(next.watermarks, .fullReload)
     }
 
     func testOversizedLiveStateRendersAndRefreshesWithoutPersistedBrowseRows() async throws {
-        let defaults = defaults(), ex = exercise()
+        let suite = "OversizedSnapshot.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!, ex = exercise()
+        defer { defaults.removePersistentDomain(forName: suite) }
         let active = session(updatedAt: 100, attempt: 0)
         let hugePlan = incompressiblePlan(ex)
         let api = SetWriteAPIStub(), catalog = SetCatalogAPIStub()
@@ -10074,26 +10079,86 @@ extension SetOutboxTests {
         XCTAssertEqual(model.plan?.meta, hugePlan.meta)
         XCTAssertNil(model.loadError)
         XCTAssertFalse(model.isUsingCachedState)
-        XCTAssertNil(StateSnapshotStore.load(userID: "user-a", defaults: defaults))
+        XCTAssertEqual(StateSnapshotStore.load(userID: "user-a", defaults: defaults)?.state.sets.first?.weight, 135)
         XCTAssertFalse(StateSnapshotStore.isCurrent(oldTicket, defaults: defaults))
         await model.loadAfterMutation()
         XCTAssertEqual(model.sets.first?.weight, 95)
         XCTAssertNil(model.loadError)
         XCTAssertEqual(catalog.jwtCalls.count, 2)
         XCTAssertEqual(api.stateWatermarkCalls, [.fullReload, .fullReload])
-        // A cold model must fetch again, then show the successful response
-        // even though its optional browse snapshot still cannot be packed.
+        // Bypass the live envelope to model a cold process reading its marker.
+        let coldDefaults = UserDefaults(suiteName: suite)!
         let cold = SyncModel(auth: sharedAuth, setWriteAPI: api, catalogAPI: catalog,
-            defaults: defaults, now: { self.fixedDate })
+            defaults: coldDefaults, now: { self.fixedDate })
         XCTAssertTrue(cold.sets.isEmpty)
         await cold.load()
         XCTAssertEqual(cold.sets.first?.weight, 95)
         XCTAssertNil(cold.loadError)
         XCTAssertEqual(api.stateWatermarkCalls, [.fullReload, .fullReload, .fullReload])
         let stale = state(session: active, sets: [], exercise: ex)
-        XCTAssertNil(StateSnapshotStore.commitStateResponse(stale, ticket: oldTicket, defaults: defaults))
+        XCTAssertNil(StateSnapshotStore.commitStateResponse(stale, ticket: oldTicket, defaults: coldDefaults))
+        // Explicit invalidation still clears live rows and fences delayed ACKs.
+        XCTAssertTrue(StateSnapshotStore.invalidate(userID: "user-a", defaults: coldDefaults))
         XCTAssertNil(StateSnapshotStore.mergeAcknowledgement(userID: "user-a", fallback: stale,
-            defaults: defaults) { $0 })
+            defaults: coldDefaults) { $0 })
+    }
+
+    func testOversizedLiveSnapshotAllowsCreateLogCorrectionFinishAndDiscard() async throws {
+        let defaults = defaults(), ex = exercise(targetSets: 1)
+        let hugePlan = incompressiblePlan(ex)
+        let api = SetWriteAPIStub(), terminal = SetTerminalAPIStub()
+        var serverSession = session(status: "in_progress", updatedAt: 100, attempt: 0)
+        var serverSets: [SetLog] = []
+        api.createHandler = { _, _, _ in serverSession }
+        api.logHandler = { [self] _, body, _ in
+            let row = setLog(body: body, sessionID: serverSession.id)
+            serverSets = [row]
+            return .init(set: row, deduped: false, session: serverSession)
+        }
+        api.correctionHandler = { [self] intent, _ in
+            let result = corrected(try XCTUnwrap(serverSets.first), intent: intent, session: serverSession)
+            serverSets = [result.set]
+            return result
+        }
+        api.stateHandler = { [self] _ in
+            state(session: serverSession, sets: serverSets, days: hugePlan.days, planMeta: hugePlan.meta)
+        }
+        terminal.completeHandler = { [self] _, _ in
+            serverSession = session(status: "completed", updatedAt: 200, attempt: 0)
+            return serverSession
+        }
+        terminal.discardHandler = { [self] _, _ in
+            serverSession = session(status: "discarded", updatedAt: 300, attempt: 0)
+            serverSets = []
+            return serverSession
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            terminalAPI: terminal, defaults: defaults, uuidFactory: { self.fixedUUID }, now: { self.fixedDate })
+        model.replaceState(with: StateResponse(plan: hugePlan, plan_version: 1, sessions: [], sets: [],
+            external_events: [], external_activities: [], activities: [], server_time: 2_000_000_000_000))
+        model.startWorkout()
+        let saved = await model.logSet(ex, weight: 135, reps: 5)
+        XCTAssertTrue(saved, model.loadError ?? "Expected acknowledged set")
+        XCTAssertEqual(api.createCalls.count, 1)
+        XCTAssertEqual(api.logCalls.count, 1)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertTrue(model.enqueueCorrection(set: try XCTUnwrap(model.sets.first),
+            values: .init(weight: 95, reps: 4, rpe: 8, durationSeconds: nil)))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.setCorrections.isEmpty)
+        XCTAssertEqual(model.sets.first?.weight, 95)
+        await model.finishWorkout()
+        XCTAssertEqual(terminal.completeCalls.count, 1)
+        XCTAssertTrue(model.terminalOutbox.isEmpty)
+        XCTAssertEqual(model.todaySession?.status, "completed")
+        await model.discardWorkout()
+        XCTAssertEqual(terminal.discardCalls.count, 1)
+        XCTAssertEqual(model.currentTerminalIntent?.deliveryState, .acknowledged)
+        XCTAssertFalse(model.running)
+        XCTAssertTrue(model.sets.isEmpty)
+        let marker = try XCTUnwrap(defaults.data(forKey: StateSnapshotStore.scopedKey(userID: "user-a")))
+        XCTAssertLessThan(marker.count, 1_024)
+        XCTAssertNil(StateSnapshotStore.load(userID: "user-a", defaults: defaults)?.watermarks)
     }
 
     func testCorrectionRetainsIntentWhenSnapshotAndInvalidationCannotAdvance() async throws {
