@@ -1,10 +1,17 @@
 # Workout rename rollout
 
-This runbook implements P0's three stages. Repository approval authorizes code,
-local verification, review and merge. It does **not** authorize production D1
-changes, Worker deployment, or TestFlight distribution. Record their separately
-approved source SHA, Worker deployment/version ID, migration result and app build
-in `plan.md` when each stage actually runs.
+This runbook describes P0's three-stage procedure; it is not the current
+execution frontier. **The 2026-09-09 release has already deployed A and applied
+B. Do not repeat either stage.** Read the [canonical release record and next
+step](plan.md#next-step) before running any command below; it holds the exact
+source, deployment/version IDs, migration result and approved verification
+exception. The A/B commands are retained for historical reproducibility and
+must not be treated as pending work.
+
+Repository approval authorizes code, local verification, review and merge.
+It does **not** itself authorize further production changes, rollback, or
+TestFlight distribution. Record separately authorized release evidence and
+the supported-client compatibility cycle in `plan.md`.
 
 ## Local rehearsal
 
@@ -29,6 +36,11 @@ client vocabularies against both schemas; snapshot tests restore immutable v1
 history without rewriting its bytes.
 
 ## A — deploy the adaptive Worker before renaming storage
+
+Executed for the 2026-09-09 release; see the canonical record above. Its live
+REST authoring checks were deferred under the owner's explicit exception.
+The following is the historical deployment procedure, not an instruction to
+redeploy the already serving Worker.
 
 After release authorization, work from the exact reviewed and verified source.
 Inspect current deployment and pending migrations first:
@@ -64,6 +76,10 @@ separate TestFlight authorization while the legacy wire contract remains live.
 
 ## B — rename the database under the adaptive Worker
 
+Applied for the 2026-09-09 release; see the canonical record above. Live REST
+authoring, date assignment and set/finish/discard checks were deferred to the
+client rollout under the owner's explicit exception. Do not reapply 0045.
+
 Only after A is verified, the production migration is separately authorized,
 and the pending migration list contains **only 0045**, record a D1 Time Travel
 bookmark using `npx wrangler d1 time-travel info tres-fort-db --json` in a private
@@ -86,6 +102,17 @@ After the dual-key Worker is proven live, prepare a **later** app build changing
 request and UI suites rerun. That reviewed change and its TestFlight distribution
 need their own recorded evidence. Never switch an app's outgoing shape merely
 because its decoder accepts new fields.
+
+For the deferred client-rollout verification, complete legacy-route checks on
+an owner-approved disposable workout before distributing the first compatible
+TestFlight build. Complete canonical-route checks before distributing the later
+canonical-writing build. During each canary and for five minutes afterward,
+observe request success/failure using value-free results; record the window and
+findings in `plan.md`. A reproducible write failure, unhandled missing-table or
+missing-column error, or foreign-key violation stops client distribution.
+Keep the adaptive Worker serving while diagnosing; any production rollback
+still requires the authority and procedure below. Do not infer a continuously
+observed production cutover from local test coverage or point-in-time reads.
 
 ## C — remove compatibility only after the observed client cycle
 

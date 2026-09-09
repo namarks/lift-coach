@@ -189,18 +189,27 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 
 ## Next step
 
-**Now (@owner):** Library P0 is implemented and locally verified in
-[PR #161](https://github.com/namarks/tres-fort/pull/161), pending final-head review,
-CI and merge. The Workouts surface includes schedule badges, separate Unschedule
-and Delete workout actions, and a today-or-future date picker using the shared
+**Now (@owner):** Complete the deferred legacy-route REST checks during the
+separately authorized client rollout before distributing the first compatible
+Workouts TestFlight build. Library P0 is merged and verified in
+[PR #161](https://github.com/namarks/tres-fort/pull/161). The Workouts surface
+includes schedule badges, separate Unschedule and Delete workout actions,
+and a today-or-future date picker using the shared
 assignment guard and attempt-CAS writer. The first build keeps released outgoing
 request shapes and can ship during the rename's compatibility window after
-separate TestFlight authorization. Follow the [staged rollout](../workouts-and-multi-session/rollout.md).
+separate TestFlight authorization. The compatibility Worker and migration 0045
+are now released. The
+[canonical rollout status](../workouts-and-multi-session/plan.md#next-step) records
+the production evidence and the owner-approved deferral of live REST authoring,
+date-assignment and session-write checks to the client rollout. Canonical-route
+checks must pass before the later canonical-writing build is distributed.
+Follow the [staged rollout](../workouts-and-multi-session/rollout.md).
 
-Validation: 397 iOS unit tests, the two new library journeys, and the 18 existing
-creation/group journeys passed across the final runs; the full backend suite
-passed 896 tests, including both physical schemas and old/new wire contracts.
-Unschedule retains the workout and dated session while clearing its recurring
+Local/CI validation: [PR #161 CI](https://github.com/namarks/tres-fort/actions/runs/34371920505)
+passed 404 iOS unit tests and 23 UI journeys; the full backend
+suite passed 897 tests, including both physical schemas and old/new wire
+contracts.
+Those tests verified that Unschedule retains the workout and dated session while clearing its recurring
 entries. The library-date assignment appears in Today and the coach's current
 workout response without changing the recurring plan. Tags/archive (P1),
 freestyle (P2), and multiple sessions per date remain unimplemented and outside
