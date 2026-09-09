@@ -27,7 +27,8 @@ a sandbox that denies CoreSimulator or its caches cannot run this command.
 
 For a focused check, append `--only-testing TresFortTests/CalendarProjectionTests`
 or `--only-testing TresFortUITests/TrainingJourneyTests`. A focused result does
-not substitute for the full suite before merging an iOS change.
+not substitute for the required CI unit and smoke coverage before merging an
+iOS change.
 
 CI uses `--ui-suite smoke` for iOS changes on pull requests and pushes to main.
 The smoke suite includes every `TresFortTests` unit test and five UI journeys:
