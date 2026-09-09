@@ -1,0 +1,44 @@
+{
+  "empty-guidance": {
+    "brightest_glyph_pixel": [
+      244,
+      244,
+      245
+    ],
+    "brightest_dark_reference_pixel": [
+      36,
+      37,
+      39
+    ],
+    "core_pixel_contrast": 13.96,
+    "foreground_pixel_count": 8500
+  },
+  "load-error": {
+    "brightest_glyph_pixel": [
+      244,
+      244,
+      245
+    ],
+    "brightest_dark_reference_pixel": [
+      36,
+      38,
+      39
+    ],
+    "core_pixel_contrast": 13.83,
+    "foreground_pixel_count": 10410
+  },
+  "working-set-count": {
+    "brightest_glyph_pixel": [
+      161,
+      161,
+      170
+    ],
+    "brightest_dark_reference_pixel": [
+      30,
+      30,
+      32
+    ],
+    "core_pixel_contrast": 6.49,
+    "foreground_pixel_count": 123
+  }
+}

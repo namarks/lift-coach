@@ -17,17 +17,22 @@ struct RootView: View {
             default:
                 ZStack {
                     Color.black.ignoresSafeArea()
-                    VStack(spacing: 28) {
-                        Text("TRÈS FORT")
-                            .font(Theme.display(40)).tracking(2)
-                            .foregroundStyle(.white)
-                        if case let .working(msg) = model.phase {
-                            ProgressView(msg).tint(.white).foregroundStyle(.white)
-                        } else {
-                            signedOut
+                    GeometryReader { geometry in
+                        ScrollView {
+                            VStack(spacing: 28) {
+                                Text("TRÈS FORT")
+                                    .font(Theme.display(40)).tracking(2)
+                                    .foregroundStyle(.white)
+                                if case let .working(msg) = model.phase {
+                                    ProgressView(msg).tint(.white).foregroundStyle(.white)
+                                } else {
+                                    signedOut
+                                }
+                            }
+                            .padding(32)
+                            .frame(maxWidth: .infinity, minHeight: geometry.size.height)
                         }
                     }
-                    .padding(32)
                 }
                 .preferredColorScheme(.dark)
             }

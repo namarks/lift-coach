@@ -99,10 +99,10 @@ private struct ExerciseHistoryList: View {
                     }
                     if last.cohorts.count > 2 {
                         Text("+\(last.cohorts.count - 2) more load/mode combinations")
-                            .font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                            .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                     }
                     Text("\(last.setCount) sets · \(last.date)")
-                        .font(Theme.mono(10)).foregroundStyle(Theme.dim)
+                        .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                 }
             }
             Spacer()

@@ -26,6 +26,12 @@ For a focused check, append `--only-testing TresFortTests/CalendarProjectionTest
 or `--only-testing TresFortUITests/TrainingJourneyTests`. A focused result does
 not substitute for the full suite before merging an iOS change.
 
+CI prioritizes the current iPhone 17 layout and normal text sizes. The optional
+`--content-size` argument can set a simulator system preference for a focused
+investigation; it is not a required older-device or extreme-text matrix.
+It applies only to the newly created simulator and records `ui-settings.log`.
+A rejected setting fails the command and still cleans up.
+
 ## Evidence and cleanup
 
 Build copies, DerivedData, and the created simulator are deleted on success,
@@ -52,7 +58,13 @@ or host crash can leave the named `TresFort verification` simulator and
 
 The Debug simulator build accepts `TRESFORT_UI_FIXTURE` through its launch
 environment. Available cases are `sign-in`, `empty`, `load-failure`, `ordinary`,
-`bodyweight`, `timed`, `pending`, `correction-failure`, and `ready-to-finish`.
+`bodyweight`, `timed`, `pending`, `correction-failure`, `ready-to-finish`, and
+`onboarding`. Add `TRESFORT_UI_LARGE_TEXT=1` for the largest accessibility text
+size; otherwise fixture launches inherit the simulator system setting (normally
+`.large`). The synthetic banner stays at its
+ordinary size so it does not take space from the product under test. This
+root-view override alone does not prove presented-sheet scaling; use the
+optional system setting for a specific investigation when needed.
 An unknown value aborts before real authentication is constructed. Fixture code
 is excluded from Release builds and physical-device builds.
 
@@ -76,6 +88,17 @@ Representative screenshots are XCTest attachments, not fragile pixel baselines.
 The fixture server is a transport stub, not proof of backend validation or an
 Apple authorization exchange. Unit/integration tests verify those separate
 contracts. Native Apple authorization and its provider UI remain a separate walkthrough.
+
+The onboarding fixture exercises all optional steps and the safe non-owner
+fallback when `/api/me` is unavailable. Open-URL actions are discarded in every
+fixture; provider connection routes fail closed. UI tests additionally cover
+onboarding, exact decimal entry with the keyboard, rest completion,
+correction recovery, and reachability of the remaining fixtures. XCTest audits
+check hit regions and descriptions in the visible
+entry/runner viewports. Resolved palette colors have deterministic AA contrast
+checks. The native iOS 26.2 contrast heuristic produced false positives over the
+dark gradient; [measured evidence](plans/app-quality-and-maintainability/evidence/p1/README.md#contrast-verification)
+records its limits and why it is not a CI assertion. These audits do not exercise VoiceOver focus or speech.
 
 `ios/TresFortTests/Fixtures/CalendarProjection.json` supplies the same civil-date,
 DST, leap-day, real-session, dangling schedule, and blackout expectations to
@@ -106,4 +129,5 @@ names enforced repository settings requires separate repository authority.
 A compile, screenshot, or automated smoke test does not establish VoiceOver
 usability, physical-device keyboard reachability, audio/lock-screen cues, or
 interruption behavior. P1 records simulator evidence separately from the
-owner's physical-device walkthrough before any release claim.
+optional physical-device observations. Per the September 8 owner steering,
+those observations are not a delivery gate.

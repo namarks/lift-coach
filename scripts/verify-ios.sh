@@ -3,18 +3,20 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
-  echo 'Usage: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17 [--only-testing Target[/Class[/method]]]'
+  echo 'Usage: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17 [--only-testing Target[/Class[/method]]] [--content-size accessibility-extra-extra-extra-large]'
 }
 runtime=''
 device=''
+content_size=''
 test_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --runtime|--device|--only-testing)
+    --runtime|--device|--only-testing|--content-size)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { usage >&2; exit 2; }
       case "$1" in
         --runtime) runtime="$2" ;;
         --device) device="$2" ;;
+        --content-size) content_size="$2" ;;
         --only-testing) test_args+=("-only-testing:$2") ;;
       esac
       shift 2 ;;
@@ -94,6 +96,14 @@ PY
 xcodegen generate --spec "$scratch/ios/project.yml" >"$scratch/xcodegen.log" 2>&1
 simulator="$(xcrun simctl create "TresFort verification $(basename "$scratch")" "$device" "$runtime")"
 echo "Verifying TresFort on $runtime / $device ($simulator)"
+if [[ -n "$content_size" ]]; then
+  # Set the actual simulator preference: a root SwiftUI environment override
+  # alone may not reach system controls or separately presented sheets.
+  xcrun simctl boot "$simulator" >"$scratch/ui-settings.log" 2>&1
+  xcrun simctl bootstatus "$simulator" -b >>"$scratch/ui-settings.log" 2>&1
+  xcrun simctl ui "$simulator" content_size "$content_size" >>"$scratch/ui-settings.log" 2>&1
+  xcrun simctl ui "$simulator" content_size >>"$scratch/ui-settings.log" 2>&1
+fi
 # Disable test cloning so every simulator this command creates has one owner.
 if ! xcodebuild test -project "$scratch/ios/TresFort.xcodeproj" \
     -scheme TresFort -configuration Debug \

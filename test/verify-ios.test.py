@@ -33,6 +33,7 @@ if name == 'xcrun':
     elif args[:3] == ['simctl', 'list', 'devicetypes']:
         print(json.dumps({'devicetypes': [{'identifier': 'device'}]}))
     elif args[:2] == ['simctl', 'create']: print('disposable-simulator')
+    elif args[:2] == ['simctl', 'ui']: sys.exit(int(os.environ.get('MOCK_UI_EXIT', '0')))
     elif args[:2] == ['simctl', 'delete']: sys.exit(int(os.environ.get('MOCK_DELETE_EXIT', '0')))
 elif name == 'xcodebuild' and args[0] == 'test':
     result = pathlib.Path(args[args.index('-resultBundlePath') + 1])
@@ -83,6 +84,15 @@ else: print('synthetic-tool-version')
         self.assertIn(['xcrun',['simctl','delete','disposable-simulator']],self.calls())
         self.assertEqual(len(list((self.root/'.artifacts').rglob('result.txt'))),1)
         self.assertIn('-only-testing:TresFortTests',next(args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test'))
+
+    def test_system_text_setting_failure_cleans_device_without_running_tests(self):
+        self.env['MOCK_UI_EXIT']='1'
+        result=self.run_script(['--runtime','runtime','--device','device',
+                                '--content-size','accessibility-extra-extra-extra-large'])
+        self.assertNotEqual(result.returncode,0)
+        self.assertIn(['xcrun',['simctl','delete','disposable-simulator']],self.calls())
+        self.assertFalse(any(name=='xcodebuild' and args[0]=='test' for name,args in self.calls()))
+        self.assertEqual(len(list((self.root/'.artifacts').rglob('ui-settings.log'))),1)
 
     def test_cleanup_failure_is_not_a_green_run(self):
         self.env['MOCK_DELETE_EXIT']='1'
