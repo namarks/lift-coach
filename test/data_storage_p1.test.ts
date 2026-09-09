@@ -43,7 +43,7 @@ async function createWorkout(label: string) {
   await createPlan(env.DB, userId, `${label} plan`);
   const built = await updatePlanTree(env.DB, userId, {
     name: `${label} plan`,
-    days: [
+    workouts: [
       {
         day_label: 'A',
         name: `${label} day`,
@@ -56,8 +56,8 @@ async function createWorkout(label: string) {
     userId,
     planId: built.plan.id,
     version: built.plan.version,
-    dayId: built.plan.days[0]!.id,
-    slotId: built.plan.days[0]!.exercises[0]!.id,
+    dayId: built.plan.workouts[0]!.id,
+    slotId: built.plan.workouts[0]!.exercises[0]!.id,
   };
 }
 
@@ -287,7 +287,7 @@ describe('P1 set/session delta cursors', () => {
     const rebuilt = await updatePlanTree(env.DB, workout.userId, {
       name: 'P1 remap plan v2',
       expected_version: workout.version,
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'P1 remap day',
@@ -296,8 +296,8 @@ describe('P1 set/session delta cursors', () => {
       ],
     });
     if (!('plan' in rebuilt)) throw new Error('expected_rebuilt_p1_plan');
-    const newDayId = rebuilt.plan.days[0]!.id;
-    const newSlotId = rebuilt.plan.days[0]!.exercises[0]!.id;
+    const newDayId = rebuilt.plan.workouts[0]!.id;
+    const newSlotId = rebuilt.plan.workouts[0]!.exercises[0]!.id;
     expect(newDayId).not.toBe(workout.dayId);
     expect(newSlotId).not.toBe(workout.slotId);
 
@@ -305,7 +305,7 @@ describe('P1 set/session delta cursors', () => {
     expect(remapDelta.sessions).toEqual([
       expect.objectContaining({
         id: logged.session.id,
-        day_template_id: newDayId,
+        workout_id: newDayId,
         updated_at: remappedAt,
       }),
     ]);

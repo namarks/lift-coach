@@ -39,9 +39,9 @@ export function validateExerciseGroups(slots: readonly GroupSlot[]): GroupConfli
   return bad.size ? { error: 'group_conflict', fields: [...bad].sort() } : null;
 }
 
-export function validatePlanExerciseGroups(days: readonly { exercises: readonly GroupSlot[] }[]): GroupConflict | null {
+export function validatePlanExerciseGroups(workouts: readonly { exercises: readonly GroupSlot[] }[]): GroupConflict | null {
   const seen = new Set<string>();
-  for (const day of days) {
+  for (const day of workouts) {
     const invalid = validateExerciseGroups(day.exercises);
     if (invalid) return invalid;
     const ids = new Set(day.exercises.flatMap((slot) => slot.group_id ? [slot.group_id] : []));

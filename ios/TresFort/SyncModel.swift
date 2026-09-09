@@ -504,9 +504,9 @@ final class SyncModel: ObservableObject {
         return f.string(from: now())
     }
 
-    var selectedDay: DayTemplate? {
+    var selectedDay: Workout? {
         guard let plan else { return nil }
-        return plan.days.first { $0.id == selectedDayID } ?? plan.days.first
+        return plan.workouts.first { $0.id == selectedDayID } ?? plan.workouts.first
     }
 
     var terminalActionTarget: WorkoutTerminalActionTarget? {
@@ -826,7 +826,7 @@ final class SyncModel: ObservableObject {
                 runnerFocus.isExplicit = false
             }
             if let repair = deferredGroupRepair,
-               plan?.days.first(where: { $0.id == repair.dayID })
+               plan?.workouts.first(where: { $0.id == repair.dayID })
                 .flatMap({ RunnerGroupRepair(groupID: repair.groupID, day: $0) }) != repair {
                 deferredGroupRepair = nil
             }
@@ -1104,7 +1104,7 @@ final class SyncModel: ObservableObject {
         case (nil, nil):
             // Incomparable rolling-old responses may advance an explicit state
             // machine transition, but never rewrite equal semantic state (and
-            // with it a newer plan-remapped day_template_id).
+            // with it a newer plan-remapped workout_id).
             return sessionStatusAdvances(
                 from: current.status, to: response.status)
         }
@@ -1139,7 +1139,7 @@ final class SyncModel: ObservableObject {
             id: result.set.session_id,
             date: submittedSession.date,
             status: "in_progress",
-            day_template_id: submittedSession.day_template_id,
+            workout_id: submittedSession.workout_id,
             updated_at: submittedSession.updated_at,
             attempt: submittedSession.attempt)
     }
@@ -1182,7 +1182,7 @@ final class SyncModel: ObservableObject {
             id: acceptedSet.session_id,
             date: acknowledgedSession.date,
             status: source.status,
-            day_template_id: source.day_template_id,
+            workout_id: source.workout_id,
             updated_at: source.updated_at,
             attempt: source.attempt)
         sessions.removeAll { $0.date == acknowledgedSession.date }
@@ -1382,7 +1382,7 @@ final class SyncModel: ObservableObject {
             id: response.id,
             date: response.date,
             status: source.status,
-            day_template_id: source.day_template_id ?? response.day_template_id,
+            workout_id: source.workout_id ?? response.workout_id,
             updated_at: source.updated_at,
             attempt: source.attempt ?? response.attempt)
         let aliases = Set(sameDate.map(\.id)).union([response.id])
@@ -1657,7 +1657,7 @@ final class SyncModel: ObservableObject {
               terminalOutbox.intent(for: checkpoint.date) == nil,
               let serverSession = checkpointSession,
               serverSession.status == "in_progress",
-              let day = plan?.days.first(where: {
+              let day = plan?.workouts.first(where: {
                   $0.id == checkpoint.selectedDayID
               }),
               !day.exercises.isEmpty,
@@ -1949,7 +1949,7 @@ final class SyncModel: ObservableObject {
     private func activeRunnerSlotID() -> String? {
         guard running,
               let selectedDayID,
-              let day = plan?.days.first(where: { $0.id == selectedDayID }),
+              let day = plan?.workouts.first(where: { $0.id == selectedDayID }),
               day.exercises.indices.contains(exerciseIndex)
         else { return nil }
         return day.exercises[exerciseIndex].id
@@ -1981,7 +1981,7 @@ final class SyncModel: ObservableObject {
             skippedSlotIDs.formUnion(checkpoint.skippedSlotIDs)
         }
         var identities: [String: RunnerExecutionIdentity] = [:]
-        for ex in plan?.days.flatMap(\.exercises) ?? []
+        for ex in plan?.workouts.flatMap(\.exercises) ?? []
         where skippedSlotIDs.contains(ex.id) {
             identities[ex.id] = executionIdentity(for: ex)
         }
@@ -1997,7 +1997,7 @@ final class SyncModel: ObservableObject {
         unverifiedSlotIDs: Set<String>
     ) {
         var currentIdentities: [String: RunnerExecutionIdentity] = [:]
-        for ex in plan?.days.flatMap(\.exercises) ?? [] {
+        for ex in plan?.workouts.flatMap(\.exercises) ?? [] {
             currentIdentities[ex.id] = executionIdentity(for: ex)
         }
         let changedSlotIDs = unverifiedSlotIDs.union(
@@ -2052,8 +2052,8 @@ final class SyncModel: ObservableObject {
     /// still exists on the resolved day.
     private func reconcileSelection(previousSelectedDayID: String?, activeSlotID: String?,
                                     runnerWasActive: Bool) {
-        let days = plan?.days ?? []
-        let sessionDayID = todaySession?.day_template_id
+        let days = plan?.workouts ?? []
+        let sessionDayID = todaySession?.workout_id
         let resolvedSessionDayID = sessionDayID.flatMap { id in
             days.contains(where: { $0.id == id }) ? id : nil
         }
@@ -2124,7 +2124,7 @@ final class SyncModel: ObservableObject {
             id: committedSet.session_id,
             date: staleSession.date,
             status: staleSession.status,
-            day_template_id: staleSession.day_template_id,
+            workout_id: staleSession.workout_id,
             updated_at: staleSession.updated_at,
             attempt: staleSession.attempt)
 
@@ -2667,7 +2667,7 @@ final class SyncModel: ObservableObject {
         let intent = PendingSetIntent(
             body: body,
             date: workoutDate,
-            dayTemplateID: selectedDay?.id,
+            workoutID: selectedDay?.id,
             resolvedSessionID: todaySession?.id,
             deliveryState: .queued,
             failedHTTPStatus: nil,
@@ -3153,7 +3153,7 @@ final class SyncModel: ObservableObject {
             do {
                 session = try await setWriteAPI.createSession(
                     date: intent.date,
-                    dayTemplateID: intent.dayTemplateID,
+                    workoutID: intent.workoutID,
                     expectedAttempt: intent.expectedAttempt ?? 0,
                     restartDiscardedAttempt: intent.restartDiscardedAttempt,
                     jwt: jwt)
@@ -3161,7 +3161,7 @@ final class SyncModel: ObservableObject {
                 // Match set recovery: update_plan can invalidate the optional
                 // day UUID while this terminal choice is offline. Retry the
                 // existing date-level endpoint without that stale association.
-                guard intent.dayTemplateID != nil,
+                guard intent.workoutID != nil,
                       isPermanentSetClientError(error),
                       canInitiateBoundFeatureAction,
                       let fallbackJWT = currentJWT
@@ -3172,7 +3172,7 @@ final class SyncModel: ObservableObject {
                 do {
                     session = try await setWriteAPI.createSession(
                         date: intent.date,
-                        dayTemplateID: nil,
+                        workoutID: nil,
                         expectedAttempt: intent.expectedAttempt ?? 0,
                         restartDiscardedAttempt: intent.restartDiscardedAttempt,
                         jwt: fallbackJWT)
@@ -3426,14 +3426,14 @@ final class SyncModel: ObservableObject {
                     id: sessionID,
                     date: intent.date,
                     status: "in_progress",
-                    day_template_id: intent.dayTemplateID)
+                    workout_id: intent.workoutID)
         } else {
             guard let jwt = currentJWT else { return .staleAccount }
             let createdSession: SessionRow
             do {
                 createdSession = try await setWriteAPI.createSession(
                     date: intent.date,
-                    dayTemplateID: intent.dayTemplateID,
+                    workoutID: intent.workoutID,
                     expectedAttempt: intent.expectedAttempt ?? 0,
                     restartDiscardedAttempt: intent.restartDiscardedAttempt,
                     jwt: jwt)
@@ -3443,7 +3443,7 @@ final class SyncModel: ObservableObject {
                 // not poison the FIFO forever: clear only that stale optional
                 // FK, persist before the fallback await, and let the date's
                 // canonical session preserve the set itself.
-                guard intent.dayTemplateID != nil,
+                guard intent.workoutID != nil,
                       isPermanentSetClientError(error),
                       canInitiateBoundFeatureAction,
                       let fallbackJWT = currentJWT,
@@ -3454,13 +3454,13 @@ final class SyncModel: ObservableObject {
                         error: error,
                         attemptedJWT: jwt)
                 }
-                intent.dayTemplateID = nil
+                intent.workoutID = nil
                 setOutbox.replace(intent)
                 persistReplacedSetIntent(intent)
                 do {
                     createdSession = try await setWriteAPI.createSession(
                         date: intent.date,
-                        dayTemplateID: nil,
+                        workoutID: nil,
                         expectedAttempt: intent.expectedAttempt ?? 0,
                         restartDiscardedAttempt: intent.restartDiscardedAttempt,
                         jwt: fallbackJWT)
@@ -3526,7 +3526,7 @@ final class SyncModel: ObservableObject {
                     id: resolvedSessionID,
                     date: intent.date,
                     status: "in_progress",
-                    day_template_id: intent.dayTemplateID)
+                    workout_id: intent.workoutID)
         } else {
             return .superseded
         }
@@ -4059,7 +4059,7 @@ final class SyncModel: ObservableObject {
               let checkpoint = persistedRunnerCheckpoint,
               intent.date == checkpoint.date, intent.date == todayString,
               intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
-              let day = plan?.days.first(where: { $0.id == checkpoint.selectedDayID }),
+              let day = plan?.workouts.first(where: { $0.id == checkpoint.selectedDayID }),
               let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID })
         else { return nil }
         return slot.group_id
@@ -4103,7 +4103,7 @@ final class SyncModel: ObservableObject {
         guard intent.isDelete, let checkpoint = persistedRunnerCheckpoint,
               checkpoint.date == intent.date, intent.date == todayString,
               intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
-              let day = plan?.days.first(where: { $0.id == checkpoint.selectedDayID }),
+              let day = plan?.workouts.first(where: { $0.id == checkpoint.selectedDayID }),
               let sessionID = todaySession?.id ?? checkpoint.sessionID,
               let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID }),
               let id = slot.group_id,
@@ -4145,7 +4145,7 @@ final class SyncModel: ObservableObject {
               sessionID == (todaySession?.id ?? checkpoint.sessionID),
               checkpoint.sessionID == nil || checkpoint.sessionID == sessionID,
               intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
-              let day = plan?.days.first(where: { $0.id == checkpoint.selectedDayID }),
+              let day = plan?.workouts.first(where: { $0.id == checkpoint.selectedDayID }),
               let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID }),
               let id = slot.group_id,
               intent.runnerGroupRepair == nil || intent.runnerGroupRepair == RunnerGroupRepair(groupID: id, day: day),
@@ -4375,7 +4375,7 @@ final class SyncModel: ObservableObject {
                       && $0.date == checkpoint.date
                       && $0.status == "in_progress"
               }),
-              let day = plan?.days.first(where: {
+              let day = plan?.workouts.first(where: {
                   $0.id == checkpoint.selectedDayID
               }),
               let currentSlotID = checkpoint.currentSlotID,
@@ -4786,7 +4786,7 @@ final class SyncModel: ObservableObject {
                 id: uuidFactory().uuidString,
                 action: .finish,
                 date: date,
-                dayTemplateID: todaySession?.day_template_id ?? selectedDay?.id,
+                workoutID: todaySession?.workout_id ?? selectedDay?.id,
                 resolvedSessionID: todaySession?.id,
                 deliveryState: .queued,
                 failedHTTPStatus: nil,
@@ -4838,7 +4838,7 @@ final class SyncModel: ObservableObject {
             id: uuidFactory().uuidString,
             action: .discard,
             date: date,
-            dayTemplateID: todaySession?.day_template_id ?? selectedDay?.id,
+            workoutID: todaySession?.workout_id ?? selectedDay?.id,
             resolvedSessionID: todaySession?.id,
             deliveryState: .queued,
             failedHTTPStatus: nil,
@@ -5029,7 +5029,7 @@ final class SyncModel: ObservableObject {
             "target_reps": targetReps,
             "rest_seconds": restSeconds,
         ]
-        if plan?.days.first(where: { $0.id == dayID })?.exercises.first(where: { $0.id == teID })?.group_id != nil {
+        if plan?.workouts.first(where: { $0.id == dayID })?.exercises.first(where: { $0.id == teID })?.group_id != nil {
             fields.removeValue(forKey: "target_sets")
             fields.removeValue(forKey: "rest_seconds")
         }
@@ -5263,7 +5263,7 @@ final class SyncModel: ObservableObject {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return nil }
         return await performRoutineMutation { api, jwt in
-            try await api.addDay(
+            try await api.addWorkout(
                 name: clean,
                 expectedPlanID: planID,
                 expectedVersion: version,
@@ -5276,19 +5276,19 @@ final class SyncModel: ObservableObject {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !clean.isEmpty else { return }
         _ = await performRoutineMutation { api, jwt in
-            try await api.updateDay(
+            try await api.updateWorkout(
                 dayID: dayID, fields: ["name": clean],
                 expectedVersion: version, jwt: jwt)
-        } as APIClient.DayIDRow?
+        } as APIClient.WorkoutIDRow?
     }
 
     func moveWorkoutDay(dayID: String, toIndex: Int) async {
         guard let version = plan?.version else { return }
         _ = await performRoutineMutation { api, jwt in
-            try await api.updateDay(
+            try await api.updateWorkout(
                 dayID: dayID, fields: ["order_index": toIndex],
                 expectedVersion: version, jwt: jwt)
-        } as APIClient.DayIDRow?
+        } as APIClient.WorkoutIDRow?
     }
 
     private func runnerProtectsWorkoutDay(_ dayID: String) -> Bool {
@@ -5308,9 +5308,9 @@ final class SyncModel: ObservableObject {
         }
         guard let version = plan?.version else { return }
         _ = await performRoutineMutation { api, jwt in
-            try await api.deleteDay(
+            try await api.deleteWorkout(
                 dayID: dayID, expectedVersion: version, jwt: jwt)
-        } as APIClient.DeleteDayResult?
+        } as APIClient.DeleteWorkoutResult?
     }
 
     func saveRecurringSchedule(_ week: [String: String]) async {
@@ -5324,14 +5324,36 @@ final class SyncModel: ObservableObject {
         } as APIClient.ScheduleWriteResult?
     }
 
-    func setCalendarOverride(date: String, dayID: String?) async {
-        let today = todayString
-        guard !runnerProtectsCalendarDate(date) else {
-            loadError = "Finish or discard the active workout before changing today's assignment."
-            return
+    func unscheduleWorkout(workoutID: String) async {
+        guard let currentPlan = plan,
+              WorkoutLibraryPolicy.isScheduled(workoutID: workoutID, plan: currentPlan) else { return }
+        let week = WorkoutLibraryPolicy.unscheduling(workoutID: workoutID, plan: currentPlan)
+        _ = await performRoutineMutation { api, jwt in
+            try await api.setSchedule(week, expectedPlanID: currentPlan.id,
+                                      expectedVersion: currentPlan.version, jwt: jwt)
+        } as APIClient.ScheduleWriteResult?
+    }
+
+    /// Shared by the library, agenda and the actual mutation. A sheet kept open
+    /// across midnight or a state refresh must recheck before sending a write.
+    func calendarAssignmentUnavailableReason(date: String, today: String? = nil) -> String? {
+        let today = today ?? todayString
+        if date < today { return "Choose today or a future date." }
+        if runnerProtectsCalendarDate(date) {
+            return "Finish or discard the active workout before changing today's assignment."
         }
-        guard !projection(for: date, today: today).suppressesScheduleAndEndurance else {
-            loadError = "This date is unavailable while the hard travel blackout is active."
+        if projection(for: date, today: today).suppressesScheduleAndEndurance {
+            return "This date is unavailable while the hard travel blackout is active."
+        }
+        if let session = sessionsByDate[date], ["in_progress", "completed"].contains(session.status) {
+            return "A started workout cannot be reassigned to another day or rest."
+        }
+        return nil
+    }
+
+    func setCalendarOverride(date: String, dayID: String?) async {
+        if let reason = calendarAssignmentUnavailableReason(date: date) {
+            loadError = reason
             return
         }
         // Zero is the explicit CAS token for "no assignment row observed".
@@ -5476,7 +5498,7 @@ final class SyncModel: ObservableObject {
 
     /// Plan day_template ids (for dangling-schedule detection).
     var planTemplateIDs: Set<String> {
-        Set(plan?.days.map(\.id) ?? [])
+        Set(plan?.workouts.map(\.id) ?? [])
     }
 
     /// Real cached sessions keyed by YYYY-MM-DD. If multiple sessions share
@@ -5656,17 +5678,17 @@ final class SyncModel: ObservableObject {
     /// the SINGLE authority for the Today workout-vs-rest split: non-nil
     /// ⇒ workout, nil ⇒ rest/skipped (callers use `todayResolvedDay !=
     /// nil` / its negation; there is no separate `todayIsWorkout` twin).
-    /// A real session can BE a workout while its `day_template_id` is
+    /// A real session can BE a workout while its `workout_id` is
     /// null (server-side `getOrCreateSession` ignores the passed template
     /// id for an existing same-date row). Fallback order so the workout
     /// still renders sensibly:
-    ///   1. the session's own `day_template_id` (if populated), else
+    ///   1. the session's own `workout_id` (if populated), else
     ///   2. today's scheduled template (the SAME projection/schedule the
     ///      calendar uses — derived from `meta.schedule`, no fork), else
     ///   3. `selectedDay` (whatever the runner last targeted), else
     ///   4. the first plan day.
     /// Returns nil ONLY when today is genuinely not a workout.
-    var todayResolvedDay: DayTemplate? {
+    var todayResolvedDay: Workout? {
         // Single-clock: capture `todayString` ONCE and derive the
         // projection ONCE from it, instead of touching the computed clock
         // multiple times (workout test + template switch +
@@ -5692,14 +5714,14 @@ final class SyncModel: ObservableObject {
         guard isWorkout else { return nil }
         if let checkpoint = resumableCheckpoint,
            checkpoint.date == today,
-           let checkpointDay = dayTemplate(id: checkpoint.selectedDayID)
+           let checkpointDay = workout(id: checkpoint.selectedDayID)
         {
             return checkpointDay
         }
         switch proj {
         case .projected(let tid):
             // Schedule projection: the template id IS the schedule's.
-            return dayTemplate(id: tid) ?? selectedDay ?? plan?.days.first
+            return workout(id: tid) ?? selectedDay ?? plan?.workouts.first
         case .session(_, let hardBlackoutTripType):
             // Real workout-status session. Outside a hard blackout, the
             // shared session→schedule inference preserves the existing
@@ -5709,7 +5731,7 @@ final class SyncModel: ObservableObject {
             return sessionDisplayTemplate(
                 forDateString: today,
                 allowScheduleInference: hardBlackoutTripType == nil)
-                ?? selectedDay ?? plan?.days.first
+                ?? selectedDay ?? plan?.workouts.first
         case .rest, .none, .unavailable, .light:
             return nil   // unreachable (guarded by isWorkout)
         }
@@ -5727,27 +5749,27 @@ final class SyncModel: ObservableObject {
     /// `meta.schedule` + civil-weekday lookup `CalendarProjection` uses —
     /// the ONE place this fallback is written). Used to recover a sensible
     /// template/label when a real session row carries a null
-    /// `day_template_id` (server `getOrCreateSession` drops it for an
+    /// `workout_id` (server `getOrCreateSession` drops it for an
     /// existing same-date row). Read-only — never writes the schedule.
-    func scheduledTemplate(forDateString ymd: String) -> DayTemplate? {
+    func scheduledTemplate(forDateString ymd: String) -> Workout? {
         guard let key = CalendarProjection.weekdayKey(forDateString: ymd),
               let tid = plan?.schedule?.templateID(forWeekdayKey: key)
         else { return nil }
-        return dayTemplate(id: tid)
+        return workout(id: tid)
     }
 
     /// The template to DISPLAY for a real session on `ymd`, regardless of
-    /// whether its `day_template_id` is populated: session's own id →
+    /// whether its `workout_id` is populated: session's own id →
     /// scheduled-by-weekday fallback. No `selectedDay`/first-day fallback
     /// here (callers that need a guaranteed non-nil add their own). Shared
     /// by Today and the calendar's `dayLabel` so the inference is identical.
     ///
     /// `allowScheduleInference` (default `true`) gates ONLY the
     /// schedule-by-weekday fallback (step 2). The session's own
-    /// `day_template_id` (step 1) is ALWAYS honoured. Pass `false` for
+    /// `workout_id` (step 1) is ALWAYS honoured. Pass `false` for
     /// HISTORICAL dates: the *current* `meta.schedule` must not relabel a
     /// past completed session (a schedule edit would otherwise rewrite its
-    /// A/B), so a null-`day_template_id` past session resolves to nil
+    /// A/B), so a null-`workout_id` past session resolves to nil
     /// (glyph-only, no possibly-wrong label) rather than today's mapping.
     /// `true` is REQUIRED for today/future (the BLOCKER fix:
     /// `todayResolvedDay` must still infer today's template) — the valid
@@ -5755,8 +5777,8 @@ final class SyncModel: ObservableObject {
     /// boundary `CalendarProjection.project` uses (`dateString < today`),
     /// not a forked date rule. Callers pass `ymd >= todayString`.
     func sessionDisplayTemplate(forDateString ymd: String,
-                                allowScheduleInference: Bool = true) -> DayTemplate? {
-        if let day = dayTemplate(id: sessionsByDate[ymd]?.day_template_id) {
+                                allowScheduleInference: Bool = true) -> Workout? {
+        if let day = workout(id: sessionsByDate[ymd]?.workout_id) {
             return day
         }
         guard allowScheduleInference else { return nil }
@@ -5773,7 +5795,7 @@ final class SyncModel: ObservableObject {
     /// cache we still return THAT date (with `day == nil`) rather than
     /// skipping ahead to a wrong, later "next workout". The view renders
     /// the date/label without exercise detail.
-    struct NextWorkout { let dateString: String; let day: DayTemplate? }
+    struct NextWorkout { let dateString: String; let day: Workout? }
 
     func nextWorkout(within maxDays: Int = 14) -> NextWorkout? {
         // Single-clock: capture `todayString` ONCE (it's a computed var,
@@ -5796,13 +5818,13 @@ final class SyncModel: ObservableObject {
             case .projected(let tid):
                 // Real next workout — return THIS date even if the
                 // template isn't cached (day == nil), never skip past it.
-                return NextWorkout(dateString: ymd, day: dayTemplate(id: tid))
+                return NextWorkout(dateString: ymd, day: workout(id: tid))
             case .session(let status, let hardBlackoutTripType):
                 if status == "planned" || status == "in_progress" {
                     // Use the SHARED session→schedule resolver (the same one
-                    // Today/calendar use), not a bare day_template_id read:
+                    // Today/calendar use), not a bare workout_id read:
                     // a real planned/in_progress session with a null
-                    // day_template_id normally resolves via the weekly
+                    // workout_id normally resolves via the weekly
                     // schedule. A hard blackout is the one exception: its
                     // schedule is suppressed, so only the session's explicit
                     // template can be returned. Stays nil-graceful for a
@@ -5888,19 +5910,19 @@ final class SyncModel: ObservableObject {
         do {
             let response = try await setWriteAPI.reopenSkippedSession(
                 sessionId: skipped.id,
-                dayTemplateID: requestedDayID,
+                workoutID: requestedDayID,
                 expectedAttempt: skipped.attempt ?? 0,
                 jwt: jwt)
             guard canMutateBoundSetAccount,
                   response.id == skipped.id,
                   response.date == skipped.date,
                   response.status == "planned",
-                  response.day_template_id == requestedDayID,
+                  response.workout_id == requestedDayID,
                   response.attempt == nil
                     || response.attempt == (skipped.attempt ?? 0) + 1,
                   let accepted = acceptSessionResolution(response),
                   accepted.status == "planned",
-                  accepted.day_template_id == requestedDayID
+                  accepted.workout_id == requestedDayID
             else {
                 throw APIError.decoding(
                     "Skipped-session reopen did not advance the workout")
@@ -5937,9 +5959,9 @@ final class SyncModel: ObservableObject {
     }
 
     /// Plan day for a template id (agenda exercise targets).
-    func dayTemplate(id: String?) -> DayTemplate? {
+    func workout(id: String?) -> Workout? {
         guard let id else { return nil }
-        return plan?.days.first { $0.id == id }
+        return plan?.workouts.first { $0.id == id }
     }
 
     /// Logged working + warmup sets for a session (agenda "completed").

@@ -56,7 +56,7 @@ describe('load_mode (per-hand dumbbell lifts)', () => {
   it('log_set echoes load_mode and counts both implements for two-DB lifts', async () => {
     await call('update_plan', {
       name: 'PerHand',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Upper',

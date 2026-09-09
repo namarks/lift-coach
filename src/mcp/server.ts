@@ -1,3 +1,5 @@
+import { workoutInput, workoutWire } from '../workoutWire';
+import { workoutDB } from '../workoutSchema';
 // Minimal, spec-correct MCP server over Streamable HTTP (JSON-RPC 2.0,
 // single application/json responses — no server-initiated streams needed
 // for read tools). Stateless: no Mcp-Session-Id required. All data access
@@ -6,13 +8,14 @@ import type { Env } from '../types';
 import { coachGroupSlots, coachGroupSummary } from '../exerciseGroupViews';
 import { isGroupId } from '../exerciseGroups';
 import {
-  addDayTemplateAtVersion,
+  addWorkoutAtVersion,
   addTemplateExercise,
   addTrip,
   setGroup,
   clearGroup,
   adjustToday,
   deleteTemplateExercise,
+  deleteWorkout,
   discardSession,
   findRecentMatchingSet,
   findMcpExerciseGroupAcknowledgement,
@@ -42,9 +45,9 @@ import {
   logActivity,
   logSet,
   logWorkoutComplete,
-  nextDayOrderIndex,
+  nextWorkoutOrderIndex,
   nextExerciseOrderIndex,
-  patchDayTemplateAtVersion,
+  patchWorkoutAtVersion,
   patchSet,
   resolveExercise,
   restorePlanSnapshot,
@@ -197,10 +200,103 @@ function invalidToolFields(
   return fields;
 }
 
+function addWorkoutTool(operation: 'add_day' | 'add_workout'): Tool {
+  const tool: Tool = {
+    description: 'Create a reusable workout in the active plan. Scheduling is optional; the workout can stay on demand. Creates a plan if none exists.',
+    inputSchema: obj(
+      {
+        name: { type: 'string' },
+        day_label: { type: 'string' },
+        order_index: { type: 'integer' },
+      },
+      ['name'],
+    ),
+    write: true,
+    atomicWrite: true,
+    handler: async (a, env, userId) => {
+      let plan = await getActivePlan(env.DB, userId);
+      if (!plan) {
+        plan = (await ensureActivePlan(env.DB, userId, 'My Plan', {
+          actor: 'mcp', operation: 'ensure_active_plan', args: { name: 'My Plan' },
+        })).plan;
+      }
+      // Append densely (max+1) rather than the old 99 sentinel — same
+      // fix the add_exercise path got. Honors an explicit order_index.
+      const orderIndex =
+        typeof a.order_index === 'number'
+          ? a.order_index
+          : await nextWorkoutOrderIndex(env.DB, plan.id);
+      return addWorkoutAtVersion(
+        env.DB,
+        userId,
+        plan,
+        String(a.name),
+        typeof a.day_label === 'string' ? a.day_label : null,
+        orderIndex,
+        { actor: 'mcp', operation, args: a, note: `Added workout "${a.name}".` },
+      );
+    },
+    note: (a, r) =>
+      r?.conflict || r?.error ? null : `Added workout "${a.name}".`,
+  };
+  if (operation === 'add_day') tool.description += ' Deprecated name: use add_workout. Supported for one TestFlight compatibility cycle.';
+  return tool;
+}
+
+function updateWorkoutTool(operation: 'update_day' | 'update_workout'): Tool {
+  const tool: Tool = {
+    description:
+      "Patch a reusable workout's metadata in the active plan: `name`, `day_label`, `order_index`, `notes`. Identify the workout by `workout_id` OR by `day` (label/name). Bumps the plan version. Unknown patch keys → `{error:'unknown_fields', fields}`. To change exercises within a workout, use add_exercise / update_exercise / delete_exercise / swap_exercise.",
+    inputSchema: obj(
+      {
+        workout_id: { type: 'string' },
+        day_template_id: { type: 'string', description: 'Deprecated alias for workout_id.' },
+        day: { type: 'string', description: 'day label or name (used when workout_id is omitted)' },
+        patch: { type: 'object' },
+      },
+      ['patch'],
+    ),
+    write: true,
+    atomicWrite: true,
+    handler: async (a, env, userId) => {
+      const plan = await getActivePlan(env.DB, userId);
+      if (!plan) return { error: 'no_active_plan' };
+      let dayId: string | null = null;
+      if (typeof a.workout_id === 'string') {
+        dayId = a.workout_id;
+      } else if (typeof a.day === 'string') {
+        const row = await workoutDB(env.DB)
+          .prepare(
+            "SELECT id FROM workouts WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1",
+          )
+          .bind(plan.id, a.day)
+          .first<{ id: string }>();
+        dayId = row?.id ?? null;
+      }
+      if (!dayId) return { error: 'day_not_found' };
+      const r = await patchWorkoutAtVersion(
+        env.DB,
+        userId,
+        plan,
+        dayId,
+        (a.patch as Json) ?? {},
+        { actor: 'mcp', operation, args: a, note: 'Updated workout.' },
+      );
+      return r ?? { error: 'day_not_found' };
+    },
+    note: (_a, r) =>
+      r?.conflict || r?.error
+        ? null
+        : `Updated workout "${(r as { name: string }).name}".`,
+  };
+  if (operation === 'update_day') tool.description += ' Deprecated name: use update_workout. Supported for one TestFlight compatibility cycle.';
+  return tool;
+}
+
 const TOOLS: Record<string, Tool> = {
   get_current_plan: {
     description:
-      'Get the active training plan: day templates with exercises, target sets/reps/RPE, rest, progression rules, and form cues.',
+      'Get the active training plan: reusable workouts with optional recurring scheduling, exercises, target sets/reps/RPE, rest, progression rules, and form cues.',
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
       const tree = await getPlanTree(env.DB, userId);
@@ -222,7 +318,7 @@ const TOOLS: Record<string, Tool> = {
       const meta = parsePlanMeta(tree.meta);
       return {
         ...tree,
-        days: tree.days.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })),
+        workouts: tree.workouts.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })),
         schedule,
         ride_conflicts,
         race: meta.race ?? null,
@@ -301,7 +397,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_today_workout: {
     description:
-      "Get today's workout: the date, any existing session for today, the plan's day templates, the recurring weekly schedule (so you can answer 'what should I do today?' from one call), and prior-session context. `last_session` is the most recent non-discarded session of ANY status (could be a skip/planned row); `last_completed_session` is the most recent COMPLETED session — use that for real training context, since a skipped day in between obscures `last_session`.",
+      "Get today's workout: the date, any existing session for today, the reusable workout library, the recurring weekly schedule (so you can answer 'what should I do today?' from one call), and prior-session context. `last_session` is the most recent non-discarded session of ANY status (could be a skip/planned row); `last_completed_session` is the most recent COMPLETED session — use that for real training context, since a skipped day in between obscures `last_session`.",
     inputSchema: obj({}),
     handler: async (_a, env, userId) => {
       const date = await ownerToday(env, userId);
@@ -319,7 +415,7 @@ const TOOLS: Record<string, Tool> = {
         date,
         session,
         sets: session ? await getSetsForSession(env.DB, session.id) : [],
-        plan_days: tree?.days.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })) ?? [],
+        plan_workouts: tree?.workouts.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })) ?? [],
         schedule,
         last_session: last,
         last_session_sets: last ? await getSetsForSession(env.DB, last.id) : [],
@@ -874,13 +970,14 @@ const TOOLS: Record<string, Tool> = {
   },
   update_plan: {
     description:
-      'Replace the plan tree (days + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Days are matched by day_label/name across the rebuild, so the weekly schedule follows surviving days; schedule entries for removed days are cleared.',
+      'Replace the plan tree (reusable workouts + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Workouts are matched by day_label/name across the rebuild, so the weekly schedule follows surviving workouts; schedule entries for removed workouts are cleared. Workouts need not be scheduled. The legacy days input is accepted for one compatibility cycle.',
     inputSchema: obj(
       {
         name: { type: 'string' },
         meta: { type: 'object' },
         expected_version: { type: 'integer' },
-        days: {
+        days: { type: 'array', description: 'Deprecated alias for workouts.', items: { type: 'object' } },
+        workouts: {
           type: 'array',
           items: {
             type: 'object',
@@ -895,7 +992,7 @@ const TOOLS: Record<string, Tool> = {
           },
         },
       },
-      ['days'],
+      [],
     ),
     write: true,
     atomicWrite: true,
@@ -909,7 +1006,7 @@ const TOOLS: Record<string, Tool> = {
     note: (_a, r) =>
       r?.conflict || r?.error
         ? null
-        : `Rebuilt plan: ${r.plan.days.length} day(s), v${r.plan.version}.`,
+        : `Rebuilt plan: ${r.plan.workouts.length} day(s), v${r.plan.version}.`,
   },
   group_exercises: {
     description: 'Group adjacent exercise slots into a superset or circuit. Use a caller-generated group_id UUID and current expected_version. Exercises are template slot IDs (recommended, especially for repeated exercises) or unambiguous names/aliases in the selected day. Every member performs the same number of rounds. round_rest follows the last member; transition_rest defaults to zero between members. Ordinary per-slot rest is preserved. Retry the same ID, version and payload after an uncertain response; refetch on conflict.',
@@ -945,7 +1042,7 @@ const TOOLS: Record<string, Tool> = {
         return await findMcpExerciseGroupAcknowledgement(env.DB, userId, 'group_exercises', a)
           ?? { conflict: true, current_version: tree.version };
       }
-      const matchingDays = tree.days.filter((day) => day.id === a.day || day.day_label === a.day || day.name === a.day);
+      const matchingDays = tree.workouts.filter((day) => day.id === a.day || day.day_label === a.day || day.name === a.day);
       if (matchingDays.length > 1) return { error: 'ambiguous_day' };
       if (!matchingDays.length && !isGroupId(a.day)) return { error: 'day_not_found' };
       const day = matchingDays[0];
@@ -1076,8 +1173,8 @@ const TOOLS: Record<string, Tool> = {
       if (groupFields.length) return { error: 'unknown_fields', fields: groupFields };
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
-      const day = await env.DB.prepare(
-        "SELECT d.id FROM day_templates d JOIN plans p ON p.id=d.plan_id WHERE p.user_id=?1 AND p.status='active' AND (d.day_label=?2 OR d.name=?2) LIMIT 1",
+      const day = await workoutDB(env.DB).prepare(
+        "SELECT d.id FROM workouts d JOIN plans p ON p.id=d.plan_id WHERE p.user_id=?1 AND p.status='active' AND (d.day_label=?2 OR d.name=?2) LIMIT 1",
       )
         .bind(userId, String(a.day))
         .first<{ id: string }>();
@@ -1092,7 +1189,7 @@ const TOOLS: Record<string, Tool> = {
           ? a.order_index as number
           : await nextExerciseOrderIndex(env.DB, day.id);
       return addTemplateExercise(env.DB, plan.id, {
-        day_template_id: day.id,
+        workout_id: day.id,
         exercise_id: (ex as { id: string }).id,
         order_index: orderIndex,
         target_sets: a.target_sets as number,
@@ -1113,87 +1210,22 @@ const TOOLS: Record<string, Tool> = {
     },
     note: (a, r) => (r?.error ? null : `Added ${a.exercise} to ${a.day}.`),
   },
-  add_day: {
-    description: 'Add a training day to the active plan (e.g. a deadlift day). Creates a plan if none exists.',
-    inputSchema: obj(
-      {
-        name: { type: 'string' },
-        day_label: { type: 'string' },
-        order_index: { type: 'integer' },
-      },
-      ['name'],
-    ),
+  add_workout: addWorkoutTool('add_workout'),
+  add_day: addWorkoutTool('add_day'),
+  update_workout: updateWorkoutTool('update_workout'),
+  update_day: updateWorkoutTool('update_day'),
+  delete_workout: {
+    description: 'Delete a reusable workout from the active plan, clearing its recurring schedule entries and preserving completed workout history. Requires the workout ID and current plan version. Rejected while the workout is in progress. To keep the workout but remove its weekdays, use set_schedule instead.',
+    inputSchema: obj({ workout_id: { type: 'string' }, expected_version: { type: 'integer', minimum: 1 } }, ['workout_id', 'expected_version']),
     write: true,
     atomicWrite: true,
     handler: async (a, env, userId) => {
-      let plan = await getActivePlan(env.DB, userId);
-      if (!plan) {
-        plan = (await ensureActivePlan(env.DB, userId, 'My Plan', {
-          actor: 'mcp', operation: 'ensure_active_plan', args: { name: 'My Plan' },
-        })).plan;
-      }
-      // Append densely (max+1) rather than the old 99 sentinel — same
-      // fix the add_exercise path got. Honors an explicit order_index.
-      const orderIndex =
-        typeof a.order_index === 'number'
-          ? a.order_index
-          : await nextDayOrderIndex(env.DB, plan.id);
-      return addDayTemplateAtVersion(
-        env.DB,
-        userId,
-        plan,
-        String(a.name),
-        typeof a.day_label === 'string' ? a.day_label : null,
-        orderIndex,
-        { actor: 'mcp', operation: 'add_day', args: a, note: `Added day "${a.name}".` },
-      );
+      const invalid = invalidToolFields(a, { workout_id: nonEmptyToolString, expected_version: positiveSafeInteger });
+      if (invalid.length) return { error: 'invalid_fields', fields: invalid };
+      return deleteWorkout(env.DB, userId, String(a.workout_id), Number(a.expected_version), {
+        actor: 'mcp', operation: 'delete_workout', args: a, note: 'Deleted workout.',
+      });
     },
-    note: (a, r) =>
-      r?.conflict || r?.error ? null : `Added day "${a.name}".`,
-  },
-  update_day: {
-    description:
-      "Patch a day template's metadata in the active plan: `name`, `day_label`, `order_index`, `notes`. Identify the day by `day_template_id` OR by `day` (label/name). Bumps the plan version. Unknown patch keys → `{error:'unknown_fields', fields}`. To change exercises within a day, use add_exercise / update_exercise / delete_exercise / swap_exercise.",
-    inputSchema: obj(
-      {
-        day_template_id: { type: 'string' },
-        day: { type: 'string', description: 'day label or name (used when day_template_id is omitted)' },
-        patch: { type: 'object' },
-      },
-      ['patch'],
-    ),
-    write: true,
-    atomicWrite: true,
-    handler: async (a, env, userId) => {
-      const plan = await getActivePlan(env.DB, userId);
-      if (!plan) return { error: 'no_active_plan' };
-      let dayId: string | null = null;
-      if (typeof a.day_template_id === 'string') {
-        dayId = a.day_template_id;
-      } else if (typeof a.day === 'string') {
-        const row = await env.DB
-          .prepare(
-            "SELECT id FROM day_templates WHERE plan_id = ?1 AND (day_label = ?2 OR name = ?2) LIMIT 1",
-          )
-          .bind(plan.id, a.day)
-          .first<{ id: string }>();
-        dayId = row?.id ?? null;
-      }
-      if (!dayId) return { error: 'day_not_found' };
-      const r = await patchDayTemplateAtVersion(
-        env.DB,
-        userId,
-        plan,
-        dayId,
-        (a.patch as Json) ?? {},
-        { actor: 'mcp', operation: 'update_day', args: a, note: 'Updated training day.' },
-      );
-      return r ?? { error: 'day_not_found' };
-    },
-    note: (_a, r) =>
-      r?.conflict || r?.error
-        ? null
-        : `Updated day "${(r as { name: string }).name}".`,
   },
   delete_exercise: {
     description:
@@ -1705,7 +1737,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
           name: tree.name,
           version: tree.version,
           weekly_schedule: schedule,
-          days: tree.days.map((d) => ({
+          workouts: tree.workouts.map((d) => ({
             label: d.day_label,
             name: d.name,
             exercises: d.exercises.length,
@@ -1760,7 +1792,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
     '# tres-fort — current state',
     'Auto-loaded context. Use the tools for anything deeper.',
     '```json',
-    JSON.stringify(brief, null, 2),
+    JSON.stringify(workoutWire(brief), null, 2),
     '```',
   ].join('\n');
 }
@@ -1798,7 +1830,7 @@ async function dispatch(
       const tool = TOOLS[name];
       if (!tool) return err(req.id, -32602, `unknown tool: ${name}`);
       try {
-        const args = (req.params?.arguments as Json) ?? {};
+        const args = workoutInput((req.params?.arguments as Json) ?? {}) as Json;
         const result = await tool.handler(args, env, userId, bg);
         if (tool.write && !tool.atomicWrite && !tool.handlerAudited) {
           await writeAudit(env.DB, userId, name, args, JSON.stringify(result));
@@ -1806,7 +1838,7 @@ async function dispatch(
           if (noteBody) await writeNote(env.DB, userId, 'plan', null, 'claude', noteBody);
         }
         return ok(req.id, {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
+          content: [{ type: 'text', text: JSON.stringify(workoutWire(result), null, 2) }],
         });
       } catch (e) {
         return ok(req.id, {

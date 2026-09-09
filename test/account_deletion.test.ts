@@ -74,7 +74,7 @@ async function seedTrainingGraph(userId: string, label: string) {
       .bind(planId, userId, `Plan ${label}`, ts),
     env.DB
       .prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
            (id,plan_id,name,order_index,created_at,updated_at)
          VALUES (?1,?2,'Day',0,?3,?3)`,
       )
@@ -82,7 +82,7 @@ async function seedTrainingGraph(userId: string, label: string) {
     env.DB
       .prepare(
         `INSERT INTO template_exercises
-           (id,day_template_id,exercise_id,order_index,target_sets,target_reps,
+           (id,workout_id,exercise_id,order_index,target_sets,target_reps,
             rest_seconds,created_at,updated_at)
          VALUES (?1,?2,?3,0,3,5,120,?4,?4)`,
       )
@@ -90,7 +90,7 @@ async function seedTrainingGraph(userId: string, label: string) {
     env.DB
       .prepare(
         `INSERT INTO sessions
-           (id,user_id,plan_id,day_template_id,date,status,created_at,updated_at)
+           (id,user_id,plan_id,workout_id,date,status,created_at,updated_at)
          VALUES (?1,?2,?3,?4,'2026-08-29','completed',?5,?5)`,
       )
       .bind(sessionId, userId, planId, dayId, ts),
@@ -933,7 +933,7 @@ describe('DELETE /api/me', () => {
 
     expect(await byId('users', 'id', target.user.id)).toBeNull();
     expect(await byId('plans', 'id', targetGraph.planId)).toBeNull();
-    expect(await byId('day_templates', 'id', targetGraph.dayId)).toBeNull();
+    expect(await byId('workouts', 'id', targetGraph.dayId)).toBeNull();
     expect(
       await byId(
         'template_exercises',

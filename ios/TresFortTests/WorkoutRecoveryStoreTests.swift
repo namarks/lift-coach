@@ -55,7 +55,7 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
                 "id": "session-a",
                 "date": "2033-05-18",
                 "status": "in_progress",
-                "day_template_id": "day-a",
+                "workout_id": "day-a",
                 "updated_at": 2_000_000_000_001,
                 "attempt": 7,
             ]],
@@ -219,7 +219,7 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
         let loaded = try XCTUnwrap(StateSnapshotStore.load(
             userID: "user-a", defaults: defaults))
         XCTAssertEqual(loaded.state.plan?.name, "Cached Plan")
-        XCTAssertEqual(loaded.state.plan?.days.first?.exercises.first?.id, "slot-a")
+        XCTAssertEqual(loaded.state.plan?.workouts.first?.exercises.first?.id, "slot-a")
         XCTAssertEqual(loaded.state.sessions.first?.status, "in_progress")
         XCTAssertEqual(loaded.state.sessions.first?.attempt, 7)
         XCTAssertNil(StateSnapshotStore.load(
@@ -644,7 +644,7 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             id: "session-a",
             date: "2033-05-18",
             status: "complete",
-            day_template_id: "day-a",
+            workout_id: "day-a",
             updated_at: 2_000_000_000_001,
             attempt: 7)
         let merged = try XCTUnwrap(StateSnapshotStore.commitStateResponse(

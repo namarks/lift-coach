@@ -36,7 +36,7 @@ describe('#5 order_index determinism', () => {
   it('densifies a colliding explicit order_index on add_exercise', async () => {
     const built = await call('update_plan', {
       name: 'Order',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Day A',
@@ -60,7 +60,7 @@ describe('#5 order_index determinism', () => {
     expect(added.error).toBeUndefined();
 
     const plan = await call('get_current_plan', {});
-    const slots = plan.days[0].exercises as { order_index: number }[];
+    const slots = plan.workouts[0].exercises as { order_index: number }[];
     const indices = slots.map((s) => s.order_index).sort((a, b) => a - b);
     // Three slots, dense + unique 0,1,2 — no duplicate index.
     expect(indices).toEqual([0, 1, 2]);
@@ -70,7 +70,7 @@ describe('#5 order_index determinism', () => {
   it('densifies when update_exercise patches order_index onto a sibling', async () => {
     const built = await call('update_plan', {
       name: 'Order2',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Day A',
@@ -93,7 +93,7 @@ describe('#5 order_index determinism', () => {
     expect(patched.error).toBeUndefined();
 
     const plan = await call('get_current_plan', {});
-    const slots = plan.days[0].exercises as { order_index: number; exercise_id: string }[];
+    const slots = plan.workouts[0].exercises as { order_index: number; exercise_id: string }[];
     const indices = slots.map((s) => s.order_index).sort((a, b) => a - b);
     expect(indices).toEqual([0, 1, 2]);
     expect(new Set(indices).size).toBe(3);
@@ -107,7 +107,7 @@ describe('#5 order_index determinism', () => {
   it('honors a DOWNWARD move to a later occupied index', async () => {
     const built = await call('update_plan', {
       name: 'OrderDown',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Day A',
@@ -132,7 +132,7 @@ describe('#5 order_index determinism', () => {
     expect(patched.error).toBeUndefined();
 
     const plan = await call('get_current_plan', {});
-    const slots = plan.days[0].exercises as { order_index: number; exercise_id: string }[];
+    const slots = plan.workouts[0].exercises as { order_index: number; exercise_id: string }[];
     const indices = slots.map((s) => s.order_index).sort((a, b) => a - b);
     expect(indices).toEqual([0, 1, 2, 3]);
     expect(slots.find((s) => s.exercise_id === 'ex_bench')!.order_index).toBe(2);
@@ -151,7 +151,7 @@ describe('last_completed_session', () => {
     // Build a plan and complete a session on a past date.
     await call('update_plan', {
       name: 'Completed Ctx',
-      days: [
+      workouts: [
         { day_label: 'A', name: 'Full A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
       ],
     });

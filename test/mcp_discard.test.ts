@@ -36,7 +36,7 @@ async function seedOwner() {
   const { jwt } = await authResponse.json<{ jwt: string }>();
   await call('update_plan', {
     name: 'Discard tests',
-    days: [
+    workouts: [
       {
         day_label: 'A',
         name: 'Day A',

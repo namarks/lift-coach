@@ -23,10 +23,22 @@ enum WorkoutTerminalDeliveryState: String, Codable, Equatable {
 /// server idempotency key: exact-id replacement makes stale callbacks no-ops
 /// after a newer discard supersedes a finish.
 struct WorkoutTerminalIntent: Codable, Identifiable, Equatable {
+    // Version-one durable envelope: retain the released persistence key.
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case action
+        case date
+        case workoutID = "dayTemplateID"
+        case resolvedSessionID
+        case expectedAttempt
+        case restartDiscardedAttempt
+        case deliveryState
+        case failedHTTPStatus
+    }
     let id: String
     let action: WorkoutTerminalAction
     let date: String
-    let dayTemplateID: String?
+    let workoutID: String?
     var resolvedSessionID: String?
     /// Session generation this user choice targets. It is bound before the
     /// terminal request and retained across retries/relaunches.
@@ -41,7 +53,7 @@ struct WorkoutTerminalIntent: Codable, Identifiable, Equatable {
         id: String,
         action: WorkoutTerminalAction,
         date: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         resolvedSessionID: String?,
         deliveryState: WorkoutTerminalDeliveryState,
         failedHTTPStatus: Int?,
@@ -51,7 +63,7 @@ struct WorkoutTerminalIntent: Codable, Identifiable, Equatable {
         self.id = id
         self.action = action
         self.date = date
-        self.dayTemplateID = dayTemplateID
+        self.workoutID = workoutID
         self.resolvedSessionID = resolvedSessionID
         self.expectedAttempt = expectedAttempt
         self.restartDiscardedAttempt = restartDiscardedAttempt
@@ -107,7 +119,7 @@ struct WorkoutTerminalOutbox: Codable, Equatable {
         guard let current = intentsByDate[intent.date],
               current.id == intent.id,
               current.action == intent.action,
-              current.dayTemplateID == intent.dayTemplateID,
+              current.workoutID == intent.workoutID,
               !(current.deliveryState == .acknowledged
                   && intent.deliveryState != .acknowledged)
         else { return }
@@ -131,7 +143,7 @@ struct WorkoutTerminalOutbox: Codable, Equatable {
                 id: replacement.id,
                 action: replacement.action,
                 date: replacement.date,
-                dayTemplateID: replacement.dayTemplateID,
+                workoutID: replacement.workoutID,
                 resolvedSessionID: replacement.resolvedSessionID,
                 deliveryState: replacement.deliveryState,
                 failedHTTPStatus: replacement.failedHTTPStatus,

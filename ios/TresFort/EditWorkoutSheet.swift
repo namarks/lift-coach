@@ -42,7 +42,7 @@ struct EditWorkoutSheet: View {
     @State private var editingGroup: ExerciseGroupEditTarget?
     @State private var mutationWorking = false
 
-    private var day: DayTemplate? { sync.dayTemplate(id: dayID) }
+    private var day: Workout? { sync.workout(id: dayID) }
 
     var body: some View {
         NavigationStack {
@@ -173,7 +173,7 @@ struct EditWorkoutSheet: View {
         .padding(16).background(Theme.surface)
     }
 
-    private func list(_ day: DayTemplate) -> some View {
+    private func list(_ day: Workout) -> some View {
         let blocks = ExerciseGroupBlock.blocks(day.exercises)
         return List {
             ForEach(blocks) { block in
@@ -296,7 +296,7 @@ struct EditWorkoutSheet: View {
             Menu {
                 Button("Replace with…", systemImage: "arrow.triangle.2.circlepath") {
                     guard let plan = sync.plan,
-                          let current = plan.days.first(where: { $0.id == dayID })?
+                          let current = plan.workouts.first(where: { $0.id == dayID })?
                             .exercises.first(where: { $0.id == ex.id }) else { return }
                     replacingExercise = ExerciseReplacementTarget(exercise: current, version: plan.version)
                 }

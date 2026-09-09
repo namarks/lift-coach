@@ -9,7 +9,7 @@ enum HistoryFixtureData {
             SessionRow(id: "session-\(index)",
                 date: CalendarProjection.dateString(CalendarProjection.calendar.date(byAdding: .day,
                     value: -((sessionCount - index - 1) * 7 / 4), to: end)!),
-                status: "completed", day_template_id: nil, updated_at: 1_000 + index, attempt: 1)
+                status: "completed", workout_id: nil, updated_at: 1_000 + index, attempt: 1)
         }
         var sets: [SetLog] = []
         for (index, session) in sessions.enumerated() {

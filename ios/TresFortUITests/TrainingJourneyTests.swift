@@ -26,7 +26,7 @@ final class TrainingJourneyTests: XCTestCase {
         // Fixture mode substitutes only the provider button: exercise sign-in
         // intent without launching AuthenticationServices or sending credentials.
         XCTAssertTrue(app.buttons["Sign in with Apple"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.buttons["Build a routine"].exists)
+        XCTAssertFalse(app.buttons["Create a workout"].exists)
         screenshot("fresh-sign-in")
         app.buttons["Sign in with Apple"].tap()
         XCTAssertTrue(app.staticTexts["Sign-in requested (synthetic)"].waitForExistence(timeout: 5))
@@ -34,20 +34,20 @@ final class TrainingJourneyTests: XCTestCase {
 
     func testVerifiedEmptyPlanCanCreateRoutineAndFirstWorkout() {
         let app = launch("empty")
-        XCTAssertTrue(app.buttons["Build a routine"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
         screenshot("verified-empty-plan")
-        app.buttons["Build a routine"].tap()
-        reveal(app.buttons["Create routine"], in: app)
-        app.buttons["Create routine"].tap()
+        app.buttons["Create a workout"].tap()
+        reveal(app.buttons["Create workout"], in: app)
+        app.buttons["Create workout"].tap()
         XCTAssertTrue(app.staticTexts["Workout A"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["Create routine"].exists)
+        XCTAssertFalse(app.buttons["Create workout"].exists)
         screenshot("created-first-workout")
     }
 
     func testFailedInitialLoadCannotMasqueradeAsEmptyPlan() {
         let app = launch("load-failure")
         XCTAssertTrue(app.buttons["Try again"].waitForExistence(timeout: 10))
-        XCTAssertFalse(app.buttons["Build a routine"].exists)
+        XCTAssertFalse(app.buttons["Create a workout"].exists)
         app.buttons["Try again"].tap()
         XCTAssertTrue(app.staticTexts["COULDN’T LOAD YOUR PLAN"].waitForExistence(timeout: 5))
         screenshot("failed-initial-load")
@@ -155,7 +155,7 @@ final class TrainingJourneyTests: XCTestCase {
         let enter = app.buttons["Enter Très Fort"]
         reveal(enter, in: app)
         enter.tap()
-        XCTAssertTrue(app.buttons["Build a routine"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["Create a workout"].waitForExistence(timeout: 10))
     }
 
     func testWeightEntryAndKeyboardCanSaveExactLoad() {
@@ -218,7 +218,7 @@ final class TrainingJourneyTests: XCTestCase {
 
     private func audit(_ fixture: String) throws {
         let app = launch(fixture)
-        let ready = fixture == "empty" ? app.buttons["Build a routine"]
+        let ready = fixture == "empty" ? app.buttons["Create a workout"]
             : fixture == "load-failure" ? app.buttons["Try again"]
             : fixture == "ordinary" ? app.buttons["LOG SET 1"]
             : app.staticTexts["READY TO FINISH"]

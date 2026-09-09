@@ -221,7 +221,7 @@ describe('workout write rollout fence', () => {
 
     const built = await updatePlanTree(env.DB, userId, {
       name: 'Active fence plan',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Fence day',
@@ -231,8 +231,8 @@ describe('workout write rollout fence', () => {
     });
     expect(built).toMatchObject({ conflict: false });
     if (!('plan' in built)) throw new Error('expected_initial_plan');
-    const oldDayId = built.plan.days[0]!.id;
-    const oldSlotId = built.plan.days[0]!.exercises[0]!.id;
+    const oldDayId = built.plan.workouts[0]!.id;
+    const oldSlotId = built.plan.workouts[0]!.exercises[0]!.id;
     const session = await getOrCreateSession(
       env.DB,
       userId,
@@ -295,7 +295,7 @@ describe('workout write rollout fence', () => {
     const rebuilt = await updatePlanTree(env.DB, userId, {
       name: 'Active fence plan v2',
       expected_version: built.plan.version,
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Fence day',
@@ -305,16 +305,16 @@ describe('workout write rollout fence', () => {
     });
     expect(rebuilt).toMatchObject({ conflict: false });
     if (!('plan' in rebuilt)) throw new Error('expected_rebuilt_plan');
-    const newDayId = rebuilt.plan.days[0]!.id;
-    const newSlotId = rebuilt.plan.days[0]!.exercises[0]!.id;
+    const newDayId = rebuilt.plan.workouts[0]!.id;
+    const newSlotId = rebuilt.plan.workouts[0]!.exercises[0]!.id;
     expect(newDayId).not.toBe(oldDayId);
     expect(newSlotId).not.toBe(oldSlotId);
     expect(
       await env.DB
-        .prepare('SELECT day_template_id FROM sessions WHERE id = ?1')
+        .prepare('SELECT workout_id FROM sessions WHERE id = ?1')
         .bind(session.id)
         .first(),
-    ).toEqual({ day_template_id: newDayId });
+    ).toEqual({ workout_id: newDayId });
     expect(
       await env.DB
         .prepare('SELECT template_exercise_id FROM set_logs WHERE id = ?1')

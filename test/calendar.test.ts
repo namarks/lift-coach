@@ -2,7 +2,7 @@ import { env, applyD1Migrations } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import type { ProjectionActivity, ProjectionEvent } from '../src/db';
 import {
-  deleteDayTemplate,
+  deleteWorkout,
   detectConflicts,
   getProjectedCalendar,
   getRideConflicts,
@@ -24,7 +24,7 @@ describe('shared TypeScript/Swift calendar fixtures', () => {
   }
   for (const fixture of sharedCalendar.projections) {
     it(fixture.name, () => {
-      const sessions = fixture.sessions.map((row) => sess(row.date, row.status, row.day_template_id));
+      const sessions = fixture.sessions.map((row) => sess(row.date, row.status, row.workout_id));
       const cells = projectCalendar({ id: 'p' }, { version: 1, week: fixture.week },
         sessions, fixture.date, fixture.date, fixture.today, fixture.live,
         fixture.trips as Trip[]);
@@ -42,7 +42,7 @@ const sess = (date: string, status: string, day: string | null = null): SessionR
   id: `s-${date}`,
   user_id: 'u',
   plan_id: 'p',
-  day_template_id: day,
+  workout_id: day,
   date,
   status,
   started_at: null,
@@ -103,7 +103,7 @@ describe('projectCalendar — truth table', () => {
       date: '2026-05-11',
       status: 'completed',
       real: true,
-      day_template_id: 'd_push',
+      workout_id: 'd_push',
     });
   });
 
@@ -119,10 +119,10 @@ describe('projectCalendar — truth table', () => {
     );
     expect(cells).toHaveLength(7);
     const byDate = Object.fromEntries(cells.map((c) => [c.date, c]));
-    expect(byDate['2026-05-18']).toMatchObject({ status: 'projected', day_template_id: 'd_push' });
-    expect(byDate['2026-05-19']).toMatchObject({ status: 'rest', day_template_id: null });
-    expect(byDate['2026-05-20']).toMatchObject({ status: 'projected', day_template_id: 'd_pull' });
-    expect(byDate['2026-05-22']).toMatchObject({ status: 'projected', day_template_id: 'd_legs' });
+    expect(byDate['2026-05-18']).toMatchObject({ status: 'projected', workout_id: 'd_push' });
+    expect(byDate['2026-05-19']).toMatchObject({ status: 'rest', workout_id: null });
+    expect(byDate['2026-05-20']).toMatchObject({ status: 'projected', workout_id: 'd_pull' });
+    expect(byDate['2026-05-22']).toMatchObject({ status: 'projected', workout_id: 'd_legs' });
     expect(byDate['2026-05-24']).toMatchObject({ status: 'rest' });
   });
 
@@ -156,7 +156,7 @@ describe('projectCalendar — truth table', () => {
       LIVE,
     );
     const wed = cells.find((c) => c.date === '2026-05-20')!;
-    expect(wed).toMatchObject({ status: 'projected', day_template_id: 'd_pull', real: false });
+    expect(wed).toMatchObject({ status: 'projected', workout_id: 'd_pull', real: false });
   });
 
   it('a discarded session today falls back to the schedule (projected, not session)', () => {
@@ -169,7 +169,7 @@ describe('projectCalendar — truth table', () => {
       today,
       LIVE,
     );
-    expect(cells[0]).toMatchObject({ status: 'projected', day_template_id: 'd_push', real: false });
+    expect(cells[0]).toMatchObject({ status: 'projected', workout_id: 'd_push', real: false });
   });
 
   it('a discarded session in the past produces no cell (as if absent)', () => {
@@ -229,7 +229,7 @@ describe('projectCalendar — truth table', () => {
       today,
       LIVE,
     );
-    expect(cells[0]).toMatchObject({ status: 'planned', real: true, day_template_id: 'd_legs' });
+    expect(cells[0]).toMatchObject({ status: 'planned', real: true, workout_id: 'd_legs' });
   });
 
   it('a past completed session is still shown (only planned vanishes)', () => {
@@ -268,7 +268,7 @@ describe('projectCalendar — truth table', () => {
       today,
       LIVE,
     );
-    expect(cells[0]).toMatchObject({ status: 'rest', day_template_id: null, real: false });
+    expect(cells[0]).toMatchObject({ status: 'rest', workout_id: null, real: false });
   });
 
   it('dangling schedule id (day deleted) degrades to rest', () => {
@@ -281,7 +281,7 @@ describe('projectCalendar — truth table', () => {
       today,
       ['d_pull', 'd_legs'], // d_push removed
     );
-    expect(cells[0]).toMatchObject({ status: 'rest', day_template_id: null });
+    expect(cells[0]).toMatchObject({ status: 'rest', workout_id: null });
   });
 
   it('clamps the range span to 90 days', () => {
@@ -366,7 +366,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
     expect(cells[0]).toMatchObject({
       date: '2026-05-18',
       status: 'projected', // strength side intact
-      day_template_id: 'd_push',
+      workout_id: 'd_push',
       real: false,
     });
     expect(cells[0]!.items).toEqual([
@@ -403,7 +403,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
       [],
       [ev('intervals:longride', '2026-05-22', { training_load: 220, planned_duration_sec: 12600 })],
     );
-    expect(cells[0]).toMatchObject({ status: 'projected', day_template_id: 'd_legs' });
+    expect(cells[0]).toMatchObject({ status: 'projected', workout_id: 'd_legs' });
     expect(cells[0]!.items.map((i) => i.id)).toEqual(['intervals:longride']);
     const conflicts = detectConflicts(['2026-05-22'], [
       { id: 'intervals:longride', date: '2026-05-22', training_load: 220, planned_duration_sec: 12600 },
@@ -428,14 +428,14 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
     );
     const byDate = Object.fromEntries(cells.map((c) => [c.date, c]));
     // Before the trip: Mon still projects d_push (with no items).
-    expect(byDate['2026-05-18']).toMatchObject({ status: 'projected', day_template_id: 'd_push' });
+    expect(byDate['2026-05-18']).toMatchObject({ status: 'projected', workout_id: 'd_push' });
     // Inside the trip: every covered day is unavailable, schedule blanked,
     // no items — even the d_pull Wed (05-20) and d_legs Fri (05-22).
     for (const d of ['2026-05-20', '2026-05-22', '2026-05-24']) {
       expect(byDate[d]).toMatchObject({
         status: 'unavailable',
         trip_type: 'travel',
-        day_template_id: null,
+        workout_id: null,
         real: false,
       });
       expect(byDate[d]!.items).toEqual([]);
@@ -463,7 +463,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
         {
           date: '2026-05-20',
           status,
-          day_template_id: 'd_push',
+          workout_id: 'd_push',
           real: true,
           items: [],
           trip_type: 'travel',
@@ -492,7 +492,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
       {
         date: '2026-05-20',
         status: 'in_progress',
-        day_template_id: null,
+        workout_id: null,
         real: true,
         items: [],
         trip_type: 'travel',
@@ -520,7 +520,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
         {
           date: '2026-05-20',
           status: 'unavailable',
-          day_template_id: null,
+          workout_id: null,
           real: false,
           items: [],
           trip_type: 'travel',
@@ -547,7 +547,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
     expect(byDate['2026-05-20']).toMatchObject({
       status: 'light',
       trip_type: 'travel',
-      day_template_id: null,
+      workout_id: null,
     });
     expect(byDate['2026-05-20']!.items).toEqual([]);
     // A light day with a synced endurance item still carries it.
@@ -568,7 +568,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
     );
     expect(cells[0]).toMatchObject({
       status: 'planned', // NOT 'light' — the pin wins
-      day_template_id: 'd_push',
+      workout_id: 'd_push',
       real: true,
       trip_type: 'travel',
     });
@@ -590,7 +590,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
     );
     expect(cells[0]).toMatchObject({
       status: 'projected',
-      day_template_id: null, // no strength template → not a real lift date
+      workout_id: null, // no strength template → not a real lift date
       real: false,
     });
     expect(cells[0]!.items.map((i) => i.id)).toEqual(['intervals:swim']);
@@ -614,7 +614,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
     expect(cells[0]).toMatchObject({
       date: '2026-05-15',
       status: 'completed',
-      day_template_id: null,
+      workout_id: null,
       real: false,
     });
     expect(cells[0]!.items).toEqual([
@@ -644,7 +644,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
     );
     expect(cells[0]).toMatchObject({
       status: 'completed',
-      day_template_id: 'd_legs',
+      workout_id: 'd_legs',
       real: true,
     });
     expect(cells[0]!.items.map((i) => i.id)).toEqual(['intervals:activity:ride1']);
@@ -760,7 +760,7 @@ describe('migration 0005 + schedule round-trip via real D1', () => {
     )!.id;
     const dPush = crypto.randomUUID();
     await env.DB.prepare(
-      "INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Push Day','A',0,NULL,0,0)",
+      "INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Push Day','A',0,NULL,0,0)",
     )
       .bind(dPush, planId)
       .run();
@@ -807,11 +807,11 @@ describe('migration 0005 + schedule round-trip via real D1', () => {
     // projection picks up the schedule + one-off rows
     const cal = await getProjectedCalendar(env.DB, userId, '2026-05-25', '2026-05-27', '2026-05-20');
     const m = Object.fromEntries(cal.map((c) => [c.date, c]));
-    expect(m['2026-05-25']).toMatchObject({ status: 'planned', real: true, day_template_id: dPush });
+    expect(m['2026-05-25']).toMatchObject({ status: 'planned', real: true, workout_id: dPush });
     expect(m['2026-05-26']).toMatchObject({ status: 'skipped', real: true });
   });
 
-  it('deleteDayTemplate scrubs the schedule entry and bumps version once', async () => {
+  it('deleteWorkout scrubs the schedule entry and bumps version once', async () => {
     const userId = await freshPlan('Delete Scrub Plan');
     const planId = (
       await env.DB.prepare("SELECT id FROM plans WHERE user_id=?1 AND status='active'")
@@ -820,7 +820,7 @@ describe('migration 0005 + schedule round-trip via real D1', () => {
     )!.id;
     const dLegs = crypto.randomUUID();
     await env.DB.prepare(
-      "INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Legs Day','L',0,NULL,0,0)",
+      "INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Legs Day','L',0,NULL,0,0)",
     )
       .bind(dLegs, planId)
       .run();
@@ -837,11 +837,11 @@ describe('migration 0005 + schedule round-trip via real D1', () => {
     )!.version;
 
     // Delete the day the schedule points at.
-    const del = await deleteDayTemplate(env.DB, userId, dLegs);
+    const del = await deleteWorkout(env.DB, userId, dLegs);
     expect('ok' in del && del.ok).toBe(true);
 
     // Day row is gone.
-    const stillThere = await env.DB.prepare('SELECT id FROM day_templates WHERE id=?1')
+    const stillThere = await env.DB.prepare('SELECT id FROM workouts WHERE id=?1')
       .bind(dLegs)
       .first();
     expect(stillThere).toBeNull();
@@ -858,7 +858,7 @@ describe('migration 0005 + schedule round-trip via real D1', () => {
     // Projection no longer projects that weekday (dangling → rest).
     // 2026-05-22 is a Friday.
     const cal = await getProjectedCalendar(env.DB, userId, '2026-05-22', '2026-05-22', '2026-05-20');
-    expect(cal[0]).toMatchObject({ status: 'rest', day_template_id: null });
+    expect(cal[0]).toMatchObject({ status: 'rest', workout_id: null });
   });
 });
 
@@ -891,7 +891,7 @@ describe('FIX 2: skipPlannedSession refuses to bury started/finished history', (
   ): Promise<string> {
     const sid = crypto.randomUUID();
     await env.DB.prepare(
-      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,NULL,NULL,?8,?8)',
+      'INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,NULL,NULL,?8,?8)',
     )
       .bind(sid, userId, planId, date, status, status === 'planned' ? null : 1, status === 'completed' ? 2 : null, Date.now())
       .run();
@@ -1117,7 +1117,7 @@ describe('getRideConflicts — cancelled (skipped) sessions produce no conflict'
   ) =>
     env.DB.prepare(
       `INSERT INTO sessions
-         (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,
+         (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,
           perceived_fatigue,notes,created_at,updated_at)
        VALUES (?1,?2,?3,NULL,?4,?5,NULL,NULL,NULL,NULL,?6,?6)`,
     )

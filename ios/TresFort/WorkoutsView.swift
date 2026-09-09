@@ -1,6 +1,6 @@
 import SwiftUI
 
-private struct RoutineDayTarget: Identifiable {
+private struct WorkoutTarget: Identifiable {
     let id: String
 }
 
@@ -31,7 +31,7 @@ enum RoutineScheduleDraftPolicy {
         guard identity == loadedIdentity else {
             return (persistedDraft(for: plan), identity)
         }
-        let liveDayIDs = Set(plan?.days.map(\.id) ?? [])
+        let liveDayIDs = Set(plan?.workouts.map(\.id) ?? [])
         var draft = currentDraft
         for key in PlanSchedule.weekdayKeys {
             let dayID = draft[key] ?? ""
@@ -62,7 +62,7 @@ enum RoutineCreationPolicy {
 
 /// Compact member-owned editor for the same plan tree and weekly schedule the
 /// coach reads and edits. There is intentionally no separate "manual" plan.
-struct RoutineView: View {
+struct WorkoutsView: View {
     @ObservedObject var sync: SyncModel
     @Environment(\.dismiss) private var dismiss
 
@@ -71,9 +71,10 @@ struct RoutineView: View {
     @State private var newDayName = ""
     @State private var renameDayName = ""
     @State private var addingDay = false
-    @State private var renamingDay: DayTemplate?
-    @State private var deletingDay: DayTemplate?
-    @State private var editTarget: RoutineDayTarget?
+    @State private var renamingDay: Workout?
+    @State private var deletingDay: Workout?
+    @State private var editTarget: WorkoutTarget?
+    @State private var assignmentTarget: Workout?
     @State private var scheduleDraft: [String: String] = [:]
     @State private var loadedScheduleIdentity: [String] = []
     @State private var creatingRoutine = false
@@ -95,13 +96,13 @@ struct RoutineView: View {
                 }
             }
             .background(Theme.background)
-            .navigationTitle("Routine")
+            .navigationTitle("Workouts")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Done") { dismiss() }.foregroundStyle(Theme.accent)
                 }
-                if (sync.plan?.days.count ?? 0) > 1 {
+                if (sync.plan?.workouts.count ?? 0) > 1 {
                     ToolbarItem(placement: .topBarTrailing) {
                         EditButton().disabled(sync.isRoutineMutationInFlight)
                     }
@@ -110,13 +111,13 @@ struct RoutineView: View {
             .toolbarColorScheme(.dark, for: .navigationBar)
             .alert("Add workout", isPresented: $addingDay) {
                 TextField("Workout name", text: $newDayName)
-                Button("Add") { addDay() }
+                Button("Add") { addWorkout() }
                     .disabled(
                         sync.isRoutineMutationInFlight
                             || newDayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("This adds a reusable workout to your routine. You can schedule it after adding exercises.")
+                Text("Save a reusable workout to use whenever you need it. A weekly schedule is optional.")
             }
             .alert("Rename workout", isPresented: Binding(
                 get: { renamingDay != nil },
@@ -130,14 +131,14 @@ struct RoutineView: View {
                 Button("Cancel", role: .cancel) { renamingDay = nil }
             }
             .confirmationDialog(
-                "Remove \(deletingDay?.name ?? "this workout")?",
+                "Delete \(deletingDay?.name ?? "this workout")?",
                 isPresented: Binding(
                     get: { deletingDay != nil },
                     set: { if !$0 { deletingDay = nil } }
                 ),
                 titleVisibility: .visible
             ) {
-                Button("Remove workout", role: .destructive) { deleteDay() }
+                Button("Delete workout", role: .destructive) { deleteWorkout() }
                     .disabled(
                         sync.isRoutineMutationInFlight
                             || (sync.running && sync.selectedDayID == deletingDay?.id))
@@ -147,6 +148,9 @@ struct RoutineView: View {
             }
             .sheet(item: $editTarget) { target in
                 EditWorkoutSheet(sync: sync, dayID: target.id)
+            }
+            .sheet(item: $assignmentTarget) { workout in
+                WorkoutDateSheet(sync: sync, workout: workout)
             }
             .sheet(isPresented: $showHistory) {
                 PlanHistoryView(sync: sync)
@@ -161,12 +165,12 @@ struct RoutineView: View {
     private var createRoutineForm: some View {
         Form {
             Section {
-                TextField("Routine name", text: $planName)
+                TextField("Training plan name", text: $planName)
                 TextField("First workout", text: $firstDayName)
             } header: {
-                Text("Build without AI")
+                Text("Your first workout")
             } footer: {
-                Text("Creates an active routine only if you do not already have one. A concurrent coach update is loaded, never replaced.")
+                Text("Keep workouts for the gym, travel, or a quick session. Use them on demand or add an optional weekly schedule.")
             }
 
             Section {
@@ -176,7 +180,7 @@ struct RoutineView: View {
                     HStack {
                         Spacer()
                         if creatingRoutine { ProgressView().tint(Theme.accent) }
-                        Text(creatingRoutine ? "Creating…" : "Create routine")
+                        Text(creatingRoutine ? "Creating…" : "Create workout")
                             .font(Theme.mono(14, .bold))
                         Spacer()
                     }
@@ -197,19 +201,22 @@ struct RoutineView: View {
     private var routineList: some View {
         List {
             Section {
-                if let days = sync.plan?.days, days.isEmpty {
+                if let days = sync.plan?.workouts, days.isEmpty {
                     Text("Add your first workout, then choose exercises and targets.")
                         .font(Theme.mono(12)).foregroundStyle(Theme.muted)
                 } else {
-                    ForEach(sync.plan?.days ?? []) { day in
+                    ForEach(sync.plan?.workouts ?? []) { day in
                         HStack(spacing: 10) {
                             Button {
-                                editTarget = RoutineDayTarget(id: day.id)
+                                editTarget = WorkoutTarget(id: day.id)
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(day.name)
                                         .font(Theme.mono(15, .bold))
                                         .foregroundStyle(Theme.text)
+                                    Text(WorkoutLibraryPolicy.scheduleBadge(workoutID: day.id, plan: sync.plan))
+                                        .font(Theme.mono(10, .bold)).foregroundStyle(Theme.accent)
+                                        .accessibilityIdentifier("workoutSchedule-\(day.id)")
                                     Text(day.exercises.isEmpty
                                          ? "No exercises yet"
                                          : "\(day.exercises.count) exercise\(day.exercises.count == 1 ? "" : "s")")
@@ -221,14 +228,21 @@ struct RoutineView: View {
                             .disabled(sync.isRoutineMutationInFlight)
 
                             Menu {
+                                Button("Use on a date", systemImage: "calendar.badge.plus") {
+                                    assignmentTarget = day
+                                }
+                                Button("Unschedule", systemImage: "calendar.badge.minus") {
+                                    Task { await sync.unscheduleWorkout(workoutID: day.id) }
+                                }
+                                .disabled(!WorkoutLibraryPolicy.isScheduled(workoutID: day.id, plan: sync.plan))
                                 Button("Edit exercises") {
-                                    editTarget = RoutineDayTarget(id: day.id)
+                                    editTarget = WorkoutTarget(id: day.id)
                                 }
                                 Button("Rename") {
                                     renameDayName = day.name
                                     renamingDay = day
                                 }
-                                Button("Remove", role: .destructive) {
+                                Button("Delete workout", role: .destructive) {
                                     deletingDay = day
                                 }
                                 .disabled(sync.running && sync.selectedDayID == day.id)
@@ -237,6 +251,7 @@ struct RoutineView: View {
                                     .foregroundStyle(Theme.muted)
                             }
                             .disabled(sync.isRoutineMutationInFlight)
+                            .accessibilityLabel("Actions for \(day.name)")
                         }
                         .listRowBackground(Theme.surface)
                         .moveDisabled(sync.isRoutineMutationInFlight)
@@ -245,7 +260,7 @@ struct RoutineView: View {
                 }
 
                 Button {
-                    newDayName = "Workout \((sync.plan?.days.count ?? 0) + 1)"
+                    newDayName = "Workout \((sync.plan?.workouts.count ?? 0) + 1)"
                     addingDay = true
                 } label: {
                     Label("Add workout", systemImage: "plus.circle.fill")
@@ -263,7 +278,7 @@ struct RoutineView: View {
                 ForEach(PlanSchedule.weekdayKeys, id: \.self) { key in
                     Picker(weekdayNames[key] ?? key, selection: scheduleBinding(key)) {
                         Text("Rest").tag("")
-                        ForEach(sync.plan?.days ?? []) { day in
+                        ForEach(sync.plan?.workouts ?? []) { day in
                             Text(day.name).tag(day.id)
                         }
                     }
@@ -283,7 +298,7 @@ struct RoutineView: View {
                 }
                 .disabled(sync.isRoutineMutationInFlight)
             } header: {
-                Text("Every week")
+                Text("Weekly schedule · optional")
             } footer: {
                 Text("These choices recur and drive Today. Use the calendar for one-date changes; those do not alter this schedule.")
             }
@@ -292,7 +307,7 @@ struct RoutineView: View {
                 Button {
                     showHistory = true
                 } label: {
-                    Label("Routine history", systemImage: "clock.arrow.circlepath")
+                    Label("Workout history", systemImage: "clock.arrow.circlepath")
                 }
                 .disabled(sync.isRoutineMutationInFlight)
             }
@@ -331,22 +346,22 @@ struct RoutineView: View {
                     wasCreated: ensured.created,
                     ensuredPlanID: ensured.plan.id,
                     loadedPlanID: sync.plan?.id,
-                    loadedDayCount: sync.plan?.days.count ?? 0),
+                    loadedDayCount: sync.plan?.workouts.count ?? 0),
                   let dayID = await sync.addWorkoutDay(
                     name: firstDayName,
                     expectedPlanID: ensured.plan.id,
                     expectedVersion: ensured.plan.version)
             else { return }
-            editTarget = RoutineDayTarget(id: dayID)
+            editTarget = WorkoutTarget(id: dayID)
         }
     }
 
-    private func addDay() {
+    private func addWorkout() {
         guard !sync.isRoutineMutationInFlight else { return }
         let name = newDayName
         Task {
             guard let dayID = await sync.addWorkoutDay(name: name) else { return }
-            editTarget = RoutineDayTarget(id: dayID)
+            editTarget = WorkoutTarget(id: dayID)
         }
     }
 
@@ -357,7 +372,7 @@ struct RoutineView: View {
         Task { await sync.renameWorkoutDay(dayID: day.id, name: name) }
     }
 
-    private func deleteDay() {
+    private func deleteWorkout() {
         guard !sync.isRoutineMutationInFlight, let day = deletingDay else { return }
         deletingDay = nil
         Task { await sync.deleteWorkoutDay(dayID: day.id) }
@@ -366,7 +381,7 @@ struct RoutineView: View {
     private func moveDays(from offsets: IndexSet, to destination: Int) {
         guard !sync.isRoutineMutationInFlight,
               let source = offsets.first,
-              let days = sync.plan?.days,
+              let days = sync.plan?.workouts,
               days.indices.contains(source)
         else { return }
         var reordered = days
@@ -391,7 +406,7 @@ enum PlanHistoryPresentation {
             "target_reps_max": "Maximum reps", "target_rpe": "Target effort",
             "target_weight": "Target load", "target_duration_s": "Target duration",
             "rest_seconds": "Rest time", "schedule": "Weekly schedule",
-            "name": change.kind == "day" ? "Workout name" : "Routine name",
+            "name": change.kind == "day" ? "Workout name" : "Training plan name",
             "cues": "Coaching cues", "order_index": "Order",
         ]
         if let name = names[field] { return name }
@@ -427,7 +442,7 @@ private struct PlanHistoryView: View {
                 capturedVersionsContent
                 errorContent
             }
-            .navigationTitle("Routine history")
+            .navigationTitle("Workout history")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { ToolbarItem(placement: .topBarLeading) { Button("Done") { dismiss() } } }
             .task { await loadInitialHistory() }

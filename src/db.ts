@@ -1,3 +1,4 @@
+import { shareWorkoutSchemaCache, workoutDB } from './workoutSchema';
 // Service layer: all D1 access goes through here so REST (now) and MCP
 // (milestone b) share identical behavior. Timestamps are epoch-ms integers.
 import { parseRunnerTargets, summarizeWorkout, type SummaryExercise, type SummarySet, type RunnerTargetSnapshot, type WorkoutSummary } from './workoutSummary';
@@ -5,7 +6,7 @@ import { metricCohorts, estimatedOneRepMax, positiveSetTonnage, type MetricExerc
 import type {
   ActivityRow,
   DayConflict,
-  DayTemplateRow,
+  WorkoutRow,
   EnrichedTemplateExercise,
   Env,
   ExternalActivityRow,
@@ -69,8 +70,8 @@ function runnerTargetSnapshotSQL(dayExpression: string, timestamp: string): stri
       'sets', te.target_sets, 'reps', te.target_reps, 'reps_max', te.target_reps_max,
       'weight', te.target_weight, 'duration_s', te.target_duration_s, 'rpe', te.target_rpe))
       FROM template_exercises te JOIN exercises e ON e.id=te.exercise_id
-      WHERE te.day_template_id=d.id)))
-    FROM day_templates d JOIN plans p ON p.id=d.plan_id
+      WHERE te.workout_id=d.id)))
+    FROM workouts d JOIN plans p ON p.id=d.plan_id
     WHERE d.id=${dayExpression} AND p.user_id=sessions.user_id)`;
 }
 
@@ -81,12 +82,12 @@ interface SetPrescriptionContext { plan_id: string; version: number; day_id: str
 async function targetsForSetPrescription(
   db: D1Database, userId: string, context: SetPrescriptionContext, capturedAt: number,
 ): Promise<string | null> {
-  const stored = await db.prepare(
+  const stored = await workoutDB(db).prepare(
     'SELECT document FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3')
     .bind(userId, context.plan_id, context.version).first<{ document: string }>();
   if (!stored) return null;
   let day;
-  try { day = parsePlanSnapshot(stored.document).days.find((day) => day.id === context.day_id); }
+  try { day = parsePlanSnapshot(stored.document).workouts.find((day) => day.id === context.day_id); }
   catch { return null; }
   if (!day) return null;
   const catalog = await getExercises(db) as unknown as SummaryExercise[];
@@ -202,6 +203,7 @@ export function createD1UsageObserver(db: D1Database): D1UsageObserver {
       return typeof value === 'function' ? value.bind(target) : value;
     },
   });
+  shareWorkoutSchemaCache(measuredDb, db);
   return { db: measuredDb, usage };
 }
 
@@ -262,7 +264,7 @@ export async function accountDeletionReceiptMatches(
   idempotencyKey: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(idempotencyKey)) return false;
-  const receipt = await db
+  const receipt = await workoutDB(db)
     .prepare(
       `SELECT idempotency_key_sha256
          FROM account_deletion_receipts WHERE user_id = ?1`,
@@ -284,7 +286,7 @@ export async function accountDeletionContinuationMatches(
   idempotencyKey: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(idempotencyKey)) return false;
-  const row = await db
+  const row = await workoutDB(db)
     .prepare(
       `SELECT idempotency_key_sha256
          FROM account_deletion_intents WHERE user_id = ?1
@@ -306,7 +308,7 @@ export async function isAccountDeletionInProgress(
   userId: string,
 ): Promise<boolean> {
   return (
-    (await db
+    (await workoutDB(db)
       .prepare(
         'SELECT 1 AS x FROM account_deletion_intents WHERE user_id = ?1',
       )
@@ -325,7 +327,7 @@ export async function storeAppleRefreshToken(
   refreshToken: string,
 ): Promise<boolean> {
   if (!refreshToken) return false;
-  const result = await db
+  const result = await workoutDB(db)
     .prepare(
       `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
        SELECT ?1, ?2, ?3
@@ -364,7 +366,7 @@ export async function beginAppleGrantExchange(
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId)) return false;
   const staleBefore = nowMs - APPLE_GRANT_EXCHANGE_FRESH_MS;
-  const result = await db
+  const result = await workoutDB(db)
     .prepare(
       `INSERT INTO apple_grant_exchange_state
          (user_id, reservation_id, active_since, revocation_uncertain)
@@ -412,7 +414,7 @@ export async function markAppleGrantExchangeUncertain(
   reservationId: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId)) return false;
-  const result = await db
+  const result = await workoutDB(db)
     .prepare(
       `UPDATE apple_grant_exchange_state
           SET reservation_id = NULL,
@@ -440,8 +442,8 @@ export async function finishAppleGrantExchange(
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId) || !refreshToken) return false;
   const ts = now();
-  const [stored, retained] = await db.batch([
-    db
+  const [stored, retained] = await workoutDB(db).batch([
+    workoutDB(db)
       .prepare(
         `INSERT INTO apple_refresh_tokens (user_id, refresh_token, updated_at)
          SELECT s.user_id, ?3, ?4
@@ -460,7 +462,7 @@ export async function finishAppleGrantExchange(
            updated_at = excluded.updated_at`,
       )
       .bind(userId, reservationId, refreshToken, ts),
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE apple_grant_exchange_state
             SET active_since = ?3
@@ -490,15 +492,15 @@ export async function acknowledgeAppleGrantExchange(
   reservationId: string,
 ): Promise<boolean> {
   if (!isAccountDeletionKey(reservationId)) return false;
-  const [cleared, removed] = await db.batch([
-    db
+  const [cleared, removed] = await workoutDB(db).batch([
+    workoutDB(db)
       .prepare(
         `UPDATE apple_grant_exchange_state
             SET reservation_id = NULL, active_since = NULL
           WHERE user_id = ?1 AND reservation_id = ?2`,
       )
       .bind(userId, reservationId),
-    db
+    workoutDB(db)
       .prepare(
         `DELETE FROM apple_grant_exchange_state
           WHERE user_id = ?1
@@ -522,7 +524,7 @@ export async function acknowledgeAppleGrantExchange(
 export async function isOwnerDeletionTombstoned(
   db: D1Database,
 ): Promise<boolean> {
-  const row = await db
+  const row = await workoutDB(db)
     .prepare('SELECT 1 AS x FROM owner_deletion_tombstone WHERE singleton = 1')
     .first<{ x: number }>();
   return row !== null;
@@ -534,7 +536,7 @@ export async function isOwnerDeletionTombstoned(
  * from treating the earliest surviving member as the new distinguished owner.
  */
 async function hasOwnerDeletionReceipt(db: D1Database): Promise<boolean> {
-  const row = await db
+  const row = await workoutDB(db)
     .prepare(
       `SELECT 1 AS x FROM account_deletion_receipts
         WHERE owner_tombstoned = 1 LIMIT 1`,
@@ -548,7 +550,7 @@ export async function isDeletedOwnerAppleSub(
   db: D1Database,
   appleSub: string,
 ): Promise<boolean> {
-  const row = await db
+  const row = await workoutDB(db)
     .prepare(
       'SELECT apple_sub_sha256 FROM owner_deletion_tombstone WHERE singleton = 1',
     )
@@ -563,13 +565,13 @@ export async function upsertUser(
   email: string | null,
   displayName: string | null,
 ): Promise<User> {
-  const existing = await db
+  const existing = await workoutDB(db)
     .prepare('SELECT * FROM users WHERE apple_sub = ?1')
     .bind(appleSub)
     .first<User>();
   if (existing) {
     if (displayName && !existing.display_name) {
-      await db
+      await workoutDB(db)
         .prepare('UPDATE users SET display_name = ?2 WHERE id = ?1')
         .bind(existing.id, displayName)
         .run();
@@ -600,7 +602,7 @@ export async function upsertUser(
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
-  await db
+  await workoutDB(db)
     .prepare(
       'INSERT INTO users (id, apple_sub, email, display_name, created_at) VALUES (?1,?2,?3,?4,?5)',
     )
@@ -624,7 +626,7 @@ export async function upsertUserUnlessDeletedOwner(
   const candidateId = uuid();
   const createdAt = now();
   const appleSubHash = await sha256Hex(appleSub);
-  await db
+  await workoutDB(db)
     .prepare(
       `INSERT INTO users (id, apple_sub, email, display_name, created_at)
        SELECT ?1, ?2, ?3, ?4, ?5
@@ -636,7 +638,7 @@ export async function upsertUserUnlessDeletedOwner(
     )
     .bind(candidateId, appleSub, email, displayName, createdAt, appleSubHash)
     .run();
-  return db
+  return workoutDB(db)
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub = ?1
@@ -685,7 +687,7 @@ async function insertOwnerUnlessTombstoned(
     mcp_passphrase_hash: null,
     mcp_passphrase_salt: null,
   };
-  await db
+  await workoutDB(db)
     .prepare(
       `INSERT INTO users (id, apple_sub, email, display_name, created_at)
        SELECT ?1, ?2, ?3, ?4, ?5
@@ -704,7 +706,7 @@ async function insertOwnerUnlessTombstoned(
       requireEmptyUsers ? 1 : 0,
     )
     .run();
-  return db
+  return workoutDB(db)
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub = ?1
@@ -731,7 +733,7 @@ export async function claimOrCreateOwner(
   displayName: string | null,
   ownerSubLocked: boolean,
 ): Promise<User | null> {
-  const byApple = await db
+  const byApple = await workoutDB(db)
     .prepare(
       `SELECT u.* FROM users u
         WHERE u.apple_sub = ?1
@@ -744,12 +746,12 @@ export async function claimOrCreateOwner(
   if (byApple) return byApple;
 
   if (!ownerSubLocked) {
-    const bootstrap = await db
+    const bootstrap = await workoutDB(db)
       .prepare('SELECT * FROM users WHERE apple_sub = ?1')
       .bind(BOOTSTRAP_APPLE_SUB)
       .first<User>();
     if (bootstrap) {
-      const claimed = await db
+      const claimed = await workoutDB(db)
         .prepare(
           `UPDATE users
               SET apple_sub = ?2, email = ?3, display_name = ?4
@@ -768,7 +770,7 @@ export async function claimOrCreateOwner(
         )
         .run();
       if ((claimed.meta.changes ?? 0) === 1) {
-        return db
+        return workoutDB(db)
           .prepare(
             `SELECT u.* FROM users u
               WHERE u.id = ?1 AND u.apple_sub = ?2
@@ -842,7 +844,7 @@ export async function findOwnerRow(
   ownerAppleSub: string | undefined,
 ): Promise<User | null> {
   if (ownerAppleSub) {
-    return await db
+    return await workoutDB(db)
       .prepare(
         `SELECT u.* FROM users u
           WHERE u.apple_sub = ?1
@@ -854,7 +856,7 @@ export async function findOwnerRow(
       .first<User>();
   }
   if (await hasOwnerDeletionReceipt(db)) {
-    return await db
+    return await workoutDB(db)
       .prepare(
         `SELECT u.* FROM users u
           WHERE u.apple_sub = ?1
@@ -866,7 +868,7 @@ export async function findOwnerRow(
       .bind(BOOTSTRAP_APPLE_SUB)
       .first<User>();
   }
-  return await db
+  return await workoutDB(db)
     .prepare(
       `SELECT u.* FROM users u
         WHERE NOT EXISTS (
@@ -891,7 +893,7 @@ export async function isBootstrapClaimEligible(db: D1Database): Promise<boolean>
   ) {
     return false;
   }
-  const rows = await db
+  const rows = await workoutDB(db)
     .prepare('SELECT apple_sub FROM users')
     .all<{ apple_sub: string }>();
   if (rows.results.length === 0) return true;
@@ -930,7 +932,7 @@ async function getAccountDeletionReceipt(
   db: D1Database,
   userId: string,
 ): Promise<AccountDeletionReceiptRow | null> {
-  return db
+  return workoutDB(db)
     .prepare(
       `SELECT idempotency_key_sha256, owner_tombstoned, apple_revocation
          FROM account_deletion_receipts WHERE user_id = ?1`,
@@ -976,8 +978,8 @@ export async function deleteUserAccount(
   // Apple exchange reservation blocks the claim. Sticky uncertainty or a
   // stale active exchange is consumed into an immediately-sticky manual
   // outcome, so deletion can never report revocation of only an older grant.
-  await db.batch([
-    db
+  await workoutDB(db).batch([
+    workoutDB(db)
       .prepare(
         `INSERT OR IGNORE INTO account_deletion_intents
            (user_id, idempotency_key_sha256, apple_revocation, created_at)
@@ -1005,7 +1007,7 @@ export async function deleteUserAccount(
                 )`,
       )
       .bind(userId, idempotencyKeyHash, claimTime, staleExchangeBefore),
-    db
+    workoutDB(db)
       .prepare(
         `DELETE FROM apple_grant_exchange_state
           WHERE user_id = ?1
@@ -1025,7 +1027,7 @@ export async function deleteUserAccount(
       : { error: 'not_found' };
   }
 
-  let intent = await db
+  let intent = await workoutDB(db)
     .prepare(
       `SELECT idempotency_key_sha256, apple_revocation
          FROM account_deletion_intents WHERE user_id = ?1`,
@@ -1040,7 +1042,7 @@ export async function deleteUserAccount(
     // proof that the account disappeared. iOS reserves 404 for cross-device
     // completion and must not erase local state for this case.
     if (intent) return { error: 'conflict' };
-    const liveUser = await db
+    const liveUser = await workoutDB(db)
       .prepare('SELECT 1 AS x FROM users WHERE id = ?1')
       .bind(userId)
       .first<{ x: number }>();
@@ -1049,7 +1051,7 @@ export async function deleteUserAccount(
 
   let appleRevocation = intent.apple_revocation;
   if (appleRevocation === null) {
-    const credential = await db
+    const credential = await workoutDB(db)
       .prepare(
         'SELECT refresh_token FROM apple_refresh_tokens WHERE user_id = ?1',
       )
@@ -1077,7 +1079,7 @@ export async function deleteUserAccount(
     // Persist provider truth on the intent immediately. If local finalization
     // is interrupted, a matching retry skips provider I/O and carries this
     // exact outcome into the durable receipt.
-    await db
+    await workoutDB(db)
       .prepare(
         `UPDATE account_deletion_intents
             SET apple_revocation = ?3
@@ -1087,7 +1089,7 @@ export async function deleteUserAccount(
       )
       .bind(userId, idempotencyKeyHash, appleRevocation)
       .run();
-    intent = await db
+    intent = await workoutDB(db)
       .prepare(
         `SELECT idempotency_key_sha256, apple_revocation
            FROM account_deletion_intents WHERE user_id = ?1`,
@@ -1112,7 +1114,7 @@ export async function deleteUserAccount(
     appleRevocation = intent.apple_revocation;
   }
 
-  const user = await db
+  const user = await workoutDB(db)
     .prepare('SELECT * FROM users WHERE id = ?1')
     .bind(userId)
     .first<User>();
@@ -1127,7 +1129,7 @@ export async function deleteUserAccount(
   const deletingOwner = owner?.id === userId;
   const deletionTime = now();
   const statements: D1PreparedStatement[] = [
-    db
+    workoutDB(db)
       .prepare(
         `INSERT OR IGNORE INTO account_deletion_receipts
            (user_id, idempotency_key_sha256, owner_tombstoned, deleted_at,
@@ -1145,7 +1147,7 @@ export async function deleteUserAccount(
 
   if (deletingOwner) {
     statements.push(
-      db
+      workoutDB(db)
         .prepare(
           `INSERT INTO owner_deletion_tombstone
              (singleton, apple_sub_sha256, deleted_at)
@@ -1160,7 +1162,7 @@ export async function deleteUserAccount(
 
   // Empty groups owned by the caller have no shared state to preserve.
   statements.push(
-    db
+    workoutDB(db)
       .prepare(
         `DELETE FROM group_invites
           WHERE group_id IN (
@@ -1173,7 +1175,7 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `DELETE FROM group_members
           WHERE group_id IN (
@@ -1186,7 +1188,7 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `DELETE FROM groups
           WHERE created_by = ?1
@@ -1199,7 +1201,7 @@ export async function deleteUserAccount(
 
     // Preserve a shared group by transferring its creator anchor before the
     // deleting user's membership and users row disappear.
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE groups
             SET created_by = (
@@ -1219,14 +1221,14 @@ export async function deleteUserAccount(
     // Invites created by the account are credentials and are revoked. Invites
     // another member created remain, but no longer retain used_by attribution
     // to the deleted account.
-    db.prepare('DELETE FROM group_invites WHERE created_by = ?1').bind(userId),
-    db.prepare('UPDATE group_invites SET used_by = NULL WHERE used_by = ?1').bind(userId),
-    db.prepare('DELETE FROM group_members WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM group_invites WHERE created_by = ?1').bind(userId),
+    workoutDB(db).prepare('UPDATE group_invites SET used_by = NULL WHERE used_by = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM group_members WHERE user_id = ?1').bind(userId),
 
     // Session-dependent ledgers and logs must go before their canonical
     // sessions; the plan tree follows sessions because those rows hold plan/day
     // references under strict foreign keys.
-    db
+    workoutDB(db)
       .prepare(
         `DELETE FROM session_aliases
           WHERE canonical_session_id IN (
@@ -1234,61 +1236,61 @@ export async function deleteUserAccount(
           )`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `DELETE FROM session_load_exports
           WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `DELETE FROM set_logs
           WHERE session_id IN (SELECT id FROM sessions WHERE user_id = ?1)`,
       )
       .bind(userId),
-    db.prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
-    db.prepare('DELETE FROM plan_snapshots WHERE user_id = ?1').bind(userId),
-    db
+    workoutDB(db).prepare('DELETE FROM sessions WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM plan_snapshots WHERE user_id = ?1').bind(userId),
+    workoutDB(db)
       .prepare(
         `DELETE FROM template_exercises
-          WHERE day_template_id IN (
-            SELECT d.id FROM day_templates d
+          WHERE workout_id IN (
+            SELECT d.id FROM workouts d
             JOIN plans p ON p.id = d.plan_id
             WHERE p.user_id = ?1
           )`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
-        `DELETE FROM day_templates
+        `DELETE FROM workouts
           WHERE plan_id IN (SELECT id FROM plans WHERE user_id = ?1)`,
       )
       .bind(userId),
-    db.prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM plans WHERE user_id = ?1').bind(userId),
 
-    db.prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
-    db.prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
-    db.prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
-    db.prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
-    db.prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
-    db.prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
-    db.prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
-    db.prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
-    db.prepare('DELETE FROM oauth_grants WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM activities WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM external_events WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM external_activities WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM notes WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM audit_log WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM intervals_oauth_states WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM oauth_codes WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE user_id = ?1').bind(userId),
+    workoutDB(db).prepare('DELETE FROM oauth_grants WHERE user_id = ?1').bind(userId),
   );
 
   // Tokens issued before multi-user MCP have a NULL principal and resolve to
   // the owner. Revoke them only when the distinguished owner is deleted.
   if (deletingOwner) {
     statements.push(
-      db.prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
-      db.prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
-      db.prepare('DELETE FROM oauth_grants WHERE user_id IS NULL'),
+      workoutDB(db).prepare('DELETE FROM oauth_codes WHERE user_id IS NULL'),
+      workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE user_id IS NULL'),
+      workoutDB(db).prepare('DELETE FROM oauth_grants WHERE user_id IS NULL'),
     );
   }
 
-  statements.push(db.prepare('DELETE FROM users WHERE id = ?1').bind(userId));
-  await db.batch(statements);
+  statements.push(workoutDB(db).prepare('DELETE FROM users WHERE id = ?1').bind(userId));
+  await workoutDB(db).batch(statements);
   const receipt = await getAccountDeletionReceipt(db, userId);
   if (!receipt || receipt.idempotency_key_sha256 !== idempotencyKeyHash) {
     return { error: 'not_found' };
@@ -1351,7 +1353,7 @@ export async function setUserMcpPassphrase(
   const saltBytes = crypto.getRandomValues(new Uint8Array(16));
   const salt = btoa(String.fromCharCode(...saltBytes));
   const hash = await pbkdf2(passphrase, salt);
-  await db
+  await workoutDB(db)
     .prepare('UPDATE users SET mcp_passphrase_hash = ?2, mcp_passphrase_salt = ?3 WHERE id = ?1')
     .bind(userId, hash, salt)
     .run();
@@ -1368,7 +1370,7 @@ export async function findUserByMcpPassphrase(
   passphrase: string,
 ): Promise<string | null> {
   if (!passphrase) return null;
-  const rows = await db
+  const rows = await workoutDB(db)
     .prepare(
       'SELECT id, mcp_passphrase_hash, mcp_passphrase_salt FROM users WHERE mcp_passphrase_hash IS NOT NULL AND mcp_passphrase_salt IS NOT NULL',
     )
@@ -1422,7 +1424,7 @@ export async function getUserTimezone(
   db: D1Database,
   userId: string,
 ): Promise<string | null> {
-  const row = await db
+  const row = await workoutDB(db)
     .prepare('SELECT timezone FROM users WHERE id = ?1')
     .bind(userId)
     .first<{ timezone: string | null }>();
@@ -1443,7 +1445,7 @@ export async function setUserTimezoneIfChanged(
   if (!tz || !isValidTimezone(tz)) return;
   const current = await getUserTimezone(db, userId);
   if (current === tz) return;
-  await db.prepare('UPDATE users SET timezone = ?2 WHERE id = ?1').bind(userId, tz).run();
+  await workoutDB(db).prepare('UPDATE users SET timezone = ?2 WHERE id = ?1').bind(userId, tz).run();
 }
 
 // ---- intervals.icu credentials (per-user; M1 multi-user foundation) ------
@@ -1479,7 +1481,7 @@ export async function activateIntervalsSourceFence(
   if (!Number.isSafeInteger(activatedAt) || activatedAt < 0) {
     throw new Error('intervals_source_fence_invalid_activation_time');
   }
-  const activated = await db
+  const activated = await workoutDB(db)
     .prepare(
       `UPDATE intervals_source_fence
           SET enabled = 1,
@@ -1511,7 +1513,7 @@ export async function activateIntervalsSourceFence(
     };
   }
 
-  const current = await db
+  const current = await workoutDB(db)
     .prepare(
       `SELECT enabled, activated_at,
               activated_user_count, activated_connected_count
@@ -1560,7 +1562,7 @@ export interface IntervalsUserCreds {
 export async function listUsersWithIntervalsCreds(
   db: D1Database,
 ): Promise<IntervalsUserCreds[]> {
-  const r = await db
+  const r = await workoutDB(db)
     .prepare(
       `SELECT id, intervals_api_key, intervals_oauth_access_token,
               intervals_oauth_refresh_token, intervals_oauth_expires_at,
@@ -1609,7 +1611,7 @@ export async function getUserIntervalsCreds(
   auth_error_at: number | null;
   credential_generation: number;
 }> {
-  const r = await db
+  const r = await workoutDB(db)
     .prepare(
       `SELECT intervals_api_key AS api_key,
               intervals_oauth_access_token AS access_token,
@@ -1652,7 +1654,7 @@ export async function getUserByIntervalsAthleteId(
   db: D1Database,
   athleteId: string,
 ): Promise<User | null> {
-  return await db
+  return await workoutDB(db)
     .prepare(`SELECT * FROM users WHERE ${INTERVALS_EFFECTIVE_ATHLETE_SQL} = ?1`)
     .bind(athleteId)
     .first<User>();
@@ -1670,7 +1672,7 @@ export async function userHasTouchedIntervalsCreds(
   db: D1Database,
   userId: string,
 ): Promise<boolean> {
-  const r = await db
+  const r = await workoutDB(db)
     .prepare(
       "SELECT 1 FROM audit_log WHERE user_id = ?1 AND tool = 'set_intervals_creds' LIMIT 1",
     )
@@ -1738,7 +1740,7 @@ export async function seedOwnerIntervalsCredsFromEnv(
   }
   // No env values to seed from → dormant.
   if (!apiKey || !athleteId) return listUsersWithIntervalsCreds(db);
-  await db
+  await workoutDB(db)
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
@@ -1789,7 +1791,7 @@ export async function setUserIntervalsCreds(
   // The API-key and OAuth schemes are mutually exclusive: writing an API key
   // clears any OAuth token, and a disconnect (nulls) clears BOTH schemes'
   // columns so "not connected" is unambiguous across the codebase.
-  await db
+  await workoutDB(db)
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
@@ -1859,7 +1861,7 @@ async function writeUserIntervalsOAuth(
   expiresAt: number | null,
   athleteId: string,
 ): Promise<void> {
-  await db
+  await workoutDB(db)
     .prepare(
       `UPDATE users
           SET intervals_oauth_access_token = ?2,
@@ -1943,7 +1945,7 @@ export async function createIntervalsOAuthState(
   const state =
     crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
   const ts = now();
-  await db
+  await workoutDB(db)
     .prepare(
       `INSERT INTO intervals_oauth_states (state, user_id, created_at, expires_at)
        VALUES (?1, ?2, ?3, ?4)`,
@@ -1968,13 +1970,13 @@ export async function consumeIntervalsOAuthState(
   // in one statement, so two concurrent callbacks (browser preload, double-tap,
   // replay) can't both observe the same valid state — only one DELETE returns
   // the row, the other gets nothing.
-  const row = await db
+  const row = await workoutDB(db)
     .prepare('DELETE FROM intervals_oauth_states WHERE state = ?1 RETURNING user_id, expires_at')
     .bind(state)
     .first<{ user_id: string; expires_at: number }>();
   // Best-effort sweep of any OTHER now-expired rows (kept out of the atomic
   // statement above so it never affects the single-use result).
-  await db.prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
+  await workoutDB(db).prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
   if (!row || row.expires_at < ts) return null;
   return row.user_id;
 }
@@ -2048,7 +2050,7 @@ export async function getMeProfile(
   userId: string,
   ownerAppleSub: string | undefined,
 ): Promise<MeProfile> {
-  const u = await db
+  const u = await workoutDB(db)
     .prepare(
       `SELECT display_name, email,
               ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_effective_athlete_id,
@@ -2072,7 +2074,7 @@ export async function getMeProfile(
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = !!owner && owner.id === userId;
 
-  const grant = await db
+  const grant = await workoutDB(db)
     .prepare(
       'SELECT 1 AS x FROM oauth_tokens WHERE refresh_token IS NOT NULL AND (user_id = ?1' +
         (isOwner ? ' OR user_id IS NULL' : '') +
@@ -2081,7 +2083,7 @@ export async function getMeProfile(
     .bind(userId)
     .first<{ x: number }>();
   const claudeConnected = !!grant;
-  const lastMcp = await db
+  const lastMcp = await workoutDB(db)
     .prepare("SELECT MAX(created_at) AS t FROM audit_log WHERE user_id = ?1 AND actor = 'mcp'")
     .bind(userId)
     .first<{ t: number | null }>();
@@ -2129,8 +2131,8 @@ export async function exportUserData(
   // D1 batches are transactional, including read-only batches. Reading the
   // complete projection through one batch keeps the account, plan tree, logs,
   // and memberships on one coherent database snapshot while writes continue.
-  const projection = await db.batch<Record<string, unknown>>([
-    db
+  const projection = await workoutDB(db).batch<Record<string, unknown>>([
+    workoutDB(db)
       .prepare(
         `SELECT id, apple_sub, email, display_name, created_at, timezone,
                 ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_athlete_id,
@@ -2139,30 +2141,30 @@ export async function exportUserData(
            FROM users WHERE id = ?1`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare('SELECT * FROM plans WHERE user_id = ?1 ORDER BY created_at, id')
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
-        `SELECT d.* FROM day_templates d
+        `SELECT d.* FROM workouts d
          JOIN plans p ON p.id = d.plan_id
          WHERE p.user_id = ?1
          ORDER BY d.plan_id, d.order_index, d.created_at, d.id`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `SELECT te.* FROM template_exercises te
-         JOIN day_templates d ON d.id = te.day_template_id
+         JOIN workouts d ON d.id = te.workout_id
          JOIN plans p ON p.id = d.plan_id
          WHERE p.user_id = ?1
-         ORDER BY te.day_template_id, te.order_index, te.created_at, te.id`,
+         ORDER BY te.workout_id, te.order_index, te.created_at, te.id`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare('SELECT * FROM sessions WHERE user_id = ?1 ORDER BY date, created_at, id')
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `SELECT sl.* FROM set_logs sl
          JOIN sessions s ON s.id = sl.session_id
@@ -2170,12 +2172,12 @@ export async function exportUserData(
          ORDER BY sl.logged_at, sl.id`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `SELECT e.* FROM exercises e
          WHERE e.id IN (
            SELECT te.exercise_id FROM template_exercises te
-           JOIN day_templates d ON d.id = te.day_template_id
+           JOIN workouts d ON d.id = te.workout_id
            JOIN plans p ON p.id = d.plan_id
            WHERE p.user_id = ?1
            UNION
@@ -2186,7 +2188,7 @@ export async function exportUserData(
          ORDER BY e.name, e.id`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `SELECT sa.* FROM session_aliases sa
          JOIN sessions s ON s.id = sa.canonical_session_id
@@ -2194,7 +2196,7 @@ export async function exportUserData(
          ORDER BY sa.alias_session_id`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `SELECT sle.* FROM session_load_exports sle
          JOIN sessions s ON s.id = sle.session_id
@@ -2202,32 +2204,32 @@ export async function exportUserData(
          ORDER BY sle.updated_at, sle.session_id`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare('SELECT * FROM notes WHERE user_id = ?1 ORDER BY created_at, id')
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare('SELECT * FROM audit_log WHERE user_id = ?1 ORDER BY created_at, id')
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare('SELECT * FROM external_events WHERE user_id = ?1 ORDER BY date, id')
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         'SELECT * FROM external_activities WHERE user_id = ?1 ORDER BY date, id',
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         'SELECT * FROM activities WHERE user_id = ?1 ORDER BY date, logged_at, id',
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `SELECT id,user_id,plan_id,version,document,actor,operation,reason,created_at
            FROM plan_snapshots WHERE user_id=?1 ORDER BY plan_id,version`,
       )
       .bind(userId),
-    db
+    workoutDB(db)
       .prepare(
         `SELECT gm.group_id, g.name AS group_name, gm.display_name, gm.joined_at
            FROM group_members gm
@@ -2281,7 +2283,7 @@ export async function exportUserData(
     account,
     training: {
       plans,
-      day_templates: days,
+      workouts: days,
       template_exercises: templateExercises,
       exercises,
       sessions,
@@ -2304,7 +2306,7 @@ export async function setUserDisplayName(
   userId: string,
   displayName: string,
 ): Promise<boolean> {
-  const result = await db
+  const result = await workoutDB(db)
     .prepare('UPDATE users SET display_name = ?2 WHERE id = ?1')
     .bind(userId, displayName)
     .run();
@@ -2322,7 +2324,7 @@ export async function setHealthActivitySharing(
   userId: string,
   enabled: boolean,
 ): Promise<{ sharing_in_group: boolean }> {
-  await db
+  await workoutDB(db)
     .prepare('UPDATE users SET share_health_activities = ?2 WHERE id = ?1')
     .bind(userId, enabled ? 1 : 0)
     .run();
@@ -2345,11 +2347,11 @@ export async function createGroup(
   // Use a batch so the membership row lands with the group row — D1 batches
   // run in a single transaction (an atomicity guarantee documented by
   // Cloudflare). If either statement fails the group is never visible.
-  await db.batch([
-    db
+  await workoutDB(db).batch([
+    workoutDB(db)
       .prepare('INSERT INTO groups (id,name,created_by,created_at) VALUES (?1,?2,?3,?4)')
       .bind(id, name, userId, ts),
-    db
+    workoutDB(db)
       .prepare(
         'INSERT INTO group_members (group_id,user_id,display_name,joined_at) VALUES (?1,?2,?3,?4)',
       )
@@ -2372,7 +2374,7 @@ export async function isGroupMember(
   userId: string,
   groupId: string,
 ): Promise<boolean> {
-  const r = await db
+  const r = await workoutDB(db)
     .prepare('SELECT 1 AS x FROM group_members WHERE group_id = ?1 AND user_id = ?2')
     .bind(groupId, userId)
     .first<{ x: number }>();
@@ -2387,7 +2389,7 @@ async function hydrateGroup(
   db: D1Database,
   group: Group,
 ): Promise<Group & { members: ResolvedGroupMember[] }> {
-  const r = await db
+  const r = await workoutDB(db)
     .prepare(
       `SELECT gm.group_id, gm.user_id, gm.display_name, gm.joined_at,
               u.display_name AS user_display_name
@@ -2422,7 +2424,7 @@ export async function listGroupsForUser(
   db: D1Database,
   userId: string,
 ): Promise<Array<Group & { members: ResolvedGroupMember[] }>> {
-  const r = await db
+  const r = await workoutDB(db)
     .prepare(
       `SELECT g.* FROM groups g
          JOIN group_members gm ON gm.group_id = g.id
@@ -2443,7 +2445,7 @@ export async function getGroupWithMembers(
   db: D1Database,
   groupId: string,
 ): Promise<(Group & { members: ResolvedGroupMember[] }) | null> {
-  const g = await db
+  const g = await workoutDB(db)
     .prepare('SELECT * FROM groups WHERE id = ?1')
     .bind(groupId)
     .first<Group>();
@@ -2475,7 +2477,7 @@ export async function createInvite(
   for (let attempt = 0; attempt < 5; attempt++) {
     code = newInviteCode();
     try {
-      await db
+      await workoutDB(db)
         .prepare(
           `INSERT INTO group_invites
              (code,group_id,created_by,created_at,expires_at,used_at,used_by)
@@ -2522,7 +2524,7 @@ export async function getInviteForRedemption(
   db: D1Database,
   code: string,
 ): Promise<GroupInvite | null> {
-  const r = await db
+  const r = await workoutDB(db)
     .prepare('SELECT * FROM group_invites WHERE code = ?1')
     .bind(code)
     .first<GroupInvite>();
@@ -2552,7 +2554,7 @@ export async function getInvitePreview(
   // landing page and the authenticated /api/groups/invite/:code route.
   const invite = await getInviteForRedemption(db, code.trim().toUpperCase());
   if (!invite) return { status: 'unknown', group_name: null };
-  const group = await db
+  const group = await workoutDB(db)
     .prepare('SELECT name FROM groups WHERE id = ?1')
     .bind(invite.group_id)
     .first<{ name: string }>();
@@ -2600,12 +2602,12 @@ export async function redeemInvite(
   const ts = now();
   const auditId = uuid();
   const auditArgs = JSON.stringify({ group_id: invite.group_id });
-  const [claim] = await db.batch([
+  const [claim] = await workoutDB(db).batch([
     // Repeat every mutable validation inside the transaction. In particular,
     // requiring a live principal with no deletion intent prevents a deletion
     // that won the database write lock first from consuming the invite, even
     // while provider revocation intentionally keeps the users row present.
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE group_invites
             SET used_at = ?2, used_by = ?3
@@ -2629,7 +2631,7 @@ export async function redeemInvite(
     // changes() observes the immediately preceding conditional UPDATE on this
     // SQLite connection. A losing batch creates neither an audit attempt nor a
     // membership; the unique audit id then gates the final INSERT.
-    db
+    workoutDB(db)
       .prepare(
         `INSERT INTO audit_log
            (id,user_id,actor,tool,args,result,created_at)
@@ -2637,7 +2639,7 @@ export async function redeemInvite(
           WHERE changes() = 1`,
       )
       .bind(auditId, userId, auditArgs, ts),
-    db
+    workoutDB(db)
       .prepare(
         `INSERT INTO group_members (group_id,user_id,display_name,joined_at)
          SELECT group_id,?2,NULL,?3 FROM group_invites
@@ -2675,7 +2677,7 @@ export async function leaveGroup(
   userId: string,
   groupId: string,
 ): Promise<boolean> {
-  const res = await db
+  const res = await workoutDB(db)
     .prepare('DELETE FROM group_members WHERE group_id = ?1 AND user_id = ?2')
     .bind(groupId, userId)
     .run();
@@ -2705,7 +2707,7 @@ export async function setGroupDisplayName(
   groupId: string,
   displayName: string | null,
 ): Promise<boolean> {
-  const res = await db
+  const res = await workoutDB(db)
     .prepare(
       'UPDATE group_members SET display_name = ?3 WHERE group_id = ?1 AND user_id = ?2',
     )
@@ -2727,7 +2729,7 @@ export async function setGroupDisplayName(
 
 /** Count rows in the users table. Used by /auth/apple to detect the fresh-install bootstrap path. */
 export async function countUsers(db: D1Database): Promise<number> {
-  const r = await db
+  const r = await workoutDB(db)
     .prepare('SELECT COUNT(*) AS c FROM users')
     .first<{ c: number }>();
   return r?.c ?? 0;
@@ -2739,7 +2741,7 @@ export async function getActivePlan(
   db: D1Database,
   userId: string,
 ): Promise<PlanRow | null> {
-  return db
+  return workoutDB(db)
     .prepare("SELECT * FROM plans WHERE user_id = ?1 AND status = 'active'")
     .bind(userId)
     .first<PlanRow>();
@@ -2751,15 +2753,15 @@ export async function getPlanTree(
 ): Promise<PlanTree | null> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
-  const days = await db
-    .prepare('SELECT * FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
+  const days = await workoutDB(db)
+    .prepare('SELECT * FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id')
     .bind(plan.id)
-    .all<DayTemplateRow>();
+    .all<WorkoutRow>();
   const dayIds = days.results.map((d) => d.id);
   let exercises: EnrichedTemplateExercise[] = [];
   if (dayIds.length) {
     const placeholders = dayIds.map((_, i) => `?${i + 1}`).join(',');
-    const res = await db
+    const res = await workoutDB(db)
       .prepare(
         `SELECT te.*, e.name AS exercise_name, e.unit AS exercise_unit,
                 e.primary_muscle AS exercise_muscle, e.modality AS exercise_modality,
@@ -2767,7 +2769,7 @@ export async function getPlanTree(
                 e.demo_slug AS exercise_demo_slug
          FROM template_exercises te
          JOIN exercises e ON e.id = te.exercise_id
-         WHERE te.day_template_id IN (${placeholders}) ORDER BY te.order_index, te.created_at, te.id`,
+         WHERE te.workout_id IN (${placeholders}) ORDER BY te.order_index, te.created_at, te.id`,
       )
       .bind(...dayIds)
       .all<EnrichedTemplateExercise>();
@@ -2775,9 +2777,9 @@ export async function getPlanTree(
   }
   return {
     ...plan,
-    days: days.results.map((d) => ({
+    workouts: days.results.map((d) => ({
       ...d,
-      exercises: exercises.filter((e) => e.day_template_id === d.id),
+      exercises: exercises.filter((e) => e.workout_id === d.id),
     })),
   };
 }
@@ -2825,14 +2827,14 @@ export function preparePlanSnapshotInsert(
   },
 ): D1PreparedStatement {
   const insert = input.ignoreExisting ? 'INSERT OR IGNORE' : 'INSERT';
-  return db.prepare(
+  return workoutDB(db).prepare(
     `${insert} INTO plan_snapshots
        (id,user_id,plan_id,version,document,actor,operation,reason,created_at)
      SELECT ?1,p.user_id,p.id,COALESCE(?4,p.version),
        json_object(
-         'schema_version',1,
+         'schema_version',2,
          'plan',json_object('name',p.name,'meta',p.meta),
-         'days',json(COALESCE((
+         'workouts',json(COALESCE((
            SELECT json_group_array(json(day_document)) FROM (
              SELECT json_object(
                'id',d.id,'name',d.name,'day_label',d.day_label,
@@ -2850,11 +2852,11 @@ export function preparePlanSnapshotInsert(
                      'group_transition_seconds',te.group_transition_seconds
                    ) AS slot_document
                    FROM template_exercises te
-                   WHERE te.day_template_id=d.id
+                   WHERE te.workout_id=d.id
                    ORDER BY te.order_index,te.created_at,te.id
                  )), '[]'))
              ) AS day_document
-             FROM day_templates d
+             FROM workouts d
              WHERE d.plan_id=p.id
              ORDER BY d.order_index,d.created_at,d.id
            )
@@ -2879,7 +2881,7 @@ export function preparePlanWriteStart(
   rejectActiveWorkout = false,
 ): D1PreparedStatement[] {
   return [
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE plans SET plan_write_nonce=?4,version=-version
         WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3
           AND plan_write_nonce IS NULL
@@ -2908,12 +2910,12 @@ export function preparePlanWriteFinish(
 ): D1PreparedStatement[] {
   const nextVersion = plan.version + 1;
   const statements: D1PreparedStatement[] = [
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE plans SET version=?6,updated_at=?5
         WHERE id=?1 AND user_id=?2 AND version=-?3 AND plan_write_nonce=?4
         RETURNING version`,
     ).bind(plan.id, plan.user_id, plan.version, nonce, ts, nextVersion),
-    db.prepare(
+    workoutDB(db).prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?5,p.user_id,?6,?7,?8,?9,?10 FROM plans p
         WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
@@ -2924,7 +2926,7 @@ export function preparePlanWriteFinish(
         : JSON.stringify(attribution.result ?? { plan_id: plan.id, version: nextVersion }), ts),
   ];
   if (attribution.note) {
-    statements.push(db.prepare(
+    statements.push(workoutDB(db).prepare(
       `INSERT INTO notes (id,user_id,scope,ref_id,author,body,created_at)
        SELECT ?5,p.user_id,'plan',p.id,?6,?7,?8 FROM plans p
         WHERE p.id=?1 AND p.user_id=?2 AND p.version=?3 AND p.plan_write_nonce=?4`,
@@ -2939,7 +2941,7 @@ export function preparePlanWriteFinish(
       reason: attribution.reason ?? attribution.note ?? null, createdAt: ts,
       writeNonce: nonce,
     }),
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE plans SET plan_write_nonce=NULL
         WHERE id=?1 AND user_id=?2 AND version=?3 AND plan_write_nonce=?4`,
     ).bind(plan.id, plan.user_id, nextVersion, nonce),
@@ -2953,7 +2955,7 @@ export async function getPlanSnapshot(
   planId: string,
   version: number,
 ): Promise<(PlanSnapshotRow & { parsed: PlanSnapshotDocument }) | null> {
-  const row = await db.prepare(
+  const row = await workoutDB(db).prepare(
     'SELECT * FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3',
   ).bind(userId, planId, version).first<PlanSnapshotRow>();
   return row ? { ...row, parsed: parsePlanSnapshot(row.document) } : null;
@@ -2969,13 +2971,13 @@ async function materializeSnapshotPlan(
   const catalog = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise]));
   return {
     ...base, name: document.plan.name, meta: document.plan.meta, version, updated_at: updatedAt,
-    days: document.days.map((day) => ({
+    workouts: document.workouts.map((day) => ({
       ...day, plan_id: base.id, created_at: updatedAt, updated_at: updatedAt,
       exercises: day.exercises.map((slot) => {
         const exercise = catalog.get(slot.exercise_id);
         if (!exercise) throw new Error('snapshot_exercise_missing');
         return {
-          ...slot, day_template_id: day.id, created_at: updatedAt, updated_at: updatedAt,
+          ...slot, workout_id: day.id, created_at: updatedAt, updated_at: updatedAt,
           exercise_name: exercise.name, exercise_unit: exercise.unit,
           exercise_muscle: exercise.primary_muscle, exercise_modality: exercise.modality,
           exercise_laterality: exercise.laterality, exercise_load_mode: exercise.load_mode,
@@ -3013,7 +3015,7 @@ export async function listPlanHistory(
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' as const };
   const capped = Math.max(1, Math.min(100, Math.floor(limit)));
-  const rows = await db.prepare(
+  const rows = await workoutDB(db).prepare(
     `SELECT * FROM plan_snapshots
       WHERE user_id=?1 AND plan_id=?2 AND (?3 IS NULL OR version < ?3)
       ORDER BY version DESC LIMIT ?4`,
@@ -3021,7 +3023,7 @@ export async function listPlanHistory(
   const visible = rows.results.slice(0, capped);
   const exerciseNames = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.name]));
   const items = await Promise.all(visible.map(async (row) => {
-    const prior = await db.prepare(
+    const prior = await workoutDB(db).prepare(
       `SELECT document FROM plan_snapshots
         WHERE user_id=?1 AND plan_id=?2 AND version < ?3
         ORDER BY version DESC LIMIT 1`,
@@ -3122,7 +3124,7 @@ export async function restorePlanSnapshot(
   if (!snapshot) return { error: 'snapshot_not_found' };
   const modalities = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.modality]));
   const invalidFields = new Set<string>();
-  for (const day of snapshot.parsed.days) for (const slot of day.exercises) {
+  for (const day of snapshot.parsed.workouts) for (const slot of day.exercises) {
     let progression: unknown = null;
     try { progression = slot.progression == null ? null : JSON.parse(slot.progression); }
     catch { invalidFields.add(`${day.day_label ?? day.name}/${slot.exercise_id}.progression`); }
@@ -3136,9 +3138,9 @@ export async function restorePlanSnapshot(
   if (invalidFields.size > 0) {
     return { error: 'invalid_fields', fields: [...invalidFields].sort() };
   }
-  const groupInvalid = validatePlanExerciseGroups(snapshot.parsed.days);
+  const groupInvalid = validatePlanExerciseGroups(snapshot.parsed.workouts);
   if (groupInvalid) return groupInvalid;
-  const active = await db.prepare(
+  const active = await workoutDB(db).prepare(
     `SELECT 1 FROM sessions
       WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
   ).bind(userId, plan.id).first();
@@ -3147,9 +3149,9 @@ export async function restorePlanSnapshot(
   const current = await getPlanTree(db, userId);
   if (!current) return { error: 'no_active_plan' };
   const target = snapshot.parsed;
-  const targetDayIds = new Set(target.days.map((day) => day.id));
-  const targetSlots = target.days.flatMap((day) =>
-    day.exercises.map((slot) => ({ ...slot, day_template_id: day.id })),
+  const targetDayIds = new Set(target.workouts.map((day) => day.id));
+  const targetSlots = target.workouts.flatMap((day) =>
+    day.exercises.map((slot) => ({ ...slot, workout_id: day.id })),
   );
   const targetSlotIds = new Set(targetSlots.map((slot) => slot.id));
   const ts = now();
@@ -3162,63 +3164,63 @@ export async function restorePlanSnapshot(
       note: input.reason ?? `Restored plan version ${input.snapshot_version}.`,
     }, ts, nonce, true),
   ];
-  for (const day of target.days) {
-    statements.push(db.prepare(
-      `INSERT OR IGNORE INTO day_templates
+  for (const day of target.workouts) {
+    statements.push(workoutDB(db).prepare(
+      `INSERT OR IGNORE INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
        SELECT ?4,?1,?5,?6,?7,?8,?9,?9 WHERE ${guarded}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
       day.order_index, day.notes, ts));
-    statements.push(db.prepare(
-      `UPDATE day_templates SET name=?5,day_label=?6,order_index=?7,notes=?8,updated_at=?9
+    statements.push(workoutDB(db).prepare(
+      `UPDATE workouts SET name=?5,day_label=?6,order_index=?7,notes=?8,updated_at=?9
        WHERE id=?4 AND plan_id=?1 AND ${guarded}`,
     ).bind(plan.id, userId, -plan.version, day.id, day.name, day.day_label,
       day.order_index, day.notes, ts));
   }
   for (const slot of targetSlots) {
-    statements.push(db.prepare(
+    statements.push(workoutDB(db).prepare(
       `INSERT OR IGNORE INTO template_exercises
-       (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,
+       (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,
         target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
         created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
        SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20,?21
        WHERE ${guarded}`,
-    ).bind(plan.id, userId, -plan.version, slot.id, slot.day_template_id,
+    ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
       slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
-    statements.push(db.prepare(
-      `UPDATE template_exercises SET day_template_id=?5,exercise_id=?6,order_index=?7,
+    statements.push(workoutDB(db).prepare(
+      `UPDATE template_exercises SET workout_id=?5,exercise_id=?6,order_index=?7,
        target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
        rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
        cues=?16,is_warmup=?17,updated_at=?18,group_id=?19,group_rest_seconds=?20,
        group_transition_seconds=?21 WHERE id=?4 AND ${guarded}`,
-    ).bind(plan.id, userId, -plan.version, slot.id, slot.day_template_id,
+    ).bind(plan.id, userId, -plan.version, slot.id, slot.workout_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
       slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
       slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
   }
-  for (const day of current.days) {
+  for (const day of current.workouts) {
     for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
       statements.push(
-        db.prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded}`)
+        workoutDB(db).prepare(`UPDATE set_logs SET template_exercise_id=NULL,updated_at=MAX(updated_at+1,?4) WHERE template_exercise_id=?5 AND ${guarded}`)
           .bind(plan.id, userId, -plan.version, ts, slot.id),
-        db.prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded}`)
+        workoutDB(db).prepare(`DELETE FROM template_exercises WHERE id=?4 AND ${guarded}`)
           .bind(plan.id, userId, -plan.version, slot.id),
       );
     }
     if (!targetDayIds.has(day.id)) {
       statements.push(
-        db.prepare(`UPDATE sessions SET day_template_id=NULL,updated_at=?4 WHERE day_template_id=?5 AND user_id=?2 AND ${guarded}`)
+        workoutDB(db).prepare(`UPDATE sessions SET workout_id=NULL,updated_at=?4 WHERE workout_id=?5 AND user_id=?2 AND ${guarded}`)
           .bind(plan.id, userId, -plan.version, ts, day.id),
-        db.prepare(`DELETE FROM day_templates WHERE id=?4 AND plan_id=?1 AND ${guarded}`)
+        workoutDB(db).prepare(`DELETE FROM workouts WHERE id=?4 AND plan_id=?1 AND ${guarded}`)
           .bind(plan.id, userId, -plan.version, day.id),
       );
     }
   }
-  statements.push(db.prepare(
+  statements.push(workoutDB(db).prepare(
     `UPDATE plans SET name=?4,meta=?5,updated_at=?6
      WHERE id=?1 AND user_id=?2 AND status='active' AND version=?3 AND plan_write_nonce=?7`,
   ).bind(plan.id, userId, -plan.version, target.plan.name, target.plan.meta, ts, nonce));
@@ -3231,7 +3233,7 @@ export async function restorePlanSnapshot(
   }, ts, nonce));
   const results = await runWorkoutWriteBatch(db, statements);
   if ((results[0]?.meta.changes ?? 0) !== 1 || (results[documentUpdateIndex]?.meta.changes ?? 0) !== 1 || !results[versionResultIndex]?.results[0]) {
-    const nowActive = await db.prepare(
+    const nowActive = await workoutDB(db).prepare(
       `SELECT 1 FROM sessions WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
     ).bind(userId, plan.id).first();
     if (nowActive) return { error: 'active_workout' };
@@ -3271,13 +3273,13 @@ export async function createPlan(
   // these statements and make the replacement violate ux_one_active_plan.
   // Allocate from every prior plan inside that transaction so replacement
   // never moves the per-user sync cursor backward or repeats it.
-  const results = await db.batch<PlanRow>([
-    db
+  const results = await workoutDB(db).batch<PlanRow>([
+    workoutDB(db)
       .prepare(
         "UPDATE plans SET status = 'archived', updated_at = ?2 WHERE user_id = ?1 AND status = 'active'",
       )
       .bind(userId, ts),
-    db
+    workoutDB(db)
       .prepare(
         `INSERT INTO plans
            (id,user_id,name,status,version,meta,created_at,updated_at)
@@ -3291,7 +3293,7 @@ export async function createPlan(
       userId, planId, actor: attribution.actor, operation: attribution.operation,
       reason: attribution.reason ?? attribution.note ?? null, createdAt: ts,
     }),
-    db.prepare(
+    workoutDB(db).prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS
        (SELECT 1 FROM plans WHERE id=?8 AND user_id=?2)`,
@@ -3320,7 +3322,7 @@ export async function ensureActivePlan(
 
   const ts = now();
   const candidateId = uuid();
-  const candidateInsert = db.prepare(
+  const candidateInsert = workoutDB(db).prepare(
       `INSERT INTO plans
          (id,user_id,name,status,version,meta,created_at,updated_at)
        SELECT ?1,?2,?3,'active',COALESCE(MAX(version),0)+1,NULL,?4,?4
@@ -3330,13 +3332,13 @@ export async function ensureActivePlan(
        RETURNING *`,
     )
     .bind(candidateId, userId, name, ts);
-  const results = await db.batch<PlanRow>([
+  const results = await workoutDB(db).batch<PlanRow>([
     candidateInsert,
     preparePlanSnapshotInsert(db, {
       userId, planId: candidateId, actor: attribution.actor,
       operation: attribution.operation, reason: attribution.reason ?? null, createdAt: ts,
     }),
-    db.prepare(
+    workoutDB(db).prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        SELECT ?1,?2,?3,?4,?5,?6,?7 WHERE EXISTS
        (SELECT 1 FROM plans WHERE id=?8 AND user_id=?2)`,
@@ -3355,23 +3357,23 @@ export async function ensureActivePlan(
 
 /** Bump the plan version + updated_at. Called by every plan-tree mutation. */
 export async function bumpPlanVersion(db: D1Database, planId: string): Promise<number> {
-  const row = await db
+  const row = await workoutDB(db)
     .prepare('UPDATE plans SET version = version + 1, updated_at = ?2 WHERE id = ?1 RETURNING version')
     .bind(planId, now())
     .first<{ version: number }>();
   return row?.version ?? 0;
 }
 
-export async function addDayTemplate(
+export async function addWorkout(
   db: D1Database,
   planId: string,
   name: string,
   dayLabel: string | null,
   orderIndex: number,
   normalizeOrder = false,
-): Promise<DayTemplateRow> {
+): Promise<WorkoutRow> {
   const ts = now();
-  const row: DayTemplateRow = {
+  const row: WorkoutRow = {
     id: uuid(),
     plan_id: planId,
     name,
@@ -3381,15 +3383,15 @@ export async function addDayTemplate(
     created_at: ts,
     updated_at: ts,
   };
-  await db
+  await workoutDB(db)
     .prepare(
-      'INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
+      'INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)',
     )
     .bind(row.id, row.plan_id, row.name, row.day_label, row.order_index, row.notes, row.created_at, row.updated_at)
     .run();
   if (normalizeOrder && await dedupePlanDayOrderIndexes(db, planId, row.id)) {
-    const fresh = await db
-      .prepare('SELECT order_index FROM day_templates WHERE id = ?1')
+    const fresh = await workoutDB(db)
+      .prepare('SELECT order_index FROM workouts WHERE id = ?1')
       .bind(row.id)
       .first<{ order_index: number }>();
     if (fresh) row.order_index = fresh.order_index;
@@ -3399,18 +3401,18 @@ export async function addDayTemplate(
 }
 
 /** Resolve a day only inside one already-authorized plan. */
-export async function getDayTemplateInPlan(
+export async function getWorkoutInPlan(
   db: D1Database,
   planId: string,
   dayId: string,
-): Promise<DayTemplateRow | null> {
-  return db
-    .prepare('SELECT * FROM day_templates WHERE id = ?1 AND plan_id = ?2')
+): Promise<WorkoutRow | null> {
+  return workoutDB(db)
+    .prepare('SELECT * FROM workouts WHERE id = ?1 AND plan_id = ?2')
     .bind(dayId, planId)
-    .first<DayTemplateRow>();
+    .first<WorkoutRow>();
 }
 
-/** Allowlist of patch keys accepted by `patchDayTemplate`. Unknown keys
+/** Allowlist of patch keys accepted by `patchWorkout`. Unknown keys
  *  surface as `{ error: 'unknown_fields', fields }` — same diagnosability
  *  contract as updateExercise. */
 const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
@@ -3420,7 +3422,7 @@ const DAY_TEMPLATE_PATCH_KEYS = new Set<string>([
   'notes',
 ]);
 
-export async function patchDayTemplate(
+export async function patchWorkout(
   db: D1Database,
   planId: string,
   dayId: string,
@@ -3431,11 +3433,11 @@ export async function patchDayTemplate(
     notes?: string | null;
   },
   normalizeOrder = false,
-): Promise<DayTemplateRow | { error: 'unknown_fields'; fields: string[] } | null> {
-  const existing = await db
-    .prepare('SELECT * FROM day_templates WHERE id = ?1 AND plan_id = ?2')
+): Promise<WorkoutRow | { error: 'unknown_fields'; fields: string[] } | null> {
+  const existing = await workoutDB(db)
+    .prepare('SELECT * FROM workouts WHERE id = ?1 AND plan_id = ?2')
     .bind(dayId, planId)
-    .first<DayTemplateRow>();
+    .first<WorkoutRow>();
   if (!existing) return null;
   const unknown = Object.keys(patch).filter((k) => !DAY_TEMPLATE_PATCH_KEYS.has(k));
   if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
@@ -3445,14 +3447,14 @@ export async function patchDayTemplate(
     order_index: patch.order_index ?? existing.order_index,
     notes: patch.notes === undefined ? existing.notes : patch.notes,
   };
-  await db
-    .prepare('UPDATE day_templates SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6 WHERE id=?1')
+  await workoutDB(db)
+    .prepare('UPDATE workouts SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6 WHERE id=?1')
     .bind(dayId, merged.name, merged.day_label, merged.order_index, merged.notes, now())
     .run();
   if (normalizeOrder && patch.order_index !== undefined) {
     await dedupePlanDayOrderIndexes(db, planId, dayId);
-    const fresh = await db
-      .prepare('SELECT order_index FROM day_templates WHERE id = ?1')
+    const fresh = await workoutDB(db)
+      .prepare('SELECT order_index FROM workouts WHERE id = ?1')
       .bind(dayId)
       .first<{ order_index: number }>();
     if (fresh) merged.order_index = fresh.order_index;
@@ -3488,7 +3490,7 @@ async function currentPlanVersion(
  * are transactions, so the day insert, dense ordering, and version bump either
  * commit together or all observe that a concurrent plan writer won.
  */
-export async function addDayTemplateAtVersion(
+export async function addWorkoutAtVersion(
   db: D1Database,
   userId: string,
   plan: PlanRow,
@@ -3496,9 +3498,9 @@ export async function addDayTemplateAtVersion(
   dayLabel: string | null,
   orderIndex: number,
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_day' },
-): Promise<DayTemplateRow | PlanVersionConflict> {
+): Promise<WorkoutRow | PlanVersionConflict> {
   const ts = now();
-  const row: DayTemplateRow = {
+  const row: WorkoutRow = {
     id: uuid(),
     plan_id: plan.id,
     name,
@@ -3508,9 +3510,9 @@ export async function addDayTemplateAtVersion(
     created_at: ts,
     updated_at: ts,
   };
-  const currentDays = await db
+  const currentDays = await workoutDB(db)
     .prepare(
-      'SELECT id, order_index FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
+      'SELECT id, order_index FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
     )
     .bind(plan.id)
     .all<{ id: string; order_index: number }>();
@@ -3518,9 +3520,9 @@ export async function addDayTemplateAtVersion(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    db
+    workoutDB(db)
       .prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          SELECT ?1,?2,?3,?4,?5,?6,?7,?8
           WHERE EXISTS (
@@ -3533,9 +3535,9 @@ export async function addDayTemplateAtVersion(
         row.created_at, row.updated_at, userId, -plan.version,
       ),
     ...ordered.map((day, index) =>
-      db
+      workoutDB(db)
         .prepare(
-          `UPDATE day_templates SET order_index = ?2, updated_at = ?3
+          `UPDATE workouts SET order_index = ?2, updated_at = ?3
             WHERE id = ?1 AND plan_id = ?4
               AND EXISTS (
                 SELECT 1 FROM plans
@@ -3558,7 +3560,7 @@ export async function addDayTemplateAtVersion(
 }
 
 /** Rename/reorder one day with write-time optimistic concurrency. */
-export async function patchDayTemplateAtVersion(
+export async function patchWorkoutAtVersion(
   db: D1Database,
   userId: string,
   plan: PlanRow,
@@ -3570,12 +3572,12 @@ export async function patchDayTemplateAtVersion(
     notes?: string | null;
   },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_day' },
-): Promise<DayTemplateRow | { error: 'unknown_fields'; fields: string[] } | PlanVersionConflict | null> {
-  const existing = await getDayTemplateInPlan(db, plan.id, dayId);
+): Promise<WorkoutRow | { error: 'unknown_fields'; fields: string[] } | PlanVersionConflict | null> {
+  const existing = await getWorkoutInPlan(db, plan.id, dayId);
   if (!existing) return null;
   const unknown = Object.keys(patch).filter((key) => !DAY_TEMPLATE_PATCH_KEYS.has(key));
   if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
-  const merged: DayTemplateRow = {
+  const merged: WorkoutRow = {
     ...existing,
     name: patch.name ?? existing.name,
     day_label: patch.day_label === undefined ? existing.day_label : patch.day_label,
@@ -3583,9 +3585,9 @@ export async function patchDayTemplateAtVersion(
     notes: patch.notes === undefined ? existing.notes : patch.notes,
     updated_at: now(),
   };
-  const currentDays = await db
+  const currentDays = await workoutDB(db)
     .prepare(
-      'SELECT id, order_index FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
+      'SELECT id, order_index FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
     )
     .bind(plan.id)
     .all<{ id: string; order_index: number }>();
@@ -3598,9 +3600,9 @@ export async function patchDayTemplateAtVersion(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, merged.updated_at, nonce),
-    db
+    workoutDB(db)
       .prepare(
-        `UPDATE day_templates
+        `UPDATE workouts
             SET name=?2, day_label=?3, order_index=?4, notes=?5, updated_at=?6
           WHERE id=?1 AND plan_id=?7
             AND EXISTS (
@@ -3615,9 +3617,9 @@ export async function patchDayTemplateAtVersion(
     ...(patch.order_index === undefined
       ? []
       : ordered.map((day, index) =>
-          db
+          workoutDB(db)
             .prepare(
-              `UPDATE day_templates SET order_index=?2, updated_at=?3
+              `UPDATE workouts SET order_index=?2, updated_at=?3
                 WHERE id=?1 AND plan_id=?4
                   AND EXISTS (
                     SELECT 1 FROM plans
@@ -3647,9 +3649,9 @@ export async function dedupePlanDayOrderIndexes(
   planId: string,
   preferId?: string,
 ): Promise<boolean> {
-  const rows = await db
+  const rows = await workoutDB(db)
     .prepare(
-      'SELECT id, order_index FROM day_templates WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
+      'SELECT id, order_index FROM workouts WHERE plan_id = ?1 ORDER BY order_index, created_at, id',
     )
     .bind(planId)
     .all<{ id: string; order_index: number }>();
@@ -3661,8 +3663,8 @@ export async function dedupePlanDayOrderIndexes(
   const ts = now();
   for (let index = 0; index < ordered.length; index++) {
     if (ordered[index]!.order_index !== index) {
-      await db
-        .prepare('UPDATE day_templates SET order_index = ?2, updated_at = ?3 WHERE id = ?1')
+      await workoutDB(db)
+        .prepare('UPDATE workouts SET order_index = ?2, updated_at = ?3 WHERE id = ?1')
         .bind(ordered[index]!.id, index, ts)
         .run();
     }
@@ -3679,18 +3681,18 @@ export async function dedupePlanDayOrderIndexes(
  */
 export async function nextExerciseOrderIndex(
   db: D1Database,
-  dayTemplateId: string,
+  workoutId: string,
 ): Promise<number> {
-  const row = await db
-    .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM template_exercises WHERE day_template_id = ?1')
-    .bind(dayTemplateId)
+  const row = await workoutDB(db)
+    .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM template_exercises WHERE workout_id = ?1')
+    .bind(workoutId)
     .first<{ m: number }>();
   return (row?.m ?? -1) + 1;
 }
 
 async function exerciseGroupDayRows(db: D1Database, dayId: string): Promise<TemplateExerciseRow[]> {
-  return (await db.prepare(
-    'SELECT * FROM template_exercises WHERE day_template_id=?1 ORDER BY order_index,created_at,id',
+  return (await workoutDB(db).prepare(
+    'SELECT * FROM template_exercises WHERE workout_id=?1 ORDER BY order_index,created_at,id',
   ).bind(dayId).all<TemplateExerciseRow>()).results;
 }
 
@@ -3710,14 +3712,14 @@ async function exerciseGroupDayRows(db: D1Database, dayId: string): Promise<Temp
  * dense pass.
  */
 export async function dedupeDayOrderIndexes(
-  db: D1Database, dayTemplateId: string, preferId?: string,
+  db: D1Database, workoutId: string, preferId?: string,
 ): Promise<boolean | GroupConflict> {
-  const plan = await db.prepare(
-    `SELECT p.* FROM plans p JOIN day_templates d ON d.plan_id=p.id
+  const plan = await workoutDB(db).prepare(
+    `SELECT p.* FROM plans p JOIN workouts d ON d.plan_id=p.id
      WHERE d.id=?1 AND p.status='active'`,
-  ).bind(dayTemplateId).first<PlanRow>();
+  ).bind(workoutId).first<PlanRow>();
   if (!plan) return false;
-  const list = await exerciseGroupDayRows(db, dayTemplateId);
+  const list = await exerciseGroupDayRows(db, workoutId);
   if (preferId && list.find((row) => row.id === preferId)?.group_id != null) {
     return { error: 'group_conflict', fields: ['order_index'] };
   }
@@ -3730,7 +3732,7 @@ export async function dedupeDayOrderIndexes(
   const ts = now(); const nonce = uuid();
   const attribution: PlanWriteAttribution = { actor: 'system', operation: 'normalize_exercise_order' };
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  for (const row of ordered) statements.push(db.prepare(
+  for (const row of ordered) statements.push(workoutDB(db).prepare(
     `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
      AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`,
   ).bind(row.id, row.order_index, ts, plan.id, plan.user_id, plan.version, nonce));
@@ -3740,14 +3742,14 @@ export async function dedupeDayOrderIndexes(
   return true;
 }
 
-/** Sibling of `nextExerciseOrderIndex` for `day_templates` — append a new
+/** Sibling of `nextExerciseOrderIndex` for `workouts` — append a new
  *  day densely instead of the old 99 sentinel that `add_day` used. */
-export async function nextDayOrderIndex(
+export async function nextWorkoutOrderIndex(
   db: D1Database,
   planId: string,
 ): Promise<number> {
-  const row = await db
-    .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM day_templates WHERE plan_id = ?1')
+  const row = await workoutDB(db)
+    .prepare('SELECT COALESCE(MAX(order_index), -1) AS m FROM workouts WHERE plan_id = ?1')
     .bind(planId)
     .first<{ m: number }>();
   return (row?.m ?? -1) + 1;
@@ -3761,10 +3763,10 @@ export async function addTemplateExercise(
   },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_exercise' },
 ): Promise<TemplateExerciseRow | PrescriptionValidationError | GroupConflict> {
-  const plan = await db.prepare("SELECT * FROM plans WHERE id=?1 AND status='active'")
+  const plan = await workoutDB(db).prepare("SELECT * FROM plans WHERE id=?1 AND status='active'")
     .bind(planId).first<PlanRow>();
   if (!plan) throw new Error('no_active_plan');
-  const exercise = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
+  const exercise = await workoutDB(db).prepare('SELECT modality FROM exercises WHERE id=?1')
     .bind(input.exercise_id).first<{ modality: string }>();
   const validationInput: Record<string, unknown> = {
     ...input,
@@ -3785,7 +3787,7 @@ export async function addTemplateExercise(
     created_at: ts,
     updated_at: ts,
   };
-  const siblings = await exerciseGroupDayRows(db, row.day_template_id);
+  const siblings = await exerciseGroupDayRows(db, row.workout_id);
   const collides = siblings.some((slot) => slot.order_index === row.order_index);
   const ordered = collides ? orderDayRows([...siblings, row], row.id) : [...siblings, row];
   const groupInvalid = validateExerciseGroups(ordered.map((slot, index) => collides ? { ...slot, order_index: index } : slot));
@@ -3793,19 +3795,19 @@ export async function addTemplateExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    db.prepare(
+    workoutDB(db).prepare(
       `INSERT INTO template_exercises
-       (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
+       (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
        SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
        WHERE EXISTS (SELECT 1 FROM plans WHERE id=?17 AND user_id=?18 AND version=-?19 AND plan_write_nonce=?20)`,
     )
     .bind(
-      row.id, row.day_template_id, row.exercise_id, row.order_index, row.target_sets,
+      row.id, row.workout_id, row.exercise_id, row.order_index, row.target_sets,
       row.target_reps, row.target_reps_max, row.target_rpe, row.rest_seconds,
       row.target_weight, row.target_duration_s, row.progression, row.cues, row.is_warmup ? 1 : 0,
       row.created_at, row.updated_at, plan.id, plan.user_id, plan.version, nonce,
     ),
-    ...(collides ? ordered.map((slot, index) => db.prepare(
+    ...(collides ? ordered.map((slot, index) => workoutDB(db).prepare(
       `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
        AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`,
     ).bind(slot.id, index, ts, plan.id, plan.user_id, plan.version, nonce)) : []),
@@ -3862,7 +3864,7 @@ export async function getExercises(
     'SELECT id, name, primary_muscle, modality, unit, laterality, load_mode, demo_slug FROM exercises' +
     (where.length ? ' WHERE ' + where.join(' AND ') : '') +
     ' ORDER BY name';
-  const stmt = db.prepare(sql);
+  const stmt = workoutDB(db).prepare(sql);
   const bound = binds.length === 0 ? stmt : stmt.bind(...binds);
   const r = await bound.all<{
     id: string;
@@ -3880,7 +3882,7 @@ export async function getExercises(
 /** Resolve an id, exact name, or alias to an exercise row. */
 export async function resolveExercise(db: D1Database, nameOrId: string) {
   const q = nameOrId.trim().toLowerCase();
-  return db
+  return workoutDB(db)
     .prepare(
       'SELECT * FROM exercises WHERE id = ?1 OR lower(name) = ?2 OR lower(aliases) LIKE ?3 LIMIT 1',
     )
@@ -3895,7 +3897,7 @@ export async function getOrCreateSession(
   userId: string,
   planId: string,
   date: string,
-  dayTemplateId: string | null,
+  workoutId: string | null,
   options: {
     reviveDiscarded?: boolean;
     expectedAttempt?: number;
@@ -3911,7 +3913,7 @@ export async function getOrCreateSession(
     throw new Error('session_expected_attempt_missing');
   }
   const selectExisting = () =>
-    db
+    workoutDB(db)
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
       )
@@ -3949,7 +3951,7 @@ export async function getOrCreateSession(
       const ts = now();
       const revived: SessionRow = {
         ...existing,
-        day_template_id: dayTemplateId,
+        workout_id: workoutId,
         status: 'planned',
         started_at: null,
         completed_at: null,
@@ -3964,9 +3966,9 @@ export async function getOrCreateSession(
       };
       const updated = await runWorkoutWriteStatement(
         db,
-        db.prepare(
+        workoutDB(db).prepare(
           `UPDATE sessions
-              SET day_template_id=?2,
+              SET workout_id=?2,
                   runner_targets=NULL,
                   status=?3,
                   started_at=?4,
@@ -3986,7 +3988,7 @@ export async function getOrCreateSession(
         )
         .bind(
           revived.id,
-          revived.day_template_id,
+          revived.workout_id,
           revived.status,
           null,
           null,
@@ -4004,14 +4006,14 @@ export async function getOrCreateSession(
       // A competing explicit restart or another resolver advanced the reused
       // row after our read. Adopt that winner without applying this stale
       // resolver's day pin or pristine-state reset to the newer generation.
-      const winner = await db
+      const winner = await workoutDB(db)
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(existing.id)
         .first<SessionRow>();
       return winner ?? existing;
     }
 
-    // #926: honor an EXPLICITLY-provided day_template_id on a row that
+    // #926: honor an EXPLICITLY-provided workout_id on a row that
     // doesn't have one yet. Most creators (GET /today, MCP log_set,
     // logWorkoutComplete) pass null and let the weekly schedule resolve the
     // template at display time — that's the "calendar is computed, not
@@ -4022,24 +4024,24 @@ export async function getOrCreateSession(
     // null-template row is the Today/session impedance mismatch the iOS UX
     // had to paper over. Backfill ONLY a NULL slot; never clobber an
     // existing pin.
-    const shouldPin = dayTemplateId != null && existing.day_template_id == null;
+    const shouldPin = workoutId != null && existing.workout_id == null;
     const shouldClaim =
       claimAttemptProtocol && existing.write_protocol !== 'attempt-v1';
     if (shouldPin || shouldClaim) {
       const ts = now();
       // The conditional SET guards a read-then-write race: two explicit POSTs
-      // for the same null-template date can both read day_template_id == null,
+      // for the same null-template date can both read workout_id == null,
       // but only the first execution sees NULL and installs its pin. Keep the
       // row eligible after another writer pins it so this request can still
       // perform its independent explicit protocol claim without clobbering the
       // winning day. (Codex P2 on #58.)
       const res = await runWorkoutWriteStatement(
         db,
-        db.prepare(
+        workoutDB(db).prepare(
           `UPDATE sessions
-              SET day_template_id = CASE
-                    WHEN ?5 = 1 AND day_template_id IS NULL THEN ?2
-                    ELSE day_template_id
+              SET workout_id = CASE
+                    WHEN ?5 = 1 AND workout_id IS NULL THEN ?2
+                    ELSE workout_id
                   END,
                   write_protocol = CASE
                     WHEN ?6 = 1 THEN 'attempt-v1'
@@ -4053,7 +4055,7 @@ export async function getOrCreateSession(
         )
         .bind(
           existing.id,
-          dayTemplateId,
+          workoutId,
           ts,
           existing.attempt,
           shouldPin ? 1 : 0,
@@ -4066,7 +4068,7 @@ export async function getOrCreateSession(
       // immediately after the guarded update; synthesizing from `existing`
       // would acknowledge stale planned/live state. A zero-change result is
       // likewise a normal CAS loss (pin, status, generation, or protocol).
-      const fresh = await db
+      const fresh = await workoutDB(db)
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(existing.id)
         .first<SessionRow>();
@@ -4090,7 +4092,7 @@ export async function getOrCreateSession(
     id: uuid(),
     user_id: userId,
     plan_id: planId,
-    day_template_id: dayTemplateId,
+    workout_id: workoutId,
     date,
     status: 'planned',
     started_at: null,
@@ -4104,9 +4106,9 @@ export async function getOrCreateSession(
   };
   const inserted = await runWorkoutWriteStatement(
     db,
-    db.prepare(
+    workoutDB(db).prepare(
       `INSERT INTO sessions
-       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
+       (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
        ON CONFLICT(user_id,date) DO NOTHING`,
     )
@@ -4114,7 +4116,7 @@ export async function getOrCreateSession(
       s.id,
       s.user_id,
       s.plan_id,
-      s.day_template_id,
+      s.workout_id,
       s.date,
       s.status,
       s.started_at,
@@ -4144,7 +4146,7 @@ export async function getOwnedSessionByDate(
   userId: string,
   date: string,
 ): Promise<SessionRow | null> {
-  return db
+  return workoutDB(db)
     .prepare(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
     )
@@ -4164,13 +4166,13 @@ export async function reviveDiscardedSession(
   userId: string,
   sessionId: string,
   expectedAttempt: number,
-  dayTemplateId: string | null,
+  workoutId: string | null,
   claimAttemptProtocol = false,
 ): Promise<SessionRow | SessionAttemptConflict | null> {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
   const readCurrent = () =>
-    db
+    workoutDB(db)
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
@@ -4192,7 +4194,7 @@ export async function reviveDiscardedSession(
     }
     await runWorkoutWriteStatement(
       db,
-      db.prepare(
+      workoutDB(db).prepare(
         `UPDATE sessions
             SET write_protocol = 'attempt-v1'
           WHERE id = ?1
@@ -4237,9 +4239,9 @@ export async function reviveDiscardedSession(
   const revivedAttempt = expectedAttempt + 1;
   const updated = await runWorkoutWriteStatement(
     db,
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE sessions
-          SET day_template_id = ?2,
+          SET workout_id = ?2,
               status = 'planned',
               runner_targets = NULL,
               started_at = NULL,
@@ -4259,7 +4261,7 @@ export async function reviveDiscardedSession(
     )
     .bind(
       canonicalSessionId,
-      dayTemplateId,
+      workoutId,
       ts,
       revivedAttempt,
       userId,
@@ -4290,7 +4292,7 @@ async function resolveOwnedSessionId(
   userId: string,
   requestedId: string,
 ): Promise<string | null> {
-  const resolved = await db
+  const resolved = await workoutDB(db)
     .prepare(
       `SELECT s.id
          FROM sessions AS s
@@ -4427,7 +4429,7 @@ export async function patchSession(
     status?: unknown;
     perceived_fatigue?: number;
     notes?: string;
-    day_template_id?: string | null;
+    workout_id?: string | null;
   },
   expectedAttempt?: number,
   claimAttemptProtocol = false,
@@ -4447,7 +4449,7 @@ export async function patchSession(
 > {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
-  const s = await db
+  const s = await workoutDB(db)
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
@@ -4543,7 +4545,7 @@ export async function patchSession(
   // once a set promoted the row, they cannot hide or demote the live workout.
   const updated = await runWorkoutWriteStatement(
     db,
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE sessions
           SET status = CASE WHEN ?8 = 1 THEN ?2 ELSE status END,
               perceived_fatigue = CASE
@@ -4564,7 +4566,7 @@ export async function patchSession(
               runner_targets = CASE
                 WHEN ?2 = 'planned' AND status = 'skipped' THEN NULL
                 WHEN ?2 = 'completed' AND runner_targets IS NULL AND started_at IS NULL
-                  THEN ${runnerTargetSnapshotSQL('sessions.day_template_id', '?7')}
+                  THEN ${runnerTargetSnapshotSQL('sessions.workout_id', '?7')}
                 ELSE runner_targets
               END,
               completed_at = CASE
@@ -4576,9 +4578,9 @@ export async function patchSession(
                 WHEN ?2 = 'planned' AND status = 'skipped' THEN attempt + 1
                 ELSE attempt
               END,
-              day_template_id = CASE
+              workout_id = CASE
                 WHEN ?12 = 1 THEN ?13
-                ELSE day_template_id
+                ELSE workout_id
               END,
               write_protocol = CASE
                 WHEN ?14 = 1 THEN 'attempt-v1'
@@ -4603,16 +4605,16 @@ export async function patchSession(
       Object.prototype.hasOwnProperty.call(patch, 'perceived_fatigue') ? 1 : 0,
       Object.prototype.hasOwnProperty.call(patch, 'notes') ? 1 : 0,
       normalizedStatus === 'planned' &&
-      Object.prototype.hasOwnProperty.call(patch, 'day_template_id')
+      Object.prototype.hasOwnProperty.call(patch, 'workout_id')
         ? 1
         : 0,
-      patch.day_template_id ?? null,
+      patch.workout_id ?? null,
       claimAttemptProtocol ? 1 : 0,
       attemptScoped ? 1 : 0,
     ),
   );
   if (updated.meta.changes === 0) {
-    const current = await db
+    const current = await workoutDB(db)
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
@@ -4642,7 +4644,7 @@ export async function patchSession(
     if (current) return sessionStateConflict(s.status, current);
     return null;
   }
-  return db
+  return workoutDB(db)
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
@@ -4684,7 +4686,7 @@ export async function discardSession(
 > {
   const canonicalSessionId = await resolveOwnedSessionId(db, userId, sessionId);
   if (!canonicalSessionId) return null;
-  const s = await db
+  const s = await workoutDB(db)
     .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
     .bind(canonicalSessionId, userId)
     .first<SessionRow>();
@@ -4711,7 +4713,7 @@ export async function discardSession(
     }
     await runWorkoutWriteStatement(
       db,
-      db.prepare(
+      workoutDB(db).prepare(
         `UPDATE sessions
             SET write_protocol = 'attempt-v1'
           WHERE id = ?1
@@ -4722,7 +4724,7 @@ export async function discardSession(
       )
       .bind(canonicalSessionId, userId, casAttempt),
     );
-    const authoritative = await db
+    const authoritative = await workoutDB(db)
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
       .first<SessionRow>();
@@ -4749,7 +4751,7 @@ export async function discardSession(
   // its new set is included in this tombstone; if discard wins first, its
   // status-guarded insert observes `discarded` and is rejected.
   const [transition, tombstones, terminalState] = await runWorkoutWriteBatch(db, [
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE sessions
             SET status = 'discarded',
@@ -4770,7 +4772,7 @@ export async function discardSession(
         claimAttemptProtocol ? 1 : 0,
         attemptScoped ? 1 : 0,
       ),
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE set_logs
             SET deleted_at = ?2,
@@ -4784,7 +4786,7 @@ export async function discardSession(
           RETURNING id`,
       )
       .bind(canonicalSessionId, ts, casAttempt),
-    db
+    workoutDB(db)
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId),
   ]);
@@ -4876,7 +4878,7 @@ export async function logSet(
   // return a globally-matched row from another session/tenant, even if a
   // caller happens to know its UUID.
   const selectExisting = () =>
-    db
+    workoutDB(db)
       .prepare(
         `SELECT sl.*
            FROM set_logs AS sl
@@ -4885,12 +4887,12 @@ export async function logSet(
       )
       .bind(input.id, canonicalSessionId, userId);
   const selectSession = () =>
-    db
+    workoutDB(db)
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId);
   // Read the UUID winner and its authoritative session from one D1 snapshot.
   // A retry must never pair an old planned read with a set that won later.
-  const [initialSetState, initialSessionState] = await db.batch([
+  const [initialSetState, initialSessionState] = await workoutDB(db).batch([
     selectExisting(),
     selectSession(),
   ]);
@@ -4961,7 +4963,7 @@ export async function logSet(
   let templateExerciseId: string | null = input.template_exercise_id ?? null;
   let slotIsWarmup: number | null = null;
   if (templateExerciseId) {
-    const slot = await db
+    const slot = await workoutDB(db)
       .prepare('SELECT is_warmup, exercise_id FROM template_exercises WHERE id = ?1')
       .bind(templateExerciseId)
       .first<{ is_warmup: number; exercise_id: string }>();
@@ -4986,7 +4988,7 @@ export async function logSet(
   // row already holds it, in which case bump to max+1. The partial unique
   // index ux_set_slot (migration 0013) is the hard backstop for races.
   let setIndex = input.set_index;
-  const clash = await db
+  const clash = await workoutDB(db)
     .prepare(
       `SELECT 1 FROM set_logs
        WHERE session_id = ?1 AND exercise_id = ?2 AND set_index = ?3
@@ -4995,7 +4997,7 @@ export async function logSet(
     .bind(canonicalSessionId, input.exercise_id, setIndex, isWarmupInt)
     .first();
   if (clash) {
-    const max = await db
+    const max = await workoutDB(db)
       .prepare(
         `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
          WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
@@ -5015,7 +5017,7 @@ export async function logSet(
   if (typeof input.is_timed === 'boolean') {
     isTimedInt = input.is_timed ? 1 : 0;
   } else {
-    const exRow = await db
+    const exRow = await workoutDB(db)
       .prepare('SELECT modality FROM exercises WHERE id = ?1')
       .bind(input.exercise_id)
       .first<{ modality: string | null }>();
@@ -5053,7 +5055,7 @@ export async function logSet(
   const insertAndStart = () => {
     const ts = now();
     return runWorkoutWriteBatch(db, [
-      db
+      workoutDB(db)
         .prepare(
           `INSERT INTO set_logs
            (id,session_id,exercise_id,template_exercise_id,set_index,weight,reps,rpe,is_warmup,notes,logged_at,source,duration_s,is_timed,deleted_at,user_id,updated_at)
@@ -5077,13 +5079,13 @@ export async function logSet(
       // first avoids mutating the session for a globally-colliding UUID, while
       // the enclosing D1 batch remains one atomic linearization point: no
       // legacy writer can slip between insertion and the protocol fence.
-      db
+      workoutDB(db)
         .prepare(
           `UPDATE sessions
               SET status = CASE WHEN status = 'planned' THEN 'in_progress' ELSE status END,
                   runner_targets = CASE
                     WHEN runner_targets IS NULL AND started_at IS NULL AND status = 'planned'
-                      THEN CASE WHEN ?8=1 THEN ?9 ELSE ${runnerTargetSnapshotSQL("COALESCE((SELECT day_template_id FROM template_exercises WHERE id=?7), sessions.day_template_id)", '?2')} END
+                      THEN CASE WHEN ?8=1 THEN ?9 ELSE ${runnerTargetSnapshotSQL("COALESCE((SELECT workout_id FROM template_exercises WHERE id=?7), sessions.workout_id)", '?2')} END
                     ELSE runner_targets END,
                   started_at = COALESCE(started_at, ?2),
                   updated_at = ?2,
@@ -5115,10 +5117,10 @@ export async function logSet(
       // Capture both the target generation and the canonical current row at
       // the same linearization point. The latter gives a stable conflict body
       // when discard/restart moved the generation during this request.
-      db
+      workoutDB(db)
         .prepare('SELECT * FROM sessions WHERE id = ?1 AND attempt = ?2')
         .bind(canonicalSessionId, casAttempt),
-      db
+      workoutDB(db)
         .prepare('SELECT * FROM sessions WHERE id = ?1')
         .bind(canonicalSessionId),
       selectExisting(),
@@ -5198,7 +5200,7 @@ export async function logSet(
       const msg = String((e as Error)?.message ?? '');
       const slotConflict = /unique constraint failed/i.test(msg) && /set_index/i.test(msg);
       if (!slotConflict || attempt >= 5) throw e;
-      const max = await db
+      const max = await workoutDB(db)
         .prepare(
           `SELECT COALESCE(MAX(set_index), 0) AS m FROM set_logs
            WHERE session_id = ?1 AND exercise_id = ?2 AND is_warmup = ?3
@@ -5232,7 +5234,7 @@ export async function findRecentMatchingSet(
   },
 ): Promise<SetLogRow | null> {
   const since = now() - (args.within_ms ?? 120_000);
-  const row = await db
+  const row = await workoutDB(db)
     .prepare(
       `SELECT sl.* FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
@@ -5280,7 +5282,7 @@ export async function patchSet(
   if (patch.deleted === false) {
     throw new Error('set_undelete_unsupported');
   }
-  const row = await db
+  const row = await workoutDB(db)
     .prepare(
       `SELECT sl.*, s.attempt AS session_attempt
          FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
@@ -5338,7 +5340,7 @@ export async function patchSet(
         AND EXISTS (SELECT 1 FROM sessions WHERE id=set_logs.session_id AND attempt=?${values.length})
         AND deleted_at IS NULL`;
     }
-    statements.push(db.prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1${condition}`)
+    statements.push(workoutDB(db).prepare(`UPDATE set_logs SET ${assignments.join(', ')} WHERE id=?1${condition}`)
       .bind(...values));
   }
   // Phantom-session guard. Logging a set promotes a session 'planned' ->
@@ -5359,7 +5361,7 @@ export async function patchSet(
     // false; if this demotion wins first, logSet's ordered batch promotes the
     // same attempt back to in_progress. A discard/restart advances `attempt`,
     // so a stale deletion can never demote the newer workout.
-    statements.push(db.prepare(
+    statements.push(workoutDB(db).prepare(
         `UPDATE sessions
             SET status = 'planned', started_at = NULL, updated_at = MAX(updated_at + 1, ?2)
           WHERE id = ?1
@@ -5375,7 +5377,7 @@ export async function patchSet(
   // Keep deletion and last-set demotion atomic; a lost reply can safely
   // replay the desired state without reopening or retargeting a workout.
   if (statements.length) await runWorkoutWriteBatch(db, statements);
-  const fresh = await db.prepare(
+  const fresh = await workoutDB(db).prepare(
     `SELECT sl.*, s.attempt AS session_attempt FROM set_logs sl
        JOIN sessions s ON s.id=sl.session_id WHERE sl.id=?1 AND s.user_id=?2`)
     .bind(setId, userId).first<SetLogRow & { session_attempt: number }>();
@@ -5385,7 +5387,7 @@ export async function patchSet(
   if (!fresh) return null;
   const { session_attempt, ...set } = fresh;
   if (!expected) return set;
-  const session = await db.prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
+  const session = await workoutDB(db).prepare('SELECT * FROM sessions WHERE id=?1 AND user_id=?2')
     .bind(set.session_id, userId).first<SessionRow>();
   if (!session || session.attempt !== expected.attempt) throw new Error('set_correction_conflict');
   return { ...set, session };
@@ -5428,7 +5430,7 @@ export async function getState(
           stress_model: baseMeta.stress_model ?? null,
         }
       : null;
-  const sessions = await db
+  const sessions = await workoutDB(db)
     .prepare('SELECT * FROM sessions WHERE user_id = ?1 AND updated_at > ?2 ORDER BY date')
     .bind(userId, setsSince)
     .all<SessionRow>();
@@ -5436,7 +5438,7 @@ export async function getState(
   // the server-owned mutable cursor directly from the member-first index and
   // include soft-deleted rows as tombstones.
   const sets = setsSince > 0
-    ? await db
+    ? await workoutDB(db)
         .prepare(
           `SELECT * FROM set_logs
             WHERE user_id = ?1 AND updated_at > ?2
@@ -5444,7 +5446,7 @@ export async function getState(
         )
         .bind(userId, setsSince)
         .all<SetLogRow>()
-    : await db
+    : await workoutDB(db)
         .prepare(
           `SELECT sl.* FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
             WHERE s.user_id = ?1 ORDER BY sl.logged_at`,
@@ -5465,13 +5467,13 @@ export async function getState(
   //    delta+tombstone pattern.
   const events =
     eventsSince > 0
-      ? await db
+      ? await workoutDB(db)
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, eventsSince)
           .all<ExternalEventRow>()
-      : await db
+      : await workoutDB(db)
           .prepare(
             'SELECT * FROM external_events WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY synced_at',
           )
@@ -5486,13 +5488,13 @@ export async function getState(
   //    INCLUDING soft-deleted ones, so a syncing client learns about removals.
   const activities =
     activitiesSince > 0
-      ? await db
+      ? await workoutDB(db)
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND synced_at > ?2 ORDER BY synced_at',
           )
           .bind(userId, activitiesSince)
           .all<ExternalActivityRow>()
-      : await db
+      : await workoutDB(db)
           .prepare(
             'SELECT * FROM external_activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY date',
           )
@@ -5510,7 +5512,7 @@ export async function getState(
     logSince > 0
       ? await listActivitiesForUser(db, userId, logSince)
       : (
-          await db
+          await workoutDB(db)
             .prepare(
               'SELECT * FROM activities WHERE user_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
             )
@@ -5538,7 +5540,7 @@ export async function getInProgressSession(
   db: D1Database,
   userId: string,
 ): Promise<SessionRow | null> {
-  return db
+  return workoutDB(db)
     .prepare(
       "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'in_progress' ORDER BY updated_at DESC LIMIT 1",
     )
@@ -5547,7 +5549,7 @@ export async function getInProgressSession(
 }
 
 export async function getSetsForSession(db: D1Database, sessionId: string) {
-  const r = await db
+  const r = await workoutDB(db)
     .prepare(
       'SELECT * FROM set_logs WHERE session_id = ?1 AND deleted_at IS NULL ORDER BY logged_at',
     )
@@ -5566,7 +5568,7 @@ export async function getRecentSessions(
   // context. (Visual calendar surfaces vanish it via the projection;
   // set-based reads via deleted_at. This is the one session-list read
   // that needs an explicit filter.)
-  const r = await db
+  const r = await workoutDB(db)
     .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND status != 'discarded' ORDER BY date DESC LIMIT ?2")
     .bind(userId, n)
     .all<SessionRow>();
@@ -5585,7 +5587,7 @@ export async function getLastCompletedSession(
   userId: string,
   excludeDate?: string,
 ): Promise<SessionRow | null> {
-  return db
+  return workoutDB(db)
     .prepare(
       "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'completed' AND date != ?2 ORDER BY date DESC LIMIT 1",
     )
@@ -5604,7 +5606,7 @@ export async function getSessionByDate(
   // applies. Revival/discard never route through here (getOrCreateSession
   // has its own query; discardSession takes a session id), so filtering is
   // safe.
-  return db
+  return workoutDB(db)
     .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 AND status != 'discarded' ORDER BY created_at LIMIT 1")
     .bind(userId, date)
     .first<SessionRow>();
@@ -5614,13 +5616,13 @@ export async function getWorkoutSummary(
   db: D1Database, userId: string, sessionId: string,
 ): Promise<WorkoutSummary | null> {
   const owned = `SELECT id FROM sessions WHERE id=?1 AND user_id=?2 AND status!='discarded'`;
-  const [sessionResult, setResult, exerciseResult, previousResult] = await db.batch([
-    db.prepare(`SELECT * FROM sessions WHERE id IN (${owned})`).bind(sessionId, userId),
-    db.prepare(`SELECT * FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL`).bind(sessionId, userId),
-    db.prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
+  const [sessionResult, setResult, exerciseResult, previousResult] = await workoutDB(db).batch([
+    workoutDB(db).prepare(`SELECT * FROM sessions WHERE id IN (${owned})`).bind(sessionId, userId),
+    workoutDB(db).prepare(`SELECT * FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL`).bind(sessionId, userId),
+    workoutDB(db).prepare(`SELECT e.* FROM exercises e WHERE e.id IN (
       SELECT exercise_id FROM set_logs WHERE session_id IN (${owned}) AND deleted_at IS NULL)`)
       .bind(sessionId, userId),
-    db.prepare(`SELECT sl.exercise_id,sl.weight,sl.is_timed,MAX(sl.reps) AS reps,
+    workoutDB(db).prepare(`SELECT sl.exercise_id,sl.weight,sl.is_timed,MAX(sl.reps) AS reps,
         MAX(COALESCE(sl.duration_s,sl.reps)) AS duration_s
       FROM set_logs sl JOIN sessions s ON s.id=sl.session_id
       WHERE s.user_id=?2 AND s.status='completed' AND sl.deleted_at IS NULL AND sl.is_warmup=0
@@ -5645,7 +5647,7 @@ export async function writeNote(
   author: 'claude' | 'nick',
   body: string,
 ): Promise<void> {
-  await db
+  await workoutDB(db)
     .prepare(
       'INSERT INTO notes (id,user_id,scope,ref_id,author,body,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
     )
@@ -5661,7 +5663,7 @@ export async function writeAudit(
   result: string,
   actor: string = 'mcp',
 ): Promise<void> {
-  await db
+  await workoutDB(db)
     .prepare(
       'INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at) VALUES (?1,?2,?3,?4,?5,?6,?7)',
     )
@@ -5703,7 +5705,7 @@ export async function logActivity(
 ): Promise<ActivityRow> {
   const updatedAt = now();
   const loggedAt = input.logged_at ?? updatedAt;
-  await db
+  await workoutDB(db)
     .prepare(
       `INSERT INTO activities
          (id,user_id,date,type,title,duration_minutes,notes,logged_at,source,deleted_at,updated_at)
@@ -5725,7 +5727,7 @@ export async function logActivity(
     .run();
   // Re-select so retries return the *original* persisted row (preserving the
   // original logged_at/title/etc.), not the fresh-looking input.
-  const row = await db
+  const row = await workoutDB(db)
     .prepare('SELECT * FROM activities WHERE id = ?1 AND user_id = ?2')
     .bind(input.id, userId)
     .first<ActivityRow>();
@@ -5752,7 +5754,7 @@ export async function softDeleteActivity(
   activityId: string,
 ): Promise<boolean> {
   const ts = now();
-  const r = await db
+  const r = await workoutDB(db)
     .prepare(
       `UPDATE activities
           SET deleted_at = ?3,
@@ -5777,7 +5779,7 @@ export async function listActivitiesForUser(
   userId: string,
   sinceMs: number,
 ): Promise<ActivityRow[]> {
-  const rows = await db
+  const rows = await workoutDB(db)
     .prepare(
       `SELECT * FROM activities
        WHERE user_id = ?1 AND updated_at > ?2
@@ -5874,7 +5876,7 @@ export async function updatePlanTree(
     name?: string;
     meta?: unknown;
     expected_version?: number | null;
-    days: {
+    workouts: {
       day_label?: string | null;
       name: string;
       order_index?: number;
@@ -5891,8 +5893,8 @@ export async function updatePlanTree(
   | { error: 'unknown_exercise'; queries: string[]; query: string }
   | PrescriptionValidationError | GroupConflict
 > {
-  if (!input || !Array.isArray(input.days)) {
-    return { error: 'invalid_fields', fields: ['days'] };
+  if (!input || !Array.isArray(input.workouts)) {
+    return { error: 'invalid_fields', fields: ['workouts'] };
   }
   if (input.name !== undefined && typeof input.name !== 'string') {
     return { error: 'invalid_fields', fields: ['name'] };
@@ -5905,17 +5907,17 @@ export async function updatePlanTree(
     return { error: 'invalid_fields', fields: ['expected_version'] };
   }
   const malformedDays: string[] = [];
-  input.days.forEach((day, dayIndex) => {
+  input.workouts.forEach((day, dayIndex) => {
     if (!isPlainRecord(day) || !Array.isArray(day.exercises ?? [])) {
-      malformedDays.push(`days.${dayIndex}`);
+      malformedDays.push(`workouts.${dayIndex}`);
       return;
     }
     (day.exercises ?? []).forEach((exercise, exerciseIndex) => {
-      if (!isPlainRecord(exercise)) malformedDays.push(`days.${dayIndex}.exercises.${exerciseIndex}`);
+      if (!isPlainRecord(exercise)) malformedDays.push(`workouts.${dayIndex}.exercises.${exerciseIndex}`);
     });
   });
   if (malformedDays.length > 0) return { error: 'invalid_fields', fields: malformedDays.sort() };
-  const explicitlyGroups = input.days.some((day) => (day.exercises ?? []).some((slot) =>
+  const explicitlyGroups = input.workouts.some((day) => (day.exercises ?? []).some((slot) =>
     slot.group_id !== undefined || slot.group_rest_seconds !== undefined || slot.group_transition_seconds !== undefined));
   if (explicitlyGroups && input.expected_version == null) return { error: 'invalid_fields', fields: ['expected_version'] };
   let plan = await getActivePlan(db, userId);
@@ -5939,7 +5941,7 @@ export async function updatePlanTree(
   const resolvedModality = new Map<string, string>();
   const unknown: string[] = [];
   const seenUnknown = new Set<string>();
-  for (const d of input.days) {
+  for (const d of input.workouts) {
     for (const e of d.exercises ?? []) {
       if (typeof e.exercise !== 'string' || e.exercise.trim() === '') {
         if (!seenUnknown.has('<missing>')) {
@@ -5963,16 +5965,16 @@ export async function updatePlanTree(
     return { error: 'unknown_exercise', queries: unknown, query: unknown[0]! };
   }
   const invalidFields = new Set<string>();
-  input.days.forEach((day, dayIndex) => {
-    if (typeof day.name !== 'string' || day.name.trim() === '') invalidFields.add(`days.${dayIndex}.name`);
-    if (day.order_index !== undefined && (!Number.isInteger(day.order_index) || day.order_index < 0)) invalidFields.add(`days.${dayIndex}.order_index`);
-    if (day.day_label !== undefined && day.day_label !== null && typeof day.day_label !== 'string') invalidFields.add(`days.${dayIndex}.day_label`);
-    if (day.notes !== undefined && day.notes !== null && typeof day.notes !== 'string') invalidFields.add(`days.${dayIndex}.notes`);
+  input.workouts.forEach((day, dayIndex) => {
+    if (typeof day.name !== 'string' || day.name.trim() === '') invalidFields.add(`workouts.${dayIndex}.name`);
+    if (day.order_index !== undefined && (!Number.isInteger(day.order_index) || day.order_index < 0)) invalidFields.add(`workouts.${dayIndex}.order_index`);
+    if (day.day_label !== undefined && day.day_label !== null && typeof day.day_label !== 'string') invalidFields.add(`workouts.${dayIndex}.day_label`);
+    if (day.notes !== undefined && day.notes !== null && typeof day.notes !== 'string') invalidFields.add(`workouts.${dayIndex}.notes`);
     (day.exercises ?? []).forEach((exercise, exerciseIndex) => {
       const invalid = validateExercisePrescription(exercise as unknown as Record<string, unknown>, {
         modality: resolvedModality.get(exercise.exercise),
       });
-      for (const field of invalid?.fields ?? []) invalidFields.add(`days.${dayIndex}.exercises.${exerciseIndex}.${field}`);
+      for (const field of invalid?.fields ?? []) invalidFields.add(`workouts.${dayIndex}.exercises.${exerciseIndex}.${field}`);
     });
   });
   if (invalidFields.size > 0) return { error: 'invalid_fields', fields: [...invalidFields].sort() };
@@ -5980,7 +5982,7 @@ export async function updatePlanTree(
     // Build the candidate only after the complete proposed tree has passed
     // resolution and runtime validation. Its INSERT joins the tree rebuild's
     // transaction below, so a downstream failure cannot leave an empty plan.
-    const prior = await db.prepare(
+    const prior = await workoutDB(db).prepare(
       'SELECT COALESCE(MAX(version),0) AS version FROM plans WHERE user_id=?1',
     ).bind(userId).first<{ version: number }>();
     const ts = now();
@@ -5996,8 +5998,8 @@ export async function updatePlanTree(
   // name/label matches. Without this, every update_plan (e.g. "add a
   // deadlift day") would silently wipe the entire weekly schedule because
   // rebuilt days get fresh UUIDs.
-  const oldDays = await db
-    .prepare('SELECT id, name, day_label FROM day_templates WHERE plan_id = ?1')
+  const oldDays = await workoutDB(db)
+    .prepare('SELECT id, name, day_label FROM workouts WHERE plan_id = ?1')
     .bind(plan.id)
     .all<{ id: string; name: string; day_label: string | null }>();
   const oldById = new Map<string, { name: string; day_label: string | null }>();
@@ -6007,12 +6009,12 @@ export async function updatePlanTree(
 
   const ts = now();
   // Generate new day ids up-front so the schedule remap can reference them.
-  const newDayIds = input.days.map(() => uuid());
+  const newDayIds = input.workouts.map(() => uuid());
   // Match old→new day identity by day_label first (the stable handle), then
   // by name. First writer wins on a duplicate (schedule holds one id/slot).
   const newIdByLabel = new Map<string, string>();
   const newIdByName = new Map<string, string>();
-  input.days.forEach((d, i) => {
+  input.workouts.forEach((d, i) => {
     const id = newDayIds[i]!;
     if (d.day_label != null) {
       const lk = d.day_label.toLowerCase();
@@ -6022,7 +6024,7 @@ export async function updatePlanTree(
     if (!newIdByName.has(nk)) newIdByName.set(nk, id);
   });
 
-  // FK-safe rebuild: sessions.day_template_id and set_logs.template_exercise_id
+  // FK-safe rebuild: sessions.workout_id and set_logs.template_exercise_id
   // reference rows we're about to DELETE. With no ON DELETE clause on those
   // FKs (schema 0001), a strict-FK delete fails the moment any real session
   // or logged set points at a day_template/template_exercise that's being
@@ -6041,13 +6043,13 @@ export async function updatePlanTree(
     const newId = (lk != null ? newIdByLabel.get(lk) : undefined) ?? newIdByName.get(nk) ?? null;
     oldToNewDay.set(od.id, newId);
   }
-  const oldTeRows = await db
+  const oldTeRows = await workoutDB(db)
     .prepare(
       `SELECT te.*
          FROM template_exercises te
-         JOIN day_templates d ON d.id = te.day_template_id
+         JOIN workouts d ON d.id = te.workout_id
         WHERE d.plan_id = ?1
-        ORDER BY te.day_template_id, te.order_index, te.created_at, te.id`,
+        ORDER BY te.workout_id, te.order_index, te.created_at, te.id`,
     )
     .bind(plan.id)
     .all<TemplateExerciseRow>();
@@ -6068,7 +6070,7 @@ export async function updatePlanTree(
   {
     const occ = new Map<string, number>();
     for (const ot of oldTeRows.results) {
-      const newDayId = oldToNewDay.get(ot.day_template_id) ?? null;
+      const newDayId = oldToNewDay.get(ot.workout_id) ?? null;
       if (newDayId == null) continue;
       const exKey = `${newDayId}:${ot.exercise_id}`;
       const o = occ.get(exKey) ?? 0;
@@ -6088,17 +6090,17 @@ export async function updatePlanTree(
   // only handled end removals. (A slot whose warm-up flag is genuinely flipped
   // by the rebuild changes class, so its old sets detach rather than mis-count —
   // the safe direction, consistent with the dangling/swap guards.)
-  const teIdPerExerciseOccurrence: string[][] = input.days.map((d) =>
+  const teIdPerExerciseOccurrence: string[][] = input.workouts.map((d) =>
     (d.exercises ?? []).map(() => uuid()),
   );
-  const isWarmupPerOccurrence: number[][] = input.days.map((d) =>
+  const isWarmupPerOccurrence: number[][] = input.workouts.map((d) =>
     (d.exercises ?? []).map(() => 0),
   );
   const newTeIdByClassOcc = new Map<string, string>();
   {
     const posOcc = new Map<string, number>(); // positional (exId) — inheritance lookup
     const classOcc = new Map<string, number>(); // (exId, is_warmup) — remap pairing
-    input.days.forEach((d, di) => {
+    input.workouts.forEach((d, di) => {
       const dayId = newDayIds[di]!;
       (d.exercises ?? []).forEach((e, ei) => {
         const exId = resolved.get(e.exercise)!;
@@ -6127,7 +6129,7 @@ export async function updatePlanTree(
   {
     const classOcc = new Map<string, number>();
     for (const ot of oldTeRows.results) {
-      const newDayId = oldToNewDay.get(ot.day_template_id) ?? null;
+      const newDayId = oldToNewDay.get(ot.workout_id) ?? null;
       if (newDayId == null) {
         oldToNewTe.set(ot.id, null);
         continue;
@@ -6146,7 +6148,7 @@ export async function updatePlanTree(
     const newId = oldToNewTe.get(old.id);
     if (newId) oldByNewSlot.set(newId, old);
   }
-  const groupCandidates = input.days.map((day, di) => ({
+  const groupCandidates = input.workouts.map((day, di) => ({
     exercises: (day.exercises ?? []).map((exercise, ei) => {
       const id = teIdPerExerciseOccurrence[di]![ei]!;
       const old = oldByNewSlot.get(id);
@@ -6184,7 +6186,7 @@ export async function updatePlanTree(
   // referenced a row being deleted.
   const nonce = uuid();
   const stmts: D1PreparedStatement[] = createsPlan
-    ? [db.prepare(
+    ? [workoutDB(db).prepare(
         `INSERT INTO plans
            (id,user_id,name,status,version,meta,created_at,updated_at,plan_write_nonce)
          SELECT ?1,?2,?3,'active',?4,NULL,?5,?5,?6
@@ -6195,13 +6197,13 @@ export async function updatePlanTree(
          RETURNING id`,
       ).bind(plan.id, userId, plan.name, -plan.version, ts, nonce)]
     : [...preparePlanWriteStart(db, plan, attribution, ts, nonce)];
-  // 1) INSERT new day_templates (parents) — coexist with old by id.
-  input.days.forEach((d, di) => {
+  // 1) INSERT new workouts (parents) — coexist with old by id.
+  input.workouts.forEach((d, di) => {
     const dayId = newDayIds[di]!;
     stmts.push(
-      db
+      workoutDB(db)
         .prepare(
-          `INSERT INTO day_templates
+          `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
            SELECT ?1,?2,?3,?4,?5,?6,?7,?8
             WHERE EXISTS (
@@ -6228,17 +6230,17 @@ export async function updatePlanTree(
   // was resolved above (explicit wins; else inherit the matched old slot's flag)
   // into isWarmupPerOccurrence so the inserted flag and the remap's class keys
   // are guaranteed identical.
-  input.days.forEach((d, di) => {
+  input.workouts.forEach((d, di) => {
     const dayId = newDayIds[di]!;
     (d.exercises ?? []).forEach((e, ei) => {
       const exId = resolved.get(e.exercise)!;
       const isWarmup = isWarmupPerOccurrence[di]![ei]!;
       const group = groupCandidates[di]!.exercises[ei]!;
       stmts.push(
-        db
+        workoutDB(db)
           .prepare(
             `INSERT INTO template_exercises
-             (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
+             (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
              SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?20,?21,?22
               WHERE EXISTS (
                 SELECT 1 FROM plans
@@ -6256,14 +6258,14 @@ export async function updatePlanTree(
       );
     });
   });
-  // 3) Remap session.day_template_id: old → new (surviving) or NULL.
+  // 3) Remap session.workout_id: old → new (surviving) or NULL.
   for (const [oldDayId, newDayId] of oldToNewDay.entries()) {
     if (newDayId != null) {
       stmts.push(
-        db
+        workoutDB(db)
           .prepare(
-            `UPDATE sessions SET day_template_id = ?2, updated_at = ?6
-              WHERE day_template_id = ?1
+            `UPDATE sessions SET workout_id = ?2, updated_at = ?6
+              WHERE workout_id = ?1
                 AND EXISTS (
                   SELECT 1 FROM plans
                    WHERE id = ?3 AND user_id = ?4 AND status = 'active' AND version = ?5
@@ -6273,10 +6275,10 @@ export async function updatePlanTree(
       );
     } else {
       stmts.push(
-        db
+        workoutDB(db)
           .prepare(
-            `UPDATE sessions SET day_template_id = NULL, updated_at = ?5
-              WHERE day_template_id = ?1
+            `UPDATE sessions SET workout_id = NULL, updated_at = ?5
+              WHERE workout_id = ?1
                 AND EXISTS (
                   SELECT 1 FROM plans
                    WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
@@ -6290,7 +6292,7 @@ export async function updatePlanTree(
   for (const [oldTeId, newTeId] of oldToNewTe.entries()) {
     if (newTeId != null) {
       stmts.push(
-        db
+        workoutDB(db)
           .prepare(
             `UPDATE set_logs
                 SET template_exercise_id = ?2,
@@ -6305,7 +6307,7 @@ export async function updatePlanTree(
       );
     } else {
       stmts.push(
-        db
+        workoutDB(db)
           .prepare(
             `UPDATE set_logs
                 SET template_exercise_id = NULL,
@@ -6324,7 +6326,7 @@ export async function updatePlanTree(
   //    freshly-inserted new rows that now share plan_id). Children first.
   for (const ot of oldTeRows.results) {
     stmts.push(
-      db
+      workoutDB(db)
         .prepare(
           `DELETE FROM template_exercises
             WHERE id = ?1
@@ -6336,12 +6338,12 @@ export async function updatePlanTree(
         .bind(ot.id, plan.id, userId, -plan.version),
     );
   }
-  // 6) DELETE old day_templates by EXPLICIT id. Parents last.
+  // 6) DELETE old workouts by EXPLICIT id. Parents last.
   for (const od of oldDays.results) {
     stmts.push(
-      db
+      workoutDB(db)
         .prepare(
-          `DELETE FROM day_templates
+          `DELETE FROM workouts
             WHERE id = ?1
               AND EXISTS (
                 SELECT 1 FROM plans
@@ -6403,7 +6405,7 @@ export async function updatePlanTree(
     week: remappedWeek,
   };
   stmts.push(
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE plans
             SET name = ?2, meta = ?3, updated_at = ?4
@@ -6455,7 +6457,7 @@ export async function updatePlanTree(
 }
 
 /** Find a template_exercise slot by id, or by (day + exercise name/id).
- *  When `day_template_id` is supplied alongside `template_exercise_id`, the
+ *  When `workout_id` is supplied alongside `template_exercise_id`, the
  *  slot must live in THAT day: the nested REST route /days/:id/exercises/:teId
  *  claims a day in its path, so a /days/<dayA>/exercises/<slot-from-dayB>
  *  request must resolve to null (→ 404) rather than mutating day B's slot by
@@ -6464,26 +6466,26 @@ export async function updatePlanTree(
 async function findSlot(
   db: D1Database,
   userId: string,
-  ref: { template_exercise_id?: string; day_template_id?: string; day?: string; exercise?: string },
+  ref: { template_exercise_id?: string; workout_id?: string; day?: string; exercise?: string },
 ): Promise<TemplateExerciseRow | null> {
   if (ref.template_exercise_id) {
-    return db
+    return workoutDB(db)
       .prepare(
         `SELECT te.* FROM template_exercises te
-         JOIN day_templates d ON d.id = te.day_template_id
+         JOIN workouts d ON d.id = te.workout_id
          JOIN plans p ON p.id = d.plan_id
          WHERE te.id = ?1 AND p.user_id = ?2
-           AND (?3 IS NULL OR te.day_template_id = ?3)`,
+           AND (?3 IS NULL OR te.workout_id = ?3)`,
       )
-      .bind(ref.template_exercise_id, userId, ref.day_template_id ?? null)
+      .bind(ref.template_exercise_id, userId, ref.workout_id ?? null)
       .first<TemplateExerciseRow>();
   }
   if (!ref.day || !ref.exercise) return null;
   const exId = await resolveOrThrow(db, ref.exercise);
-  return db
+  return workoutDB(db)
     .prepare(
       `SELECT te.* FROM template_exercises te
-       JOIN day_templates d ON d.id = te.day_template_id
+       JOIN workouts d ON d.id = te.workout_id
        JOIN plans p ON p.id = d.plan_id
        WHERE p.user_id = ?1 AND te.exercise_id = ?2 AND p.status = 'active'
          AND (d.day_label = ?3 OR d.name = ?3)`,
@@ -6513,7 +6515,7 @@ const TEMPLATE_EXERCISE_PATCH_KEYS = new Set<string>([
 export async function updateExercise(
   db: D1Database,
   userId: string,
-  ref: { template_exercise_id?: string; day_template_id?: string; day?: string; exercise?: string },
+  ref: { template_exercise_id?: string; workout_id?: string; day?: string; exercise?: string },
   patch: Partial<
     Pick<
       TemplateExerciseRow,
@@ -6545,7 +6547,7 @@ export async function updateExercise(
     const owned = ['order_index', 'target_sets'].filter((key) => Object.prototype.hasOwnProperty.call(patch, key));
     if (owned.length) return { error: 'group_conflict', fields: owned };
   }
-  const modality = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
+  const modality = await workoutDB(db).prepare('SELECT modality FROM exercises WHERE id=?1')
     .bind(slot.exercise_id).first<{ modality: string }>();
   const merged = {
     target_sets: patch.target_sets === undefined ? slot.target_sets : patch.target_sets,
@@ -6564,7 +6566,7 @@ export async function updateExercise(
   };
   const invalid = validateExercisePrescription(merged as Record<string, unknown>, { modality: modality?.modality });
   if (invalid) return invalid;
-  const groupSiblings = await exerciseGroupDayRows(db, slot.day_template_id);
+  const groupSiblings = await exerciseGroupDayRows(db, slot.workout_id);
   const groupMoved = groupSiblings.map((row) => row.id === slot.id ? { ...row, ...merged } : row);
   const groupHasDuplicate = new Set(groupMoved.map((row) => row.order_index)).size !== groupMoved.length;
   const groupOrdered = patch.order_index !== undefined && groupHasDuplicate
@@ -6607,11 +6609,11 @@ export async function updateExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE template_exercises SET ${assignments.join(',')}
         WHERE id=?1 AND EXISTS (
-          SELECT 1 FROM day_templates d JOIN plans p ON p.id=d.plan_id
-           WHERE d.id=template_exercises.day_template_id
+          SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
+           WHERE d.id=template_exercises.workout_id
              AND p.user_id=?${userParam} AND p.status='active'
              AND p.id='${plan.id}' AND p.version=-${plan.version}
              AND p.plan_write_nonce='${nonce}'
@@ -6620,18 +6622,18 @@ export async function updateExercise(
   ];
   let acknowledgedOrder = patch.order_index ?? slot.order_index;
   if (patch.order_index !== undefined) {
-    const siblings = await db.prepare(
-      'SELECT id,order_index FROM template_exercises WHERE day_template_id=?1 ORDER BY order_index,created_at,id',
-    ).bind(slot.day_template_id).all<{ id: string; order_index: number }>();
+    const siblings = await workoutDB(db).prepare(
+      'SELECT id,order_index FROM template_exercises WHERE workout_id=?1 ORDER BY order_index,created_at,id',
+    ).bind(slot.workout_id).all<{ id: string; order_index: number }>();
     const moved = siblings.results.map((row) => row.id === slot.id ? { ...row, order_index: patch.order_index! } : row);
     const hasDuplicate = new Set(moved.map((row) => row.order_index)).size !== moved.length;
     if (hasDuplicate) {
       const ordered = orderDayRows(moved, slot.id);
       acknowledgedOrder = ordered.findIndex((row) => row.id === slot.id);
       ordered.forEach((row, index) => statements.push(
-        db.prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
-          AND EXISTS (SELECT 1 FROM day_templates d JOIN plans p ON p.id=d.plan_id
-            JOIN template_exercises te ON te.day_template_id=d.id
+        workoutDB(db).prepare(`UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
+          AND EXISTS (SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
+            JOIN template_exercises te ON te.workout_id=d.id
             WHERE te.id=?4 AND p.id='${plan.id}' AND p.version=-${plan.version}
               AND p.plan_write_nonce='${nonce}')`).bind(row.id, index, ts, slot.id),
       ));
@@ -6674,7 +6676,7 @@ export async function updateExercise(
 export async function deleteTemplateExercise(
   db: D1Database,
   userId: string,
-  ref: { template_exercise_id?: string; day_template_id?: string; day?: string; exercise?: string },
+  ref: { template_exercise_id?: string; workout_id?: string; day?: string; exercise?: string },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'delete_exercise' },
   retryLegacyConflict = true,
 ): Promise<TemplateExerciseRow | GroupConflict | null> {
@@ -6682,7 +6684,7 @@ export async function deleteTemplateExercise(
   if (!plan) return null;
   const slot = await findSlot(db, userId, ref);
   if (!slot) return null;
-  const siblings = await exerciseGroupDayRows(db, slot.day_template_id);
+  const siblings = await exerciseGroupDayRows(db, slot.workout_id);
   const remaining = normalizeRemovedGroupMember(siblings.filter((row) => row.id !== slot.id), slot.group_id);
   const groupInvalid = validateExerciseGroups(remaining);
   if (groupInvalid) return groupInvalid;
@@ -6691,7 +6693,7 @@ export async function deleteTemplateExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
       ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-      db
+      workoutDB(db)
         .prepare(
           `UPDATE set_logs
               SET template_exercise_id = NULL,
@@ -6700,12 +6702,12 @@ export async function deleteTemplateExercise(
               AND EXISTS (SELECT 1 FROM plans WHERE id=?3 AND user_id=?4 AND version=-?5 AND plan_write_nonce=?6)`,
         )
         .bind(slot.id, ts, plan.id, userId, plan.version, nonce),
-      db.prepare(
+      workoutDB(db).prepare(
         `DELETE FROM template_exercises WHERE id=?1 AND EXISTS
          (SELECT 1 FROM plans WHERE id=?2 AND user_id=?3 AND version=-?4 AND plan_write_nonce=?5)`,
       ).bind(slot.id, plan.id, userId, plan.version, nonce),
   ];
-  for (const row of normalized) statements.push(db.prepare(
+  for (const row of normalized) statements.push(workoutDB(db).prepare(
     `UPDATE template_exercises SET group_id=NULL,group_rest_seconds=NULL,group_transition_seconds=NULL,
        updated_at=?2 WHERE id=?1 AND EXISTS
        (SELECT 1 FROM plans WHERE id=?3 AND user_id=?4 AND version=-?5 AND plan_write_nonce=?6)`,
@@ -6726,7 +6728,7 @@ export async function swapExercise(
   db: D1Database,
   userId: string,
   ref: {
-    template_exercise_id?: string; day_template_id?: string;
+    template_exercise_id?: string; workout_id?: string;
     day?: string; from_exercise?: string; to_exercise: string;
     expected_version?: number;
   },
@@ -6736,7 +6738,7 @@ export async function swapExercise(
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const slot = await findSlot(db, userId, { ...ref, exercise: ref.from_exercise });
-  if (!slot || !await getDayTemplateInPlan(db, plan.id, slot.day_template_id)) return null;
+  if (!slot || !await getWorkoutInPlan(db, plan.id, slot.workout_id)) return null;
   if (ref.expected_version !== undefined) {
     if (!Number.isSafeInteger(ref.expected_version) || ref.expected_version < 1) {
       return { error: 'invalid_fields', fields: ['expected_version'] };
@@ -6753,7 +6755,7 @@ export async function swapExercise(
   const progression = slot.progression === null ? null : JSON.parse(slot.progression) as unknown;
   const invalid = validateExercisePrescription({ ...slot, progression }, { modality: destination.modality });
   if (invalid) return invalid;
-  const groupInvalid = validateExerciseGroups(await exerciseGroupDayRows(db, slot.day_template_id));
+  const groupInvalid = validateExerciseGroups(await exerciseGroupDayRows(db, slot.workout_id));
   if (groupInvalid) return groupInvalid;
   // A replacement always preserves the saved prescription and slot identity.
   // Historical logs retain their original exercise_id and values.
@@ -6761,11 +6763,11 @@ export async function swapExercise(
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE template_exercises SET exercise_id=?2,updated_at=?3 WHERE id=?1
         AND EXISTS (
-          SELECT 1 FROM day_templates d JOIN plans p ON p.id=d.plan_id
-           WHERE d.id=template_exercises.day_template_id AND p.user_id=?4 AND p.status='active'
+          SELECT 1 FROM workouts d JOIN plans p ON p.id=d.plan_id
+           WHERE d.id=template_exercises.workout_id AND p.user_id=?4 AND p.status='active'
              AND p.id=?5 AND p.version=-?6 AND p.plan_write_nonce=?7
         )`,
     ).bind(slot.id, destination.id, ts, userId, plan.id, plan.version, nonce),
@@ -6782,10 +6784,10 @@ export async function swapExercise(
   return { ...slot, exercise_id: destination.id, updated_at: ts };
 }
 
-async function bumpPlanVersionByDay(db: D1Database, dayTemplateId: string): Promise<void> {
-  const row = await db
-    .prepare('SELECT plan_id FROM day_templates WHERE id = ?1')
-    .bind(dayTemplateId)
+async function bumpPlanVersionByDay(db: D1Database, workoutId: string): Promise<void> {
+  const row = await workoutDB(db)
+    .prepare('SELECT plan_id FROM workouts WHERE id = ?1')
+    .bind(workoutId)
     .first<{ plan_id: string }>();
   if (row) await bumpPlanVersion(db, row.plan_id);
 }
@@ -6860,8 +6862,8 @@ export async function adjustToday(
   const setF = { light: 0.8, moderate: 0.65, heavy: 0.5 }[magnitude];
   const wtF = { light: 0.95, moderate: 0.9, heavy: 0.85 }[magnitude];
   const days = dayLabel
-    ? tree.days.filter((d) => d.day_label === dayLabel || d.name === dayLabel)
-    : tree.days;
+    ? tree.workouts.filter((d) => d.day_label === dayLabel || d.name === dayLabel)
+    : tree.workouts;
   const invalidFields = new Set<string>();
   for (const day of days) for (const slot of day.exercises) {
     let progression: unknown = null;
@@ -6918,7 +6920,7 @@ export async function adjustToday(
           continue;
         }
         stmts.push(
-          db
+          workoutDB(db)
             .prepare(`UPDATE template_exercises SET target_weight=?2, updated_at=?3 WHERE id=?1
               AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
             .bind(te.id, w, ts, tree.id, userId, tree.version, nonce),
@@ -6938,7 +6940,7 @@ export async function adjustToday(
           continue;
         }
         stmts.push(
-          db
+          workoutDB(db)
             .prepare(`UPDATE template_exercises SET target_sets=?2, updated_at=?3 WHERE id=?1
               AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`)
             .bind(te.id, s, ts, tree.id, userId, tree.version, nonce),
@@ -7003,7 +7005,7 @@ export async function getHistory(
   to: number,
 ) {
   const exercise =
-    (await db
+    (await workoutDB(db)
       .prepare('SELECT modality, unit, laterality, load_mode FROM exercises WHERE id = ?1')
       .bind(exerciseId)
       .first<MetricExercise>()) ?? {
@@ -7012,7 +7014,7 @@ export async function getHistory(
       laterality: 'bilateral',
       load_mode: 'total',
     };
-  const sets = await db
+  const sets = await workoutDB(db)
     .prepare(
       `SELECT sl.*, s.date as session_date FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
@@ -7078,7 +7080,7 @@ export async function getVolume(
   | { error: 'unknown_muscle'; query: string }
 > {
   const normalizedMuscle = muscle.trim().toLowerCase();
-  const known = await db
+  const known = await workoutDB(db)
     .prepare('SELECT 1 FROM exercises WHERE lower(primary_muscle) = ?1 LIMIT 1')
     .bind(normalizedMuscle)
     .first();
@@ -7090,7 +7092,7 @@ export async function getVolume(
   // 1,440 lb of work. Zero-load bodyweight and assisted (negative-load)
   // sets remain hard sets but have undefined tonnage; timed holds likewise
   // use duration rather than pretending seconds are repetitions.
-  const rows = await db
+  const rows = await workoutDB(db)
     .prepare(
       `SELECT strftime('%Y-%W', s.date) AS week,
               COUNT(*) AS hard_sets,
@@ -7183,7 +7185,7 @@ export async function getPlanSchedule(
 
 /**
  * Replace the full weekly map. Resolves each value (id, day_label, or day
- * name) to a day_template_id belonging to the active plan; rejects any ref
+ * name) to a workout_id belonging to the active plan; rejects any ref
  * that doesn't resolve to a day in THIS plan (no partial write). Optimistic
  * concurrency on expected_version. Bumps plans.version on success.
  */
@@ -7216,8 +7218,8 @@ export async function setPlanSchedule(
       current_version: plan.version,
     };
   }
-  const days = await db
-    .prepare('SELECT id, name, day_label FROM day_templates WHERE plan_id = ?1')
+  const days = await workoutDB(db)
+    .prepare('SELECT id, name, day_label FROM workouts WHERE plan_id = ?1')
     .bind(plan.id)
     .all<{ id: string; name: string; day_label: string | null }>();
   // Build resolution maps; id wins, then exact day_label, then exact name.
@@ -7255,7 +7257,7 @@ export async function setPlanSchedule(
   // writePlanMeta; a concurrent plan write → no row updated → 409.
   const nonce = uuid();
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  statements.push(db.prepare(
+  statements.push(workoutDB(db).prepare(
     `UPDATE plans SET meta=?2,updated_at=?3
       WHERE id=?1 AND version=-?4 AND user_id=?5 AND status='active' AND plan_write_nonce=?6`,
   ).bind(plan.id, serializePlanMeta(meta, schedule), ts, plan.version, userId, nonce));
@@ -7322,7 +7324,7 @@ async function writePlanMeta(
   // changes. No row updated → another writer won → 409 (caller refetches).
   const nonce = uuid();
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  statements.push(db.prepare(
+  statements.push(workoutDB(db).prepare(
     `UPDATE plans SET meta=?2,updated_at=?3
       WHERE id=?1 AND version=-?4 AND user_id=?5 AND plan_write_nonce=?6`,
   ).bind(plan.id, serializePlanMeta(meta, meta.schedule), ts, plan.version, userId, nonce));
@@ -7470,7 +7472,7 @@ export async function setStressModel(
 }
 
 /**
- * Scrub schedule weekday entries whose day_template_id is not in `liveIds`.
+ * Scrub schedule weekday entries whose workout_id is not in `liveIds`.
  * Returns the cleaned schedule, or null if nothing changed. Caller decides
  * whether to persist (used inside the plan-rebuild batch so it shares the
  * single version bump).
@@ -7495,7 +7497,7 @@ function scrubSchedule(
  * Delete one day_template and, in the same transaction, scrub any schedule
  * entries pointing at it and bump plans.version exactly once.
  */
-export async function deleteDayTemplate(
+export async function deleteWorkout(
   db: D1Database,
   userId: string,
   dayId: string,
@@ -7514,24 +7516,24 @@ export async function deleteDayTemplate(
     return { conflict: true, current_version: plan.version };
   }
   const writeVersion = expectedVersion ?? plan.version;
-  const day = await db
-    .prepare('SELECT id FROM day_templates WHERE id = ?1 AND plan_id = ?2')
+  const day = await workoutDB(db)
+    .prepare('SELECT id FROM workouts WHERE id = ?1 AND plan_id = ?2')
     .bind(dayId, plan.id)
     .first<{ id: string }>();
   if (!day) return { error: 'day_not_found' };
   const groupTree = await getPlanTree(db, userId);
-  const groupInvalid = validatePlanExerciseGroups(groupTree?.days.filter((candidate) => candidate.id !== dayId) ?? []);
+  const groupInvalid = validatePlanExerciseGroups(groupTree?.workouts.filter((candidate) => candidate.id !== dayId) ?? []);
   if (groupInvalid) return groupInvalid;
   const meta = parsePlanMeta(plan.meta);
-  const remaining = await db
+  const remaining = await workoutDB(db)
     .prepare(
-      'SELECT id FROM day_templates WHERE plan_id = ?1 AND id != ?2 ORDER BY order_index, created_at, id',
+      'SELECT id FROM workouts WHERE plan_id = ?1 AND id != ?2 ORDER BY order_index, created_at, id',
     )
     .bind(plan.id, dayId)
     .all<{ id: string }>();
   const liveIds = new Set(remaining.results.map((r) => r.id));
   const scrubbed = scrubSchedule(meta.schedule, liveIds);
-  // A session may deliberately keep day_template_id NULL and resolve its
+  // A session may deliberately keep workout_id NULL and resolve its
   // workout from the recurring schedule for that civil date. Treat those
   // rows as references to this day too, using the same mon..sun rule as the
   // calendar projection. The literal list is derived only from WEEKDAYS.
@@ -7546,9 +7548,9 @@ export async function deleteDayTemplate(
     // Keep the plan identity explicit in both branches. Besides preventing an
     // archived-plan row from participating, this keeps the numbered binding
     // contract stable when the deleted day is no longer in the schedule.
-    const explicit = `(${alias}.day_template_id = ${dayParameter} AND ${alias}.plan_id = ${planParameter})`;
+    const explicit = `(${alias}.workout_id = ${dayParameter} AND ${alias}.plan_id = ${planParameter})`;
     if (scheduledWeekdayNumbers.length === 0) return explicit;
-    return `(${explicit} OR (${alias}.day_template_id IS NULL AND ${alias}.plan_id = ${planParameter} AND CAST(strftime('%w', ${alias}.date) AS INTEGER) IN (${scheduledWeekdayNumbers.join(',')})))`;
+    return `(${explicit} OR (${alias}.workout_id IS NULL AND ${alias}.plan_id = ${planParameter} AND CAST(strftime('%w', ${alias}.date) AS INTEGER) IN (${scheduledWeekdayNumbers.join(',')})))`;
   };
   // Once a null-template session has started, its live set links are durable
   // evidence of which template it is executing. The recurring schedule can be
@@ -7566,7 +7568,7 @@ export async function deleteDayTemplate(
         ON active_slot.id = active_set.template_exercise_id
       WHERE active_set.session_id = ${alias}.id
         AND active_set.deleted_at IS NULL
-        AND active_slot.day_template_id = ${dayParameter}
+        AND active_slot.workout_id = ${dayParameter}
     )
   )`;
   const ts = now();
@@ -7575,13 +7577,13 @@ export async function deleteDayTemplate(
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
     // Preserve historical rows; only detach their pointers into the plan
     // document before deleting that document node.
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE sessions
-            SET day_template_id = NULL,
+            SET workout_id = NULL,
                 status = CASE WHEN status = 'planned' THEN 'skipped' ELSE status END,
                 updated_at = CASE
-                  WHEN day_template_id IS NOT NULL OR status = 'planned' THEN ?5
+                  WHEN workout_id IS NOT NULL OR status = 'planned' THEN ?5
                   ELSE updated_at
                 END,
                 attempt = CASE WHEN status = 'planned' THEN attempt + 1 ELSE attempt END
@@ -7599,13 +7601,13 @@ export async function deleteDayTemplate(
             )`,
       )
       .bind(userId, dayId, plan.id, -writeVersion, ts),
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE set_logs
             SET template_exercise_id = NULL,
                 updated_at = MAX(updated_at + 1, ?5)
           WHERE template_exercise_id IN (
-            SELECT id FROM template_exercises WHERE day_template_id = ?1
+            SELECT id FROM template_exercises WHERE workout_id = ?1
           )
             AND EXISTS (
               SELECT 1 FROM plans
@@ -7619,9 +7621,9 @@ export async function deleteDayTemplate(
             )`,
       )
       .bind(dayId, plan.id, userId, -writeVersion, ts),
-    db
+    workoutDB(db)
       .prepare(
-        `DELETE FROM template_exercises WHERE day_template_id = ?1
+        `DELETE FROM template_exercises WHERE workout_id = ?1
           AND EXISTS (
             SELECT 1 FROM plans
              WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
@@ -7634,9 +7636,9 @@ export async function deleteDayTemplate(
           )`,
       )
       .bind(dayId, plan.id, userId, -writeVersion),
-    db
+    workoutDB(db)
       .prepare(
-        `DELETE FROM day_templates WHERE id = ?1 AND plan_id = ?2
+        `DELETE FROM workouts WHERE id = ?1 AND plan_id = ?2
           AND EXISTS (
             SELECT 1 FROM plans
              WHERE id = ?2 AND user_id = ?3 AND status = 'active' AND version = ?4
@@ -7650,9 +7652,9 @@ export async function deleteDayTemplate(
       )
       .bind(dayId, plan.id, userId, -writeVersion),
     ...remaining.results.map((row, index) =>
-      db
+      workoutDB(db)
         .prepare(
-          `UPDATE day_templates SET order_index = ?2, updated_at = ?3
+          `UPDATE workouts SET order_index = ?2, updated_at = ?3
             WHERE id = ?1 AND plan_id = ?4
               AND EXISTS (
                 SELECT 1 FROM plans
@@ -7667,7 +7669,7 @@ export async function deleteDayTemplate(
         )
         .bind(row.id, index, ts, plan.id, userId, -writeVersion, dayId),
     ),
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE plans SET meta = ?2, updated_at = ?3
           WHERE id = ?1 AND user_id = ?4 AND status = 'active' AND version = ?5
@@ -7696,7 +7698,7 @@ export async function deleteDayTemplate(
   const results = await runWorkoutWriteBatch<{ version: number }>(db, stmts);
   const updatedPlan = results[versionResultIndex]?.results[0];
   if ((results[0]?.meta.changes ?? 0) !== 1 || (results[documentUpdateIndex]?.meta.changes ?? 0) !== 1 || !updatedPlan) {
-    const active = await db
+    const active = await workoutDB(db)
       .prepare(
         `SELECT 1 FROM sessions AS active_session
           WHERE active_session.user_id = ?1
@@ -7735,15 +7737,15 @@ export async function setPlannedSession(
 > {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
-  const d = await db
+  const d = await workoutDB(db)
     .prepare(
-      "SELECT id FROM day_templates WHERE plan_id = ?1 AND (id = ?2 OR lower(day_label) = lower(?2) OR lower(name) = lower(?2)) LIMIT 1",
+      "SELECT id FROM workouts WHERE plan_id = ?1 AND (id = ?2 OR lower(day_label) = lower(?2) OR lower(name) = lower(?2)) LIMIT 1",
     )
     .bind(plan.id, day)
     .first<{ id: string }>();
   if (!d) return { error: 'unknown_day_ref', ref: day };
   const readExisting = () =>
-    db
+    workoutDB(db)
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
       )
@@ -7771,7 +7773,7 @@ export async function setPlannedSession(
     const assignmentUnchanged =
       existing.plan_id === plan.id &&
       existing.status === 'planned' &&
-      existing.day_template_id === d.id;
+      existing.workout_id === d.id;
     if (assignmentUnchanged) return { ok: true, session: existing };
 
     const casAttempt = expectedAttempt ?? 0;
@@ -7802,10 +7804,10 @@ export async function setPlannedSession(
     const newAttempt = casAttempt + 1;
     const updated = await runWorkoutWriteStatement(
       db,
-      db.prepare(
+      workoutDB(db).prepare(
         `UPDATE sessions
             SET plan_id = ?13,
-                day_template_id = ?2,
+                workout_id = ?2,
                 status = ?3,
                 started_at = ?4,
                 completed_at = ?5,
@@ -7820,7 +7822,7 @@ export async function setPlannedSession(
             AND EXISTS (
               SELECT 1
                 FROM plans AS active_plan
-                JOIN day_templates AS active_day
+                JOIN workouts AS active_day
                   ON active_day.plan_id = active_plan.id
                WHERE active_plan.id = ?13
                  AND active_plan.user_id = ?8
@@ -7861,7 +7863,7 @@ export async function setPlannedSession(
     const session: SessionRow = {
       ...existing,
       plan_id: plan.id,
-      day_template_id: d.id,
+      workout_id: d.id,
       status: newStatus,
       started_at: newStartedAt,
       completed_at: newCompletedAt,
@@ -7884,7 +7886,7 @@ export async function setPlannedSession(
     id: uuid(),
     user_id: userId,
     plan_id: plan.id,
-    day_template_id: d.id,
+    workout_id: d.id,
     date,
     status: 'planned',
     started_at: null,
@@ -7901,14 +7903,14 @@ export async function setPlannedSession(
   };
   const inserted = await runWorkoutWriteStatement(
     db,
-    db.prepare(
+    workoutDB(db).prepare(
       `INSERT INTO sessions
-       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
+       (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14
         WHERE EXISTS (
           SELECT 1
             FROM plans AS active_plan
-            JOIN day_templates AS active_day
+            JOIN workouts AS active_day
               ON active_day.plan_id = active_plan.id
            WHERE active_plan.id = ?3
              AND active_plan.user_id = ?2
@@ -7922,7 +7924,7 @@ export async function setPlannedSession(
       s.id,
       s.user_id,
       s.plan_id,
-      s.day_template_id,
+      s.workout_id,
       s.date,
       s.status,
       s.started_at,
@@ -7968,7 +7970,7 @@ export async function skipPlannedSession(
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
   const readExisting = () =>
-    db
+    workoutDB(db)
       .prepare(
         'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2 ORDER BY created_at, id LIMIT 1',
       )
@@ -8007,10 +8009,10 @@ export async function skipPlannedSession(
     const newAttempt = casAttempt + 1;
     const updated = await runWorkoutWriteStatement(
       db,
-      db.prepare(
+      workoutDB(db).prepare(
         `UPDATE sessions
             SET plan_id = ?6,
-                day_template_id = NULL,
+                workout_id = NULL,
                 status = 'skipped',
                 updated_at = ?2,
                 attempt = ?7
@@ -8060,7 +8062,7 @@ export async function skipPlannedSession(
       session: {
         ...existing,
         plan_id: plan.id,
-        day_template_id: null,
+        workout_id: null,
         status: 'skipped',
         updated_at: ts,
         attempt: newAttempt,
@@ -8079,7 +8081,7 @@ export async function skipPlannedSession(
     id: uuid(),
     user_id: userId,
     plan_id: plan.id,
-    day_template_id: null,
+    workout_id: null,
     date,
     status: 'skipped',
     started_at: null,
@@ -8093,9 +8095,9 @@ export async function skipPlannedSession(
   };
   const inserted = await runWorkoutWriteStatement(
     db,
-    db.prepare(
+    workoutDB(db).prepare(
       `INSERT INTO sessions
-       (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
+       (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at,attempt,write_protocol)
        SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14
         WHERE EXISTS (
           SELECT 1 FROM plans AS active_plan
@@ -8110,7 +8112,7 @@ export async function skipPlannedSession(
       s.id,
       s.user_id,
       s.plan_id,
-      s.day_template_id,
+      s.workout_id,
       s.date,
       s.status,
       s.started_at,
@@ -8137,7 +8139,7 @@ export async function skipPlannedSession(
 
 /**
  * An endurance item on a calendar day (MULTISPORT.md §6.1). These COEXIST
- * with the strength side (`day_template_id`) — a brick is a lift + a ride on
+ * with the strength side (`workout_id`) — a brick is a lift + a ride on
  * the same day — so they live in their own array rather than replacing the
  * strength cell. Read-only (endurance executes on the watch); on today+ days
  * these are planned `external_events`, on past days completed
@@ -8185,13 +8187,13 @@ export interface CalendarCell {
     | 'unavailable'
     | 'light';
   /** Set when a template resolves (projected or a real session w/ day). */
-  day_template_id: string | null;
+  workout_id: string | null;
   /** True iff this cell came from a real sessions row. */
   real: boolean;
   /**
    * Endurance items for the day (bricks / doubles). Empty array when there is
    * no endurance. ADDITIVE — existing single-item strength consumers ignore
-   * this and keep reading `status`/`day_template_id`/`real` unchanged.
+   * this and keep reading `status`/`workout_id`/`real` unchanged.
    */
   items: EnduranceItem[];
   /** When status is a trip status ('unavailable'/'light'), the trip.type. */
@@ -8235,7 +8237,7 @@ function groupByDate<T extends { date: string }>(rows: Iterable<T>): Map<string,
  * Pure COMPOSITE projection (MULTISPORT.md §6.1). Given the plan, schedule,
  * real sessions, trips, and the endurance feeds (planned events for today+,
  * completed actuals for the past), emit a calendar cell per date. A
- * today-or-future day is a COMPOSITE: a strength side (status/day_template_id)
+ * today-or-future day is a COMPOSITE: a strength side (status/workout_id)
  * PLUS an `items` array of coexisting endurance (bricks/doubles), PLUS a trip
  * status. It stays COMPUTED — no materialized rows.
  *
@@ -8344,7 +8346,7 @@ export function projectCalendar(
         cells.push({
           date,
           status: real.status as CalendarCell['status'],
-          day_template_id: real.day_template_id,
+          workout_id: real.workout_id,
           real: true,
           items,
         });
@@ -8353,7 +8355,7 @@ export function projectCalendar(
         cells.push({
           date,
           status: 'completed',
-          day_template_id: null,
+          workout_id: null,
           real: false,
           items,
         });
@@ -8373,7 +8375,7 @@ export function projectCalendar(
         cells.push({
           date,
           status: real.status,
-          day_template_id: real.day_template_id,
+          workout_id: real.workout_id,
           real: true,
           items: [],
           trip_type: trip.type,
@@ -8384,7 +8386,7 @@ export function projectCalendar(
       cells.push({
         date,
         status: 'unavailable',
-        day_template_id: null,
+        workout_id: null,
         real: false,
         items: [],
         trip_type: trip.type,
@@ -8398,20 +8400,20 @@ export function projectCalendar(
     // pattern — Claude re-plans the week as explicit sessions). An explicitly-
     // pinned real session always survives a light trip.
     let status: CalendarCell['status'];
-    let dayTemplateId: string | null;
+    let workoutId: string | null;
     let real_ = false;
     if (real) {
       status = real.status as CalendarCell['status'];
-      dayTemplateId = real.day_template_id;
+      workoutId = real.workout_id;
       real_ = true;
     } else {
       const tid = trip ? null : schedule.week[weekdayOf(date)];
       if (tid && resolvable.has(tid)) {
         status = 'projected';
-        dayTemplateId = tid;
+        workoutId = tid;
       } else {
         status = 'rest';
-        dayTemplateId = null;
+        workoutId = null;
       }
     }
 
@@ -8433,7 +8435,7 @@ export function projectCalendar(
     const cell: CalendarCell = {
       date,
       status: finalStatus,
-      day_template_id: dayTemplateId,
+      workout_id: workoutId,
       real: real_,
       items,
     };
@@ -8460,15 +8462,15 @@ export async function getProjectedCalendar(
   const meta = parsePlanMeta(plan.meta);
   const schedule = meta.schedule;
   const trips = meta.trips ?? [];
-  const liveDays = await db
-    .prepare('SELECT id FROM day_templates WHERE plan_id = ?1')
+  const liveDays = await workoutDB(db)
+    .prepare('SELECT id FROM workouts WHERE plan_id = ?1')
     .bind(plan.id)
     .all<{ id: string }>();
   // Endurance feeds for the composite projection. Planned events drive
   // today+ bricks/doubles; completed actuals drive past endurance items.
   // Both are soft-deleted caches — exclude tombstones. The window matches
   // the sessions window (the projection clamps the span itself).
-  const plannedEvents = await db
+  const plannedEvents = await workoutDB(db)
     .prepare(
       `SELECT id, date, kind, title, planned_duration_sec, training_load
          FROM external_events
@@ -8477,7 +8479,7 @@ export async function getProjectedCalendar(
     )
     .bind(userId, fromDate, toDate)
     .all<ProjectionEvent>();
-  const completedActivities = await db
+  const completedActivities = await workoutDB(db)
     .prepare(
       `SELECT id, date, kind, name, moving_time_sec, training_load
          FROM external_activities
@@ -8497,7 +8499,7 @@ export async function getProjectedCalendar(
   // 'discarded' session never even reaches that filter because
   // projectCalendar drops it from byDate (vanishes), so it likewise
   // produces no conflict.
-  const sessions = await db
+  const sessions = await workoutDB(db)
     .prepare(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date >= ?2 AND date <= ?3 ORDER BY date',
     )
@@ -8524,8 +8526,8 @@ export async function getResolvedScheduleNames(
 ): Promise<Record<Weekday, string | null> | null> {
   const got = await getPlanSchedule(db, userId);
   if (!got) return null;
-  const days = await db
-    .prepare('SELECT id, name FROM day_templates WHERE plan_id = ?1')
+  const days = await workoutDB(db)
+    .prepare('SELECT id, name FROM workouts WHERE plan_id = ?1')
     .bind(got.plan.id)
     .all<{ id: string; name: string }>();
   const nameById = new Map(days.results.map((d) => [d.id, d.name]));
@@ -8639,7 +8641,7 @@ async function claimIntervalsSyncAttempt(
                                intervals_activities_sync_attempt AS activitiesAttempt`;
   const statement =
     credential.kind === 'oauth'
-      ? db.prepare(
+      ? workoutDB(db).prepare(
           `UPDATE users
               SET ${column} = ${column} + 1,
                   intervals_protocol_write_seq = intervals_protocol_write_seq
@@ -8654,7 +8656,7 @@ async function claimIntervalsSyncAttempt(
               AND ${column} < ${MAX_INTERVALS_SYNC_ATTEMPT}
             ${returning}`,
         )
-      : db.prepare(
+      : workoutDB(db).prepare(
           `UPDATE users
               SET ${column} = ${column} + 1,
                   intervals_protocol_write_seq = intervals_protocol_write_seq
@@ -8687,7 +8689,7 @@ async function claimIntervalsSyncAttempt(
 
   const diagnostic =
     credential.kind === 'oauth'
-      ? await db
+      ? await workoutDB(db)
           .prepare(
             `SELECT ${column} AS attempt FROM users
               WHERE id = ?1
@@ -8707,7 +8709,7 @@ async function claimIntervalsSyncAttempt(
             credential.athleteId,
           )
           .first<{ attempt: number }>()
-      : await db
+      : await workoutDB(db)
           .prepare(
             `SELECT ${column} AS attempt FROM users
               WHERE id = ?1
@@ -8734,7 +8736,7 @@ async function isCurrentIntervalsSyncAttempt(
 ): Promise<boolean> {
   const column = intervalsSyncAttemptColumn(cache);
   const ownAttempt = cache === 'events' ? attempts.eventsAttempt : attempts.activitiesAttempt;
-  const row = await db
+  const row = await workoutDB(db)
     .prepare(
       `SELECT EXISTS(
                 SELECT 1 FROM users
@@ -8775,7 +8777,7 @@ async function stampIntervalsSyncSuccess(
   const ownAttempt = cache === 'events' ? attempts.eventsAttempt : attempts.activitiesAttempt;
   const statement =
     credential.kind === 'oauth'
-      ? db.prepare(
+      ? workoutDB(db).prepare(
           `UPDATE users
           SET ${freshnessColumn} = CASE
                 WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
@@ -8792,7 +8794,7 @@ async function stampIntervalsSyncSuccess(
           AND intervals_api_key IS NULL
           AND ${attemptColumn} = ?8`,
         )
-      : db.prepare(
+      : workoutDB(db).prepare(
           `UPDATE users
           SET ${freshnessColumn} = CASE
                 WHEN ${freshnessColumn} IS NULL OR ${freshnessColumn} < ?2 THEN ?2
@@ -8892,7 +8894,7 @@ async function markIntervalsAuthError(
   const ts = now();
   const clearStatement =
     credential.kind === 'oauth'
-      ? db.prepare(
+      ? workoutDB(db).prepare(
           `UPDATE users
             SET intervals_api_key = NULL,
                 intervals_oauth_access_token = NULL,
@@ -8918,7 +8920,7 @@ async function markIntervalsAuthError(
             AND intervals_events_sync_attempt = ?8
             AND intervals_activities_sync_attempt = ?9`,
         )
-      : db.prepare(
+      : workoutDB(db).prepare(
           `UPDATE users
             SET intervals_api_key = NULL,
                 intervals_oauth_access_token = NULL,
@@ -8965,9 +8967,9 @@ async function markIntervalsAuthError(
         attempts.eventsAttempt,
         attempts.activitiesAttempt,
       );
-  const [cleared] = await db.batch([
+  const [cleared] = await workoutDB(db).batch([
     clear,
-    db
+    workoutDB(db)
       .prepare(
         `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
          SELECT ?1,?2,'system','intervals_auth_error',?3,'disconnected',?4
@@ -9014,7 +9016,7 @@ async function tryRefreshIntervalsOAuth(
   const clientSecret = env.INTERVALS_OAUTH_CLIENT_SECRET;
   if (!clientId || !clientSecret) return { status: 'unavailable' };
   if (!credential.refreshToken) return { status: 'unavailable' };
-  const row = await db
+  const row = await workoutDB(db)
     .prepare(
       `SELECT 1 AS current_credential
          FROM users
@@ -9073,7 +9075,7 @@ async function tryRefreshIntervalsOAuth(
     typeof body.expires_in === 'number' && Number.isFinite(body.expires_in)
       ? now() + body.expires_in * 1000
       : null;
-  const stored = await db
+  const stored = await workoutDB(db)
     .prepare(
       `UPDATE users
           SET intervals_oauth_access_token = ?9,
@@ -9394,7 +9396,7 @@ export async function syncExternalEvents(
     // reschedule (same external_id, new date) just updates `date` on the
     // same row and clears any prior soft-delete (the event came back).
     stmts.push(
-      db
+      workoutDB(db)
         .prepare(
           `INSERT INTO external_events
              (id,user_id,source,external_id,date,start_date_local_ms,kind,title,description,
@@ -9473,7 +9475,7 @@ export async function syncExternalEvents(
   // 100-bound-parameter ceiling for ordinary-sized calendars.
   const seenIds = [...seen];
   stmts.push(
-    db
+    workoutDB(db)
       .prepare(
         // Advance synced_at to the deletion time alongside deleted_at:
         // /api/state?events_since= filters `synced_at > cursor`, so a
@@ -9503,7 +9505,7 @@ export async function syncExternalEvents(
       ),
   );
   stmts.push(
-    db
+    workoutDB(db)
       .prepare(
         `SELECT EXISTS(
                   SELECT 1 FROM users
@@ -9514,7 +9516,7 @@ export async function syncExternalEvents(
       .bind(userId, effectiveCredential.generation, attempts.eventsAttempt),
   );
 
-  const reconcileResults = await db.batch(stmts);
+  const reconcileResults = await workoutDB(db).batch(stmts);
   const generationCheck = reconcileResults.at(-1)?.results[0] as
     | { current_identity: number }
     | undefined;
@@ -9522,7 +9524,7 @@ export async function syncExternalEvents(
     return { status: 'superseded', synced: 0, detail: 'superseded' };
   }
 
-  const cnt = await db
+  const cnt = await workoutDB(db)
     .prepare(
       `SELECT COUNT(*) AS c FROM external_events
         WHERE user_id = ?1 AND deleted_at IS NULL
@@ -9553,7 +9555,7 @@ export async function getUpcomingRides(
 ): Promise<ExternalEventRow[]> {
   const from = opts.from ?? new Date().toISOString().slice(0, 10);
   const to = addDays(from, opts.range ?? 90);
-  const r = await db
+  const r = await workoutDB(db)
     .prepare(
       `SELECT * FROM external_events
         WHERE user_id = ?1 AND deleted_at IS NULL
@@ -9760,7 +9762,7 @@ export async function syncExternalActivities(
     const id = `intervals:activity:${userId}:${a.external_id}`;
     seen.add(id);
     stmts.push(
-      db
+      workoutDB(db)
         .prepare(
           `INSERT INTO external_activities
              (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
@@ -9872,7 +9874,7 @@ export async function syncExternalActivities(
   // is never in `seen`.
   const seenIds = [...seen];
   stmts.push(
-    db
+    workoutDB(db)
       .prepare(
         `UPDATE external_activities
             SET deleted_at = CASE WHEN ?3 > synced_at THEN ?3 ELSE synced_at + 1 END,
@@ -9899,7 +9901,7 @@ export async function syncExternalActivities(
       ),
   );
   stmts.push(
-    db
+    workoutDB(db)
       .prepare(
         `SELECT EXISTS(
                   SELECT 1 FROM users
@@ -9910,7 +9912,7 @@ export async function syncExternalActivities(
       .bind(userId, effectiveCredential.generation, attempts.activitiesAttempt),
   );
 
-  const reconcileResults = await db.batch(stmts);
+  const reconcileResults = await workoutDB(db).batch(stmts);
   const generationCheck = reconcileResults.at(-1)?.results[0] as
     | { current_identity: number }
     | undefined;
@@ -9943,7 +9945,7 @@ export async function syncExternalActivities(
     },
   );
 
-  const cnt = await db
+  const cnt = await workoutDB(db)
     .prepare(
       `SELECT COUNT(*) AS c FROM external_activities
         WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
@@ -9976,7 +9978,7 @@ export async function getRecentActivities(
   const to = opts.to ?? new Date().toISOString().slice(0, 10);
   const from = addDays(to, -(opts.range ?? 90));
   const limit = Math.max(1, Math.min(500, opts.limit ?? 50));
-  const r = await db
+  const r = await workoutDB(db)
     .prepare(
       `SELECT * FROM external_activities
         WHERE user_id = ?1 AND deleted_at IS NULL
@@ -10048,7 +10050,7 @@ export async function upsertHealthKitActivity(
   }
   const id = `healthkit:activity:${userId}:${input.id}`;
   const ts = now();
-  await db
+  await workoutDB(db)
     .prepare(
       `INSERT INTO external_activities
          (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
@@ -10117,7 +10119,7 @@ export async function upsertHealthKitActivity(
   // and is immediately re-deduped. An identical retry does not update/reset the
   // row; this idempotent pass therefore preserves an already-retired duplicate.
   await dedupeHealthKitAgainstIntervals(db, userId);
-  const row = await db
+  const row = await workoutDB(db)
     .prepare('SELECT * FROM external_activities WHERE id = ?1 AND user_id = ?2')
     .bind(id, userId)
     .first<ExternalActivityRow>();
@@ -10187,7 +10189,7 @@ export async function dedupeHealthKitAgainstIntervals(
   // HealthKit rows we manage: currently live (candidates to retire) OR
   // previously retired BY US as a dup (deleted_at + duplicate_of set →
   // candidates to RESTORE if their winner is gone).
-  const hkStatement = db.prepare(
+  const hkStatement = workoutDB(db).prepare(
     `SELECT id, kind, start_date_local_ms, deleted_at, duplicate_of
        FROM external_activities
       WHERE user_id = ?1 AND source = 'healthkit'
@@ -10209,7 +10211,7 @@ export async function dedupeHealthKitAgainstIntervals(
   if (hk.length === 0) return 0;
   // Live intervals winners (NOT early-returned on empty: with no live winner,
   // any retired dup must be RESTORED).
-  const ivStatement = db.prepare(
+  const ivStatement = workoutDB(db).prepare(
     `SELECT id, kind, start_date_local_ms FROM external_activities
       WHERE user_id = ?1 AND source = 'intervals' AND deleted_at IS NULL
         AND start_date_local_ms IS NOT NULL${dateClause}`,
@@ -10271,7 +10273,7 @@ export async function dedupeHealthKitAgainstIntervals(
     const isRetiredDup = h.deleted_at != null && h.duplicate_of != null;
     if (best && !isRetiredDup) {
       // Live HealthKit row duplicating a live intervals activity → retire it.
-      const statement = db.prepare(
+      const statement = workoutDB(db).prepare(
             `UPDATE external_activities
                 SET deleted_at = CASE
                       WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
@@ -10307,7 +10309,7 @@ export async function dedupeHealthKitAgainstIntervals(
       // The row is already retired, but the deterministic winner changed.
       // Advance the tombstone watermark so downstream clients receive the
       // corrected provenance instead of retaining a stale duplicate_of.
-      const statement = db.prepare(
+      const statement = workoutDB(db).prepare(
             `UPDATE external_activities
                 SET synced_at = CASE
                       WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
@@ -10338,7 +10340,7 @@ export async function dedupeHealthKitAgainstIntervals(
     } else if (!best && isRetiredDup) {
       // We retired this as a dup but its intervals winner is gone → restore it
       // as the surviving copy so the workout doesn't vanish.
-      const statement = db.prepare(
+      const statement = workoutDB(db).prepare(
             `UPDATE external_activities
                 SET deleted_at = NULL,
                     synced_at = CASE
@@ -10372,7 +10374,7 @@ export async function dedupeHealthKitAgainstIntervals(
     // present) → no-op, so steady-state syncs don't churn synced_at.
   }
   if (stmts.length === 0) return 0;
-  const results = await db.batch(stmts);
+  const results = await workoutDB(db).batch(stmts);
   return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
 }
 
@@ -10491,8 +10493,8 @@ export async function getRideConflicts(
   // endurance day. The composite projection now also reports 'projected'/
   // 'completed' for endurance-only days, distinguishable by the absence of a
   // strength template/session: a real strength session (planned|in_progress|
-  // completed) OR a projected strength template (day_template_id != null).
-  // 'skipped' lifts and pure-endurance cells (day_template_id == null and
+  // completed) OR a projected strength template (workout_id != null).
+  // 'skipped' lifts and pure-endurance cells (workout_id == null and
   // !real) are excluded, keeping the prior contract intact.
   const liftDates = cal
     .filter(
@@ -10500,10 +10502,10 @@ export async function getRideConflicts(
         c.date <= toDate &&
         !c.suppresses_schedule_and_endurance &&
         ((c.real && (c.status === 'planned' || c.status === 'in_progress' || c.status === 'completed')) ||
-          (c.status === 'projected' && c.day_template_id != null)),
+          (c.status === 'projected' && c.workout_id != null)),
     )
     .map((c) => c.date);
-  const events = await db
+  const events = await workoutDB(db)
     .prepare(
       `SELECT id, date, training_load, planned_duration_sec
          FROM external_events
@@ -10705,7 +10707,7 @@ export async function getGroupFeed(
 
   // 1. Resolve group members + their effective display names + email
   //    fallback. Join into a single row per user_id for the join later.
-  const memberRows = await db
+  const memberRows = await workoutDB(db)
     .prepare(
       `SELECT gm.user_id,
               gm.display_name AS per_group_name,
@@ -10745,7 +10747,7 @@ export async function getGroupFeed(
   //     the session is completed, else created_at — sessions still
   //     in_progress show as "currently doing X" rows so groupmates see
   //     today's lift as it's happening. Discarded sessions are excluded.
-  const sessionRows = await db
+  const sessionRows = await workoutDB(db)
     .prepare(
       `SELECT s.id,
               s.user_id,
@@ -10753,13 +10755,13 @@ export async function getGroupFeed(
               s.status,
               s.completed_at,
               s.created_at,
-              s.day_template_id,
+              s.workout_id,
               dt.name AS day_name,
               dt.day_label AS day_label,
               s.started_at,
               COALESCE(s.completed_at, s.created_at) AS occurred_at
          FROM sessions s
-         LEFT JOIN day_templates dt ON dt.id = s.day_template_id
+         LEFT JOIN workouts dt ON dt.id = s.workout_id
         WHERE s.user_id IN (${placeholders})
           -- Codex PR#36 P2: opening Today calls getOrCreateSession which
           -- creates status='planned' rows BEFORE any set is logged. Those
@@ -10786,7 +10788,7 @@ export async function getGroupFeed(
       status: string;
       completed_at: number | null;
       created_at: number;
-      day_template_id: string | null;
+      workout_id: string | null;
       day_name: string | null;
       day_label: string | null;
       started_at: number | null;
@@ -10802,7 +10804,7 @@ export async function getGroupFeed(
   const setCountBySession = new Map<string, number>();
   if (sessionIds.length > 0) {
     const setPlaceholders = sessionIds.map((_, i) => `?${i + 1}`).join(',');
-    const sets = await db
+    const sets = await workoutDB(db)
       .prepare(
         `SELECT sl.session_id,
                 sl.exercise_id,
@@ -10918,7 +10920,7 @@ export async function getGroupFeed(
   //     sync and broke pagination. COALESCE handles any legacy row that
   //     somehow escaped the migration backfill (defensive — should not
   //     happen on a freshly-migrated DB).
-  const rideRows = await db
+  const rideRows = await workoutDB(db)
     .prepare(
       `SELECT id, user_id, date, kind, name, moving_time_sec, distance_m,
               average_watts, training_load, elevation_gain_m,
@@ -10980,7 +10982,7 @@ export async function getGroupFeed(
   //     `notes` field IS shared — per the privacy contract above, the
   //     user-authored notes on an activity are the description of what
   //     they did.
-  const actRows = await db
+  const actRows = await workoutDB(db)
     .prepare(
       `SELECT id, user_id, date, type, title, duration_minutes, notes, logged_at
          FROM activities
@@ -11058,7 +11060,7 @@ export async function getGroupStats(
   const range = Math.max(1, Math.min(rangeDays, 365));
 
   // 1. Resolve members + names + timezones + emails in one round trip.
-  const memberRows = await db
+  const memberRows = await workoutDB(db)
     .prepare(
       `SELECT gm.user_id,
               gm.display_name AS per_group_name,
@@ -11101,7 +11103,7 @@ export async function getGroupStats(
     // just the civil-date column. epoch_ms-keyed rows (set_logs.logged_at,
     // external_activities.synced_at) use the SESSION.date / activity.date
     // strings to keep the bucketing tz-correct.
-    const sessionsRows = await db
+    const sessionsRows = await workoutDB(db)
       .prepare(
         // Same planned-session leak fix as the feed query: a session row
         // with status='planned' (auto-created by GET /api/today) is intent,
@@ -11114,7 +11116,7 @@ export async function getGroupStats(
       )
       .bind(m.user_id, streakStart, today)
       .all<{ date: string }>();
-    const ridesRows = await db
+    const ridesRows = await workoutDB(db)
       .prepare(
         // HealthKit rows are gated behind the per-user opt-in (0028) so an
         // un-shared member's private health activity never inflates the
@@ -11129,7 +11131,7 @@ export async function getGroupStats(
       )
       .bind(m.user_id, streakStart, today)
       .all<{ date: string }>();
-    const actRows = await db
+    const actRows = await workoutDB(db)
       .prepare(
         `SELECT DISTINCT date FROM activities
           WHERE user_id = ?1
@@ -11236,7 +11238,7 @@ export async function getGroupActivitySeries(
   void callerUserId;
   const days = Math.max(1, Math.min(Math.floor(windowDays), 372));
 
-  const memberRows = await db
+  const memberRows = await workoutDB(db)
     .prepare(
       `SELECT gm.user_id, u.timezone
          FROM group_members gm
@@ -11267,7 +11269,7 @@ export async function getGroupActivitySeries(
     // excluded; rides/activities honor soft-delete. COUNT(*) per date is
     // the cell intensity (two sessions on a day → 2), unlike stats which
     // collapses to DISTINCT dates.
-    const sessRows = await db
+    const sessRows = await workoutDB(db)
       .prepare(
         `SELECT date, COUNT(*) AS n FROM sessions
           WHERE user_id = ?1
@@ -11279,7 +11281,7 @@ export async function getGroupActivitySeries(
       .all<{ date: string; n: number }>();
     for (const r of sessRows.results) ensure(r.date).sessions = r.n;
 
-    const rideRows = await db
+    const rideRows = await workoutDB(db)
       .prepare(
         // HealthKit rows gated behind the opt-in (0028), same as the feed/stats.
         `SELECT date, COUNT(*) AS n FROM external_activities
@@ -11295,7 +11297,7 @@ export async function getGroupActivitySeries(
       .all<{ date: string; n: number }>();
     for (const r of rideRows.results) ensure(r.date).rides = r.n;
 
-    const actRows = await db
+    const actRows = await workoutDB(db)
       .prepare(
         `SELECT date, type, COUNT(*) AS n FROM activities
           WHERE user_id = ?1
@@ -11376,7 +11378,7 @@ export async function activateOAuthGrantLifecyclePolicy(
   if (!Number.isSafeInteger(activatedAt) || activatedAt <= 0 || !nonce) {
     throw new Error('invalid OAuth grant lifecycle activation');
   }
-  const claimed = await db
+  const claimed = await workoutDB(db)
     .prepare(
       `UPDATE oauth_grant_lifecycle_policy
           SET activated_at = ?1, activation_nonce = ?2
@@ -11385,7 +11387,7 @@ export async function activateOAuthGrantLifecyclePolicy(
     )
     .bind(activatedAt, nonce)
     .run();
-  const policy = await db.prepare(
+  const policy = await workoutDB(db).prepare(
     'SELECT activated_at, activation_nonce FROM oauth_grant_lifecycle_policy WHERE id = 1',
   ).first<{ activated_at: number; activation_nonce: string }>();
   if (!policy) throw new Error('OAuth grant lifecycle policy row missing');
@@ -11408,15 +11410,15 @@ export async function redeemOAuthAuthorizationCode(
   // Legacy unscoped grants belong only to an existing distinguished owner.
   // Do not bootstrap a replacement identity while redeeming old credentials.
   const principal = redemption.user_id
-    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(redemption.user_id).first<{ id: string }>()
+    ? await workoutDB(db).prepare('SELECT id FROM users WHERE id = ?1').bind(redemption.user_id).first<{ id: string }>()
     : await findOwnerRow(db, redemption.owner_apple_sub);
   if (!principal) return null;
 
   const nowMs = now();
   const tokenCreatedAt = Math.floor(nowMs / 1000);
   const legacy = redemption.user_id === null;
-  const [family, inserted, consumed, cleaned] = await db.batch([
-    db.prepare(
+  const [family, inserted, consumed, cleaned] = await workoutDB(db).batch([
+    workoutDB(db).prepare(
       `INSERT INTO oauth_grants
          (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
           inactivity_expires_at, absolute_expires_at)
@@ -11460,7 +11462,7 @@ export async function redeemOAuthAuthorizationCode(
       OAUTH_GRANT_INACTIVITY_MS,
       OAUTH_GRANT_ABSOLUTE_MS,
     ),
-    db.prepare(
+    workoutDB(db).prepare(
       `INSERT INTO oauth_tokens
          (access_token, refresh_token, client_id, scope, expires_at, created_at, user_id, grant_id)
        SELECT ?1, ?2, c.client_id, COALESCE(c.scope, 'mcp'),
@@ -11504,7 +11506,7 @@ export async function redeemOAuthAuthorizationCode(
       legacy ? 1 : 0,
       redemption.grant_id,
     ),
-    db.prepare(
+    workoutDB(db).prepare(
       `DELETE FROM oauth_codes
         WHERE code = ?1
           AND client_id = ?2
@@ -11530,7 +11532,7 @@ export async function redeemOAuthAuthorizationCode(
       redemption.user_id,
       legacy ? 1 : 0,
     ),
-    db.prepare(
+    workoutDB(db).prepare(
       `DELETE FROM oauth_grants
         WHERE id = ?1
           AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
@@ -11560,7 +11562,7 @@ export async function rotateOAuthRefreshToken(
     return null;
   }
   const principal = rotation.user_id
-    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(rotation.user_id).first<{ id: string }>()
+    ? await workoutDB(db).prepare('SELECT id FROM users WHERE id = ?1').bind(rotation.user_id).first<{ id: string }>()
     : await findOwnerRow(db, rotation.owner_apple_sub);
   if (!principal) return null;
 
@@ -11568,8 +11570,8 @@ export async function rotateOAuthRefreshToken(
   const tokenCreatedAt = Math.floor(refreshedAt / 1000);
   const legacy = rotation.user_id === null;
   const grantId = rotation.grant_id ?? crypto.randomUUID();
-  const [adopted, initialized, rotated, archived, touched, cleaned] = await db.batch([
-    db.prepare(
+  const [adopted, initialized, rotated, archived, touched, cleaned] = await workoutDB(db).batch([
+    workoutDB(db).prepare(
       `INSERT INTO oauth_grants
          (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
           inactivity_expires_at, absolute_expires_at)
@@ -11604,7 +11606,7 @@ export async function rotateOAuthRefreshToken(
       OAUTH_GRANT_INACTIVITY_MS,
       OAUTH_GRANT_ABSOLUTE_MS,
     ),
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE oauth_grants
           SET inactivity_expires_at = MAX(created_at, p.activated_at) + ?2,
               absolute_expires_at = MAX(created_at, p.activated_at) + ?3
@@ -11615,7 +11617,7 @@ export async function rotateOAuthRefreshToken(
           AND oauth_grants.inactivity_expires_at IS NULL
           AND oauth_grants.absolute_expires_at IS NULL`,
     ).bind(grantId, OAUTH_GRANT_INACTIVITY_MS, OAUTH_GRANT_ABSOLUTE_MS),
-    db.prepare(
+    workoutDB(db).prepare(
     `UPDATE oauth_tokens
         SET access_token = ?1,
             refresh_token = ?2,
@@ -11669,12 +11671,12 @@ export async function rotateOAuthRefreshToken(
     rotation.consumed_refresh_sha256,
     OAUTH_GRANT_INACTIVITY_MS,
   ),
-    db.prepare(
+    workoutDB(db).prepare(
       `INSERT INTO oauth_refresh_history (token_sha256, grant_id, client_id, consumed_at)
        SELECT ?1, ?2, ?3, ?4
         WHERE changes() = 1`,
     ).bind(rotation.consumed_refresh_sha256, grantId, rotation.client_id, refreshedAt),
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE oauth_grants
           SET last_refreshed_at = CAST(unixepoch('subsec') * 1000 AS INTEGER),
               inactivity_expires_at = CASE
@@ -11684,7 +11686,7 @@ export async function rotateOAuthRefreshToken(
               END
         WHERE id = ?1 AND revoked_at IS NULL AND changes() = 1`,
     ).bind(grantId, refreshedAt, OAUTH_GRANT_INACTIVITY_MS),
-    db.prepare(
+    workoutDB(db).prepare(
       `DELETE FROM oauth_grants
         WHERE id = ?1 AND ?2 = 1
           AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)
@@ -11745,7 +11747,7 @@ export async function revokeOAuthGrantOnRefreshReplay(
   clientId: string,
   ownerAppleSub: string | undefined,
 ): Promise<boolean> {
-  const replay = await db.prepare(
+  const replay = await workoutDB(db).prepare(
     `SELECT g.id, g.user_id FROM oauth_refresh_history h
        JOIN oauth_grants g ON g.id = h.grant_id
       WHERE h.token_sha256 = ?1
@@ -11754,17 +11756,17 @@ export async function revokeOAuthGrantOnRefreshReplay(
   ).bind(tokenSha256, clientId).first<{ id: string; user_id: string | null }>();
   if (!replay) return false;
   const principal = replay.user_id
-    ? await db.prepare('SELECT id FROM users WHERE id = ?1').bind(replay.user_id).first<{ id: string }>()
+    ? await workoutDB(db).prepare('SELECT id FROM users WHERE id = ?1').bind(replay.user_id).first<{ id: string }>()
     : await findOwnerRow(db, ownerAppleSub);
   if (!principal) return false;
   const revokedAt = now();
-  const [revoked, removed] = await db.batch([
-    db.prepare(
+  const [revoked, removed] = await workoutDB(db).batch([
+    workoutDB(db).prepare(
       `UPDATE oauth_grants SET revoked_at = ?2
         WHERE id = ?1 AND revoked_at IS NULL
           AND (user_id = ?3 OR (?4 = 1 AND user_id IS NULL))`,
     ).bind(replay.id, revokedAt, replay.user_id, replay.user_id === null ? 1 : 0),
-    db.prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1 AND changes() = 1')
+    workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1 AND changes() = 1')
       .bind(replay.id),
   ]);
   return revoked?.meta.changes === 1 && (removed?.meta.changes ?? 0) <= 1;
@@ -11775,7 +11777,7 @@ async function adoptUntrackedOAuthGrants(
   userId: string,
   includeLegacyOwner: boolean,
 ): Promise<void> {
-  const rows = await db.prepare(
+  const rows = await workoutDB(db).prepare(
     `SELECT access_token, user_id, client_id, scope, created_at
        FROM oauth_tokens
       WHERE grant_id IS NULL
@@ -11789,8 +11791,8 @@ async function adoptUntrackedOAuthGrants(
   }>();
   for (const row of rows.results) {
     const grantId = crypto.randomUUID();
-    await db.batch([
-      db.prepare(
+    await workoutDB(db).batch([
+      workoutDB(db).prepare(
         `INSERT INTO oauth_grants
            (id, user_id, client_id, scope, created_at, last_refreshed_at, legacy,
             inactivity_expires_at, absolute_expires_at)
@@ -11814,11 +11816,11 @@ async function adoptUntrackedOAuthGrants(
         OAUTH_GRANT_INACTIVITY_MS,
         OAUTH_GRANT_ABSOLUTE_MS,
       ),
-      db.prepare(
+      workoutDB(db).prepare(
         `UPDATE oauth_tokens SET grant_id = ?2
           WHERE access_token = ?1 AND grant_id IS NULL AND changes() = 1`,
       ).bind(row.access_token, grantId),
-      db.prepare(
+      workoutDB(db).prepare(
         `DELETE FROM oauth_grants
           WHERE id = ?1
             AND NOT EXISTS (SELECT 1 FROM oauth_tokens WHERE grant_id = ?1)`,
@@ -11835,7 +11837,7 @@ export async function listOAuthGrants(
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = owner?.id === userId;
   await adoptUntrackedOAuthGrants(db, userId, isOwner);
-  const rows = await db.prepare(
+  const rows = await workoutDB(db).prepare(
     `SELECT g.id, g.client_id, COALESCE(g.scope, 'mcp') AS scope, g.created_at,
             g.last_refreshed_at, g.legacy
        FROM oauth_grants g
@@ -11871,20 +11873,20 @@ export async function revokeOAuthGrant(
 ): Promise<boolean> {
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = owner?.id === userId;
-  const grant = await db.prepare(
+  const grant = await workoutDB(db).prepare(
     `SELECT id FROM oauth_grants
       WHERE id = ?1 AND (user_id = ?2 OR (?3 = 1 AND user_id IS NULL))`,
   ).bind(grantId, userId, isOwner ? 1 : 0).first<{ id: string }>();
   if (!grant) return false;
-  await db.batch([
-    db.prepare(
+  await workoutDB(db).batch([
+    workoutDB(db).prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        VALUES (?1,?2,'ios','revoke_coach_grant',?3,'revoked',?4)`,
     ).bind(uuid(), userId, JSON.stringify({ grant_id: grantId }), now()),
-    db.prepare(
+    workoutDB(db).prepare(
       'UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?2) WHERE id = ?1',
     ).bind(grantId, now()),
-    db.prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1').bind(grantId),
+    workoutDB(db).prepare('DELETE FROM oauth_tokens WHERE grant_id = ?1').bind(grantId),
   ]);
   return true;
 }
@@ -11897,17 +11899,17 @@ export async function revokeAllOAuthGrants(
   const owner = await findOwnerRow(db, ownerAppleSub);
   const isOwner = owner?.id === userId;
   await adoptUntrackedOAuthGrants(db, userId, isOwner);
-  const [, revoked] = await db.batch([
-    db.prepare(
+  const [, revoked] = await workoutDB(db).batch([
+    workoutDB(db).prepare(
       `INSERT INTO audit_log (id,user_id,actor,tool,args,result,created_at)
        VALUES (?1,?2,'ios','revoke_coach_grants',?3,'revoked',?4)`,
     ).bind(uuid(), userId, JSON.stringify({ scope: 'all' }), now()),
-    db.prepare(
+    workoutDB(db).prepare(
       `UPDATE oauth_grants SET revoked_at = COALESCE(revoked_at, ?3)
         WHERE revoked_at IS NULL
           AND (user_id = ?1 OR (?2 = 1 AND user_id IS NULL))`,
     ).bind(userId, isOwner ? 1 : 0, now()),
-    db.prepare(
+    workoutDB(db).prepare(
       `DELETE FROM oauth_tokens
         WHERE grant_id IN (
           SELECT id FROM oauth_grants
@@ -11971,7 +11973,7 @@ export async function findMcpExerciseGroupAcknowledgement(
 ): Promise<ExerciseGroupAcknowledgement | null> {
   if (!isGroupId(args.group_id) || !Number.isSafeInteger(args.expected_version)
       || (args.expected_version as number) < 1) return null;
-  const rows = await db.prepare(
+  const rows = await workoutDB(db).prepare(
     `SELECT args,result FROM audit_log
       WHERE user_id=?1 AND actor='mcp' AND tool=?2
         AND json_extract(CASE WHEN json_valid(args) THEN args ELSE '{}' END,'$.group_id')=?3
@@ -11992,7 +11994,7 @@ export async function findMcpExerciseGroupAcknowledgement(
 }
 
 async function findExerciseGroupReceipt(db: D1Database, userId: string, actor: string, key: string): Promise<ExerciseGroupAcknowledgement | null> {
-  const row = await db.prepare(
+  const row = await workoutDB(db).prepare(
     `SELECT result FROM audit_log WHERE user_id=?1 AND actor=?2 AND json_valid(result)
       AND json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.exercise_group_receipt')=?3 LIMIT 1`,
   ).bind(userId, actor, key).first<{ result: string }>();
@@ -12008,11 +12010,11 @@ async function commitExerciseGroup(
   const nonce = crypto.randomUUID();
   const ts = Date.now();
   const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
-  for (const slot of changed) statements.push(db.prepare(
+  for (const slot of changed) statements.push(workoutDB(db).prepare(
     `UPDATE template_exercises SET group_id=?2,group_rest_seconds=?3,group_transition_seconds=?4,
        target_sets=?5,order_index=?6,updated_at=?7 WHERE id=?1
-       AND EXISTS (SELECT 1 FROM plans p JOIN day_templates d ON d.plan_id=p.id
-         WHERE d.id=template_exercises.day_template_id AND p.id=?8 AND p.user_id=?9
+       AND EXISTS (SELECT 1 FROM plans p JOIN workouts d ON d.plan_id=p.id
+         WHERE d.id=template_exercises.workout_id AND p.id=?8 AND p.user_id=?9
            AND p.version=-?10 AND p.plan_write_nonce=?11)`,
   ).bind(slot.id, slot.group_id ?? null, slot.group_rest_seconds ?? null,
     slot.group_transition_seconds ?? null, slot.target_sets, slot.order_index, ts,
@@ -12061,9 +12063,9 @@ export async function setGroup(
   if (!tree || tree.id !== plan.id || tree.version !== plan.version) {
     return { conflict: true, current_version: tree?.version ?? plan.version };
   }
-  const day = tree.days.find((day) => day.id === dayId);
+  const day = tree.workouts.find((day) => day.id === dayId);
   if (!day) return { error: 'day_not_found' };
-  if (tree.days.some((day) => day.id !== dayId && day.exercises.some((slot) => slot.group_id === groupId))) {
+  if (tree.workouts.some((day) => day.id !== dayId && day.exercises.some((slot) => slot.group_id === groupId))) {
     return { error: 'group_conflict', fields: ['group_id'] };
   }
   const selected = memberIds.map((id) => day.exercises.find((slot) => slot.id === id));
@@ -12128,9 +12130,9 @@ export async function clearGroup(
   if (plan.version !== expectedVersion) return { conflict: true, current_version: plan.version };
   const tree = await getPlanTree(db, userId);
   if (!tree || tree.id !== plan.id || tree.version !== plan.version) return { conflict: true, current_version: tree?.version ?? plan.version };
-  if (scopeDayId !== undefined && !tree.days.some((day) => day.id === scopeDayId)) return { error: 'day_not_found' };
-  const members = tree.days.flatMap((day) => day.exercises.filter((slot) => slot.group_id === groupId));
-  if (scopeDayId !== undefined && members.some((slot) => slot.day_template_id !== scopeDayId)) {
+  if (scopeDayId !== undefined && !tree.workouts.some((day) => day.id === scopeDayId)) return { error: 'day_not_found' };
+  const members = tree.workouts.flatMap((day) => day.exercises.filter((slot) => slot.group_id === groupId));
+  if (scopeDayId !== undefined && members.some((slot) => slot.workout_id !== scopeDayId)) {
     return { error: 'group_conflict', fields: ['group_id'] };
   }
   const changed = members.map((slot) => ({ ...slot, ...emptyExerciseGroup }));
@@ -12141,12 +12143,12 @@ export async function clearGroup(
     const invalid = validateExercisePrescription({ ...slot, progression }, { modality: slot.exercise_modality });
     if (invalid) return invalid;
   }
-  const candidate = tree.days.map((day) => ({ ...day, exercises: day.exercises.map((slot) => slot.group_id === groupId ? { ...slot, ...emptyExerciseGroup } : slot) }));
+  const candidate = tree.workouts.map((day) => ({ ...day, exercises: day.exercises.map((slot) => slot.group_id === groupId ? { ...slot, ...emptyExerciseGroup } : slot) }));
   const groupInvalid = validatePlanExerciseGroups(candidate);
   if (groupInvalid) return groupInvalid;
   const result: ExerciseGroupAcknowledgement = { ok: true, plan_id: plan.id,
     version: plan.version + (changed.length ? 1 : 0), group_id: groupId,
-    day_id: members[0]?.day_template_id ?? scopeDayId ?? null, members: [], round_rest: null,
+    day_id: members[0]?.workout_id ?? scopeDayId ?? null, members: [], round_rest: null,
     transition_rest: null, target_sets: null, cleared: true };
   if (!changed.length) return { ...result, unchanged: true };
   return commitExerciseGroup(db, plan, changed, result, key, attribution);

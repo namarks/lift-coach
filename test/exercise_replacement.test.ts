@@ -12,7 +12,7 @@ async function fixture(timed = false) {
   const userId = crypto.randomUUID();
   await env.DB.prepare('INSERT INTO users(id,apple_sub,created_at) VALUES(?1,?2,?3)')
     .bind(userId, `sub-${userId}`, Date.now()).run();
-  const built = await updatePlanTree(env.DB, userId, { days: [
+  const built = await updatePlanTree(env.DB, userId, { workouts: [
     { name: 'Strength', day_label: 'A', exercises: [
       { exercise: 'pull-up', target_sets: 3, target_reps: 6 },
       { exercise: timed ? 'plank' : 'pull-up', target_sets: 2,
@@ -25,7 +25,7 @@ async function fixture(timed = false) {
   ] });
   if (!('plan' in built)) throw new Error('fixture_failed');
   const plan = built.plan;
-  return { userId, plan, day: plan.days[0]!, slot: plan.days[0]!.exercises[1]!,
+  return { userId, plan, day: plan.workouts[0]!, slot: plan.workouts[0]!.exercises[1]!,
     headers: { authorization: `Bearer ${await issueAppJwt(userId, 'test-secret')}`,
       'content-type': 'application/json' } };
 }
@@ -53,7 +53,7 @@ describe('exercise replacement', () => {
     const f = await fixture();
     const sessionResponse = await SELF.fetch(`${BASE}/api/sessions`, {
       method: 'POST', headers: f.headers,
-      body: JSON.stringify({ date: '2026-09-08', day_template_id: f.day.id }),
+      body: JSON.stringify({ date: '2026-09-08', workout_id: f.day.id }),
     });
     expect(sessionResponse.status).toBe(201);
     const session = await sessionResponse.json<{ id: string; attempt: number }>();
@@ -70,12 +70,12 @@ describe('exercise replacement', () => {
     const response = await replace(f, { to_exercise: 'ring row', expected_version: f.plan.version });
     expect(response.status).toBe(200);
     const after = await footprint(f.userId);
-    const slot = after.plan!.days[0]!.exercises[1]!;
+    const slot = after.plan!.workouts[0]!.exercises[1]!;
     expect(slot.exercise_id).not.toBe(f.slot.exercise_id);
     for (const key of ['id', 'order_index', 'target_sets', 'target_reps', 'target_reps_max',
       'target_weight', 'target_rpe', 'target_duration_s', 'rest_seconds', 'is_warmup',
       'cues', 'progression'] as const) expect(slot[key]).toEqual(f.slot[key]);
-    expect(after.plan!.days[0]!.exercises[0]).toEqual(f.day.exercises[0]);
+    expect(after.plan!.workouts[0]!.exercises[0]).toEqual(f.day.exercises[0]);
     expect(after.plan!.version).toBe(f.plan.version + 1);
     expect(after.counts).toEqual({ audits: before.counts!.audits + 1,
       notes: before.counts!.notes, snapshots: before.counts!.snapshots + 1 });
@@ -85,7 +85,7 @@ describe('exercise replacement', () => {
       .bind(f.userId).first()).toEqual({ actor: 'ios', tool: 'swap_exercise' });
     const snapshot = await env.DB.prepare('SELECT document FROM plan_snapshots WHERE plan_id=?1 AND version=?2')
       .bind(f.plan.id, f.plan.version + 1).first<string>('document');
-    expect(JSON.parse(snapshot!).days[0].exercises[1].exercise_id).toBe(slot.exercise_id);
+    expect(JSON.parse(snapshot!).workouts[0].exercises[1].exercise_id).toBe(slot.exercise_id);
     // A lost response cannot turn a retry into another write or overwrite a newer choice.
     expect((await replace(f, { to_exercise: 'ring row', expected_version: f.plan.version })).status).toBe(409);
     expect(await footprint(f.userId)).toEqual(after);
@@ -128,13 +128,13 @@ describe('exercise replacement', () => {
     const body = { to_exercise: 'ring row', expected_version: f.plan.version };
     const before = await footprint(f.userId);
     expect((await replace(f, body, foreign.day.id, foreign.slot.id)).status).toBe(404);
-    expect((await replace(f, body, f.plan.days[1]!.id)).status).toBe(404);
+    expect((await replace(f, body, f.plan.workouts[1]!.id)).status).toBe(404);
     expect((await SELF.fetch(`${BASE}/api/days/${f.day.id}/exercises/${f.slot.id}/swap`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
     })).status).toBe(401);
     expect(await footprint(f.userId)).toEqual(before);
     await env.DB.prepare("UPDATE plans SET status='archived' WHERE id=?1").bind(f.plan.id).run();
-    await updatePlanTree(env.DB, f.userId, { days: [{ name: 'New', exercises: [] }] });
+    await updatePlanTree(env.DB, f.userId, { workouts: [{ name: 'New', exercises: [] }] });
     const archivedBefore = await footprint(f.userId);
     expect((await replace(f, body)).status).toBe(404);
     expect(await footprint(f.userId)).toEqual(archivedBefore);
@@ -158,9 +158,9 @@ describe('exercise replacement', () => {
       },
     }) as D1Database;
     expect(await swapExercise(db, f.userId, { template_exercise_id: f.slot.id,
-      day_template_id: f.day.id, to_exercise: 'ring row', expected_version: f.plan.version }))
+      workout_id: f.day.id, to_exercise: 'ring row', expected_version: f.plan.version }))
       .toEqual({ conflict: true, current_version: f.plan.version + 1 });
-    const slot = (await getPlanTree(env.DB, f.userId))!.days[0]!.exercises[1]!;
+    const slot = (await getPlanTree(env.DB, f.userId))!.workouts[0]!.exercises[1]!;
     expect(slot).toMatchObject({ exercise_id: f.slot.exercise_id, target_reps: 10 });
     expect(await env.DB.prepare("SELECT COUNT(*) AS n FROM audit_log WHERE user_id=?1 AND tool='swap_exercise'")
       .bind(f.userId).first<number>('n')).toBe(0);

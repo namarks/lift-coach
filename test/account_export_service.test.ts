@@ -17,6 +17,9 @@ describe('account export projection', () => {
     let batchSize = 0;
     const fakeDb = {
       prepare(sql: string) {
+        if (sql === 'PRAGMA table_info(sessions)') {
+          return { all: async () => ({ results: [{ name: 'workout_id' }] }) };
+        }
         const statement = {
           bind(..._values: unknown[]) {
             preparedSql.push(sql);
@@ -94,19 +97,19 @@ describe('account export projection', () => {
          VALUES (?1,?2,'Caller Plan','active',1,?3,?3)`,
       ).bind(planId, caller.id, ts),
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
            (id,plan_id,name,order_index,created_at,updated_at)
          VALUES (?1,?2,'Caller Day',0,?3,?3)`,
       ).bind(dayId, planId, ts),
       env.DB.prepare(
         `INSERT INTO template_exercises
-           (id,day_template_id,exercise_id,order_index,target_sets,target_reps,
+           (id,workout_id,exercise_id,order_index,target_sets,target_reps,
             rest_seconds,created_at,updated_at)
          VALUES (?1,?2,?3,0,3,5,120,?4,?4)`,
       ).bind(templateExerciseId, dayId, exerciseId, ts),
       env.DB.prepare(
         `INSERT INTO sessions
-           (id,user_id,plan_id,day_template_id,date,status,created_at,updated_at)
+           (id,user_id,plan_id,workout_id,date,status,created_at,updated_at)
          VALUES (?1,?2,?3,?4,'2026-08-29','completed',?5,?5)`,
       ).bind(sessionId, caller.id, planId, dayId, ts),
       env.DB.prepare(
@@ -166,7 +169,7 @@ describe('account export projection', () => {
     const serialized = JSON.stringify(exported);
     const training = exported.training as {
       plans: Array<{ id: string }>;
-      day_templates: Array<{ id: string }>;
+      workouts: Array<{ id: string }>;
       template_exercises: Array<{ id: string }>;
       exercises: Array<{
         id: string;
@@ -182,7 +185,7 @@ describe('account export projection', () => {
     expect(exported.schema_version).toBe(2);
     expect((exported.account as { id: string }).id).toBe(caller.id);
     expect(training.plans.map((row) => row.id)).toEqual([planId]);
-    expect(training.day_templates.map((row) => row.id)).toEqual([dayId]);
+    expect(training.workouts.map((row) => row.id)).toEqual([dayId]);
     expect(training.template_exercises.map((row) => row.id)).toEqual([
       templateExerciseId,
     ]);

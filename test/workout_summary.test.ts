@@ -22,7 +22,7 @@ async function fixture() {
   const day = await post('days', { name: 'Bench day' });
   const slot = await post(`days/${day.id}/exercises`, { exercise: 'ex_bench', target_sets: 3,
     target_reps: 5, target_weight: 135, target_rpe: 8 });
-  const session = await post('sessions', { date: '2038-09-08', day_template_id: day.id });
+  const session = await post('sessions', { date: '2038-09-08', workout_id: day.id });
   const created = await post(`sessions/${session.id}/sets`, { id: crypto.randomUUID(),
     exercise_id: 'ex_bench', template_exercise_id: slot.id, set_index: 1, weight: 135, reps: 4,
     rpe: 9, expected_attempt: 0 });
@@ -60,7 +60,7 @@ describe('persisted completion summary', () => {
     const first = await env.DB.prepare('SELECT runner_targets FROM sessions WHERE id=?1')
       .bind(f.session.id).first<{ runner_targets: string }>();
     const version = JSON.parse(first!.runner_targets).plan_version;
-    const later = await f.post('sessions', { date: '2038-09-09', day_template_id: f.day.id });
+    const later = await f.post('sessions', { date: '2038-09-09', workout_id: f.day.id });
     const edit = await SELF.fetch(`${BASE}/api/days/${f.day.id}/exercises/${f.slot.id}`, {
       method: 'PATCH', headers: f.headers, body: JSON.stringify({ target_weight: 185 }),
     });
@@ -74,7 +74,7 @@ describe('persisted completion summary', () => {
 
   it('does not substitute current targets when a tap snapshot is unavailable', async () => {
     const f = await fixture();
-    const later = await f.post('sessions', { date: '2038-09-09', day_template_id: f.day.id });
+    const later = await f.post('sessions', { date: '2038-09-09', workout_id: f.day.id });
     await f.post(`sessions/${later.id}/sets`, { id: crypto.randomUUID(), exercise_id: 'ex_bench',
       template_exercise_id: f.slot.id, set_index: 1, weight: 135, reps: 5, expected_attempt: 0,
       prescription: { plan_id: f.plan.id, day_id: f.day.id, version: 9999 } });

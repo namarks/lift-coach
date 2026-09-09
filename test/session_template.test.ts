@@ -1,4 +1,4 @@
-// #926 — getOrCreateSession must HONOR an explicitly-provided day_template_id
+// #926 — getOrCreateSession must HONOR an explicitly-provided workout_id
 // on a row that doesn't have one yet, without ever auto-resolving from the
 // schedule (that would freeze a stale template, violating "calendar is
 // computed, not stored") and without clobbering an existing pin.
@@ -31,13 +31,13 @@ async function makeUserAndPlan(): Promise<{
   )
     .bind(planId, userId, 'P', ts)
     .run();
-  // Real day_templates so the sessions FK to day_template_id holds.
+  // Real workouts so the sessions FK to workout_id holds.
   for (const [id, label] of [
     [dayA, 'A'],
     [dayB, 'B'],
   ] as const) {
     await env.DB.prepare(
-      'INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,NULL,?6,?6)',
+      'INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,NULL,?6,?6)',
     )
       .bind(id, planId, `Day ${label}`, label, label === 'A' ? 0 : 1, ts)
       .run();
@@ -45,19 +45,19 @@ async function makeUserAndPlan(): Promise<{
   return { userId, planId, dayA, dayB };
 }
 
-describe('#926 getOrCreateSession honors an explicit day_template_id', () => {
+describe('#926 getOrCreateSession honors an explicit workout_id', () => {
   it('backfills a NULL slot when a later caller passes an explicit template', async () => {
     const { userId, planId, dayA } = await makeUserAndPlan();
     const date = '2026-06-10';
     // First creator (GET /today, MCP log_set) passes null → template resolved
     // from the schedule at display time.
     const first = await getOrCreateSession(env.DB, userId, planId, date, null);
-    expect(first.day_template_id).toBeNull();
+    expect(first.workout_id).toBeNull();
     // Later explicit creator (POST /api/sessions / iOS createSession) names
     // the day → must be honored on the SAME (user,date) row, not dropped.
     const second = await getOrCreateSession(env.DB, userId, planId, date, dayA);
     expect(second.id).toBe(first.id);
-    expect(second.day_template_id).toBe(dayA);
+    expect(second.workout_id).toBe(dayA);
   });
 
   it('never clobbers an existing pin', async () => {
@@ -65,7 +65,7 @@ describe('#926 getOrCreateSession honors an explicit day_template_id', () => {
     const date = '2026-06-11';
     await getOrCreateSession(env.DB, userId, planId, date, dayA);
     const again = await getOrCreateSession(env.DB, userId, planId, date, dayB);
-    expect(again.day_template_id).toBe(dayA);
+    expect(again.workout_id).toBe(dayA);
   });
 
   it('passing null leaves NULL (schedule stays the source of truth)', async () => {
@@ -73,6 +73,6 @@ describe('#926 getOrCreateSession honors an explicit day_template_id', () => {
     const date = '2026-06-12';
     await getOrCreateSession(env.DB, userId, planId, date, null);
     const again = await getOrCreateSession(env.DB, userId, planId, date, null);
-    expect(again.day_template_id).toBeNull();
+    expect(again.workout_id).toBeNull();
   });
 });

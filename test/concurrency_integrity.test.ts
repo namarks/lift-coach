@@ -1,9 +1,9 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
-  addDayTemplateAtVersion,
+  addWorkoutAtVersion,
   createPlan,
-  deleteDayTemplate,
+  deleteWorkout,
   discardSession,
   ensureActivePlan,
   getActivePlan,
@@ -11,7 +11,7 @@ import {
   logSet,
   logWorkoutComplete,
   patchSession,
-  patchDayTemplateAtVersion,
+  patchWorkoutAtVersion,
   patchSet,
   reviveDiscardedSession,
   setPlanSchedule,
@@ -396,7 +396,7 @@ describe('plan-tree optimistic concurrency', () => {
 
     const [ensured, updated] = await Promise.all([
       ensureActivePlan(dbA, userId, 'Member Plan'),
-      updatePlanTree(dbB, userId, { name: 'Coach Plan', days: [] }),
+      updatePlanTree(dbB, userId, { name: 'Coach Plan', workouts: [] }),
     ]);
 
     expect(ensured.plan.user_id).toBe(userId);
@@ -421,21 +421,21 @@ describe('plan-tree optimistic concurrency', () => {
     const dayId = crypto.randomUUID();
     const ts = Date.now();
     await env.DB.prepare(
-      `INSERT INTO day_templates
+      `INSERT INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
        VALUES (?1,?2,'Original','O',0,NULL,?3,?3)`,
     ).bind(dayId, planId, ts).run();
     const plan = await getActivePlan(env.DB, userId);
     if (!plan) throw new Error('missing active plan');
     const paused = databaseWithPausedBatchAfterRead(
-      'SELECT id, order_index FROM day_templates WHERE plan_id = ?1',
+      'SELECT id, order_index FROM workouts WHERE plan_id = ?1',
     );
 
-    const staleAppAdd = addDayTemplateAtVersion(
+    const staleAppAdd = addWorkoutAtVersion(
       paused.db, userId, plan, 'Stale app day', null, 1,
     );
     await paused.readReached;
-    const coachPatch = await patchDayTemplateAtVersion(
+    const coachPatch = await patchWorkoutAtVersion(
       env.DB, userId, plan, dayId, { name: 'Coach winner' },
     );
     expect(coachPatch).toMatchObject({ id: dayId, name: 'Coach winner' });
@@ -443,7 +443,7 @@ describe('plan-tree optimistic concurrency', () => {
 
     expect(await staleAppAdd).toEqual({ conflict: true, current_version: 2 });
     expect(await env.DB.prepare(
-      'SELECT id,name,order_index FROM day_templates WHERE plan_id=?1 ORDER BY order_index',
+      'SELECT id,name,order_index FROM workouts WHERE plan_id=?1 ORDER BY order_index',
     ).bind(planId).all()).toMatchObject({
       results: [{ id: dayId, name: 'Coach winner', order_index: 0 }],
     });
@@ -459,7 +459,7 @@ describe('plan-tree optimistic concurrency', () => {
     await env.DB.batch([
       env.DB
         .prepare(
-          `INSERT INTO day_templates
+          `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
            VALUES (?1,?2,'Original day','D',0,NULL,?3,?3)`,
         )
@@ -467,14 +467,14 @@ describe('plan-tree optimistic concurrency', () => {
       env.DB
         .prepare(
           `INSERT INTO template_exercises
-           (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
+           (id,workout_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
            VALUES (?1,?2,'ex_bench',0,3,5,NULL,NULL,120,NULL,NULL,NULL,NULL,0,?3,?3)`,
         )
         .bind(oldSlotId, oldDayId, ts),
       env.DB
         .prepare(
           `INSERT INTO sessions
-           (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+           (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
            VALUES (?1,?2,?3,?4,'2036-12-31','completed',?5,?5,7,NULL,?5,?5)`,
         )
         .bind(sessionId, userId, planId, oldDayId, ts),
@@ -495,7 +495,7 @@ describe('plan-tree optimistic concurrency', () => {
     const results = await Promise.all([
       updatePlanTree(dbA, userId, {
         name: 'Contender A',
-        days: [
+        workouts: [
           {
             name: 'Only A',
             day_label: 'D',
@@ -505,7 +505,7 @@ describe('plan-tree optimistic concurrency', () => {
       }),
       updatePlanTree(dbB, userId, {
         name: 'Contender B',
-        days: [
+        workouts: [
           {
             name: 'Only B',
             day_label: 'D',
@@ -531,20 +531,20 @@ describe('plan-tree optimistic concurrency', () => {
     expect(plan?.version).toBe(2);
 
     const days = await env.DB
-      .prepare('SELECT id,name,day_label FROM day_templates WHERE plan_id = ?1 ORDER BY name')
+      .prepare('SELECT id,name,day_label FROM workouts WHERE plan_id = ?1 ORDER BY name')
       .bind(planId)
       .all<{ id: string; name: string; day_label: string }>();
     expect(days.results).toHaveLength(1);
     const slots = await env.DB
       .prepare(
-        `SELECT te.id,te.day_template_id,te.target_sets,te.target_reps
-           FROM template_exercises te JOIN day_templates d ON d.id=te.day_template_id
+        `SELECT te.id,te.workout_id,te.target_sets,te.target_reps
+           FROM template_exercises te JOIN workouts d ON d.id=te.workout_id
           WHERE d.plan_id=?1`,
       )
       .bind(planId)
       .all<{
         id: string;
-        day_template_id: string;
+        workout_id: string;
         target_sets: number;
         target_reps: number;
       }>();
@@ -562,17 +562,17 @@ describe('plan-tree optimistic concurrency', () => {
     });
 
     const remappedSession = await env.DB
-      .prepare('SELECT day_template_id FROM sessions WHERE id=?1')
+      .prepare('SELECT workout_id FROM sessions WHERE id=?1')
       .bind(sessionId)
-      .first<{ day_template_id: string | null }>();
+      .first<{ workout_id: string | null }>();
     const remappedSet = await env.DB
       .prepare('SELECT template_exercise_id FROM set_logs WHERE id=?1')
       .bind(setId)
       .first<{ template_exercise_id: string | null }>();
-    expect(remappedSession?.day_template_id).toBe(days.results[0]!.id);
+    expect(remappedSession?.workout_id).toBe(days.results[0]!.id);
     expect(remappedSet?.template_exercise_id).toBe(slots.results[0]!.id);
-    expect(slots.results[0]!.day_template_id).toBe(days.results[0]!.id);
-    expect(await env.DB.prepare('SELECT id FROM day_templates WHERE id=?1').bind(oldDayId).first()).toBeNull();
+    expect(slots.results[0]!.workout_id).toBe(days.results[0]!.id);
+    expect(await env.DB.prepare('SELECT id FROM workouts WHERE id=?1').bind(oldDayId).first()).toBeNull();
     expect(
       await env.DB.prepare('SELECT id FROM template_exercises WHERE id=?1').bind(oldSlotId).first(),
     ).toBeNull();
@@ -588,14 +588,14 @@ describe('session create concurrency', () => {
     await env.DB.batch([
       env.DB
         .prepare(
-          `INSERT INTO day_templates
+          `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
            VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
         )
         .bind(dayA, planId, ts),
       env.DB
         .prepare(
-          `INSERT INTO day_templates
+          `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
            VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
         )
@@ -611,18 +611,18 @@ describe('session create concurrency', () => {
     ]);
 
     expect(resultA.id).toBe(resultB.id);
-    expect(resultA.day_template_id).toBe(resultB.day_template_id);
-    expect([dayA, dayB]).toContain(resultA.day_template_id);
+    expect(resultA.workout_id).toBe(resultB.workout_id);
+    expect([dayA, dayB]).toContain(resultA.workout_id);
 
     const rows = await env.DB
-      .prepare('SELECT id,day_template_id FROM sessions WHERE user_id = ?1 AND date = ?2')
+      .prepare('SELECT id,workout_id FROM sessions WHERE user_id = ?1 AND date = ?2')
       .bind(userId, '2037-01-02')
-      .all<{ id: string; day_template_id: string | null }>();
+      .all<{ id: string; workout_id: string | null }>();
     expect(rows.results).toEqual([
-      { id: resultA.id, day_template_id: resultA.day_template_id },
+      { id: resultA.id, workout_id: resultA.workout_id },
     ]);
 
-    const otherDay = resultA.day_template_id === dayA ? dayB : dayA;
+    const otherDay = resultA.workout_id === dayA ? dayB : dayA;
     const repeated = await getOrCreateSession(
       env.DB,
       userId,
@@ -631,7 +631,7 @@ describe('session create concurrency', () => {
       otherDay,
     );
     expect(repeated.id).toBe(resultA.id);
-    expect(repeated.day_template_id).toBe(resultA.day_template_id);
+    expect(repeated.workout_id).toBe(resultA.workout_id);
   });
 
   it('keeps the first pin when two scoped callers race on a pre-existing null row', async () => {
@@ -642,14 +642,14 @@ describe('session create concurrency', () => {
     await env.DB.batch([
       env.DB
         .prepare(
-          `INSERT INTO day_templates
+          `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
            VALUES (?1,?2,'Pinned A','A',0,NULL,?3,?3)`,
         )
         .bind(dayA, planId, ts),
       env.DB
         .prepare(
-          `INSERT INTO day_templates
+          `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
            VALUES (?1,?2,'Pinned B','B',1,NULL,?3,?3)`,
         )
@@ -675,15 +675,15 @@ describe('session create concurrency', () => {
 
     expect(a).toMatchObject({ id: existing.id, write_protocol: 'attempt-v1' });
     expect(b).toMatchObject({ id: existing.id, write_protocol: 'attempt-v1' });
-    expect(a.day_template_id).toBe(b.day_template_id);
-    expect([dayA, dayB]).toContain(a.day_template_id);
+    expect(a.workout_id).toBe(b.workout_id);
+    expect([dayA, dayB]).toContain(a.workout_id);
     expect(
       await env.DB
-        .prepare('SELECT day_template_id,write_protocol FROM sessions WHERE id=?1')
+        .prepare('SELECT workout_id,write_protocol FROM sessions WHERE id=?1')
         .bind(existing.id)
         .first(),
     ).toEqual({
-      day_template_id: a.day_template_id,
+      workout_id: a.workout_id,
       write_protocol: 'attempt-v1',
     });
   });
@@ -696,14 +696,14 @@ describe('session create concurrency', () => {
     await env.DB.batch([
       env.DB
         .prepare(
-          `INSERT INTO day_templates
+          `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
            VALUES (?1,?2,'Claim contender','A',0,NULL,?3,?3)`,
         )
         .bind(dayA, planId, ts),
       env.DB
         .prepare(
-          `INSERT INTO day_templates
+          `INSERT INTO workouts
            (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
            VALUES (?1,?2,'Legacy winner','B',1,NULL,?3,?3)`,
         )
@@ -714,7 +714,7 @@ describe('session create concurrency', () => {
     await activateWorkoutWriteFence();
     const paused = databaseWithPausedRunAfterRead(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
-      'SET day_template_id = CASE',
+      'SET workout_id = CASE',
     );
 
     const explicitClaim = getOrCreateSession(
@@ -732,7 +732,7 @@ describe('session create concurrency', () => {
       ok: true,
       session: {
         id: existing.id,
-        day_template_id: dayB,
+        workout_id: dayB,
         write_protocol: 'legacy',
       },
     });
@@ -742,7 +742,7 @@ describe('session create concurrency', () => {
       id: existing.id,
       status: 'planned',
       attempt: 1,
-      day_template_id: dayB,
+      workout_id: dayB,
       write_protocol: 'legacy',
     });
   });
@@ -753,7 +753,7 @@ describe('session create concurrency', () => {
     const ts = Date.now();
     await env.DB
       .prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Race pin','R',0,NULL,?3,?3)`,
       )
@@ -764,7 +764,7 @@ describe('session create concurrency', () => {
     await activateWorkoutWriteFence();
     const paused = databaseWithPausedRunAfterRead(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
-      'SET day_template_id = CASE',
+      'SET workout_id = CASE',
     );
     const staleClaim = getOrCreateSession(
       paused.db,
@@ -784,7 +784,7 @@ describe('session create concurrency', () => {
       id: session.id,
       status: 'completed',
       attempt: 0,
-      day_template_id: null,
+      workout_id: null,
       write_protocol: 'legacy',
     });
   });
@@ -795,7 +795,7 @@ describe('session create concurrency', () => {
     const ts = Date.now();
     await env.DB
       .prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Override day','O',0,NULL,?3,?3)`,
       )
@@ -812,16 +812,16 @@ describe('session create concurrency', () => {
 
     expect(override).toMatchObject({
       ok: true,
-      session: { id: created.id, day_template_id: dayId, status: 'planned' },
+      session: { id: created.id, workout_id: dayId, status: 'planned' },
     });
     const rows = await env.DB
       .prepare(
-        'SELECT id,day_template_id,status FROM sessions WHERE user_id = ?1 AND date = ?2',
+        'SELECT id,workout_id,status FROM sessions WHERE user_id = ?1 AND date = ?2',
       )
       .bind(userId, '2037-01-04')
-      .all<{ id: string; day_template_id: string | null; status: string }>();
+      .all<{ id: string; workout_id: string | null; status: string }>();
     expect(rows.results).toEqual([
-      { id: created.id, day_template_id: dayId, status: 'planned' },
+      { id: created.id, workout_id: dayId, status: 'planned' },
     ]);
   });
 
@@ -851,12 +851,12 @@ describe('session create concurrency', () => {
     const ts = Date.now();
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
       ).bind(crypto.randomUUID(), planId, ts),
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
       ).bind(crypto.randomUUID(), planId, ts),
@@ -890,12 +890,12 @@ describe('session create concurrency', () => {
     const dayB = crypto.randomUUID();
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
       ).bind(dayA, planId, ts),
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
       ).bind(dayB, planId, ts),
@@ -908,7 +908,7 @@ describe('session create concurrency', () => {
     const changed = await setPlannedSession(env.DB, userId, '2037-01-31', 'B', 1);
     expect(changed).toMatchObject({
       ok: true,
-      session: { day_template_id: dayB, attempt: 2 },
+      session: { workout_id: dayB, attempt: 2 },
     });
     expect(await setPlannedSession(env.DB, userId, '2037-01-31', 'A', 1)).toMatchObject({
       error: 'session_attempt_conflict',
@@ -922,7 +922,7 @@ describe('session create concurrency', () => {
     const dayId = crypto.randomUUID();
     const ts = Date.now();
     await env.DB.prepare(
-      `INSERT INTO day_templates
+      `INSERT INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
        VALUES (?1,?2,'Only Day','O',0,NULL,?3,?3)`,
     ).bind(dayId, planId, ts).run();
@@ -947,12 +947,12 @@ describe('session create concurrency', () => {
     const dayB = crypto.randomUUID();
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
       ).bind(dayA, planId, ts),
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
       ).bind(dayB, planId, ts),
@@ -960,7 +960,7 @@ describe('session create concurrency', () => {
     const date = '2037-02-06';
     expect(await setPlannedSession(env.DB, userId, date, 'A', 0)).toMatchObject({
       ok: true,
-      session: { day_template_id: dayA, attempt: 1 },
+      session: { workout_id: dayA, attempt: 1 },
     });
     const paused = databaseWithPausedRunAfterRead(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
@@ -969,7 +969,7 @@ describe('session create concurrency', () => {
     const staleAssignment = setPlannedSession(paused.db, userId, date, 'B', 1);
     await paused.runReached;
 
-    expect(await deleteDayTemplate(env.DB, userId, dayA, 1)).toEqual({
+    expect(await deleteWorkout(env.DB, userId, dayA, 1)).toEqual({
       ok: true,
       version: 2,
     });
@@ -986,10 +986,10 @@ describe('session create concurrency', () => {
       current_session: { status: 'skipped', attempt: 2 },
     });
     expect(
-      await env.DB.prepare('SELECT day_template_id,status,attempt FROM sessions WHERE user_id=?1 AND date=?2')
+      await env.DB.prepare('SELECT workout_id,status,attempt FROM sessions WHERE user_id=?1 AND date=?2')
         .bind(userId, date)
         .first(),
-    ).toEqual({ day_template_id: null, status: 'skipped', attempt: 2 });
+    ).toEqual({ workout_id: null, status: 'skipped', attempt: 2 });
   });
 
   it('keeps a null-template active day protected after its weekday is remapped', async () => {
@@ -1000,18 +1000,18 @@ describe('session create concurrency', () => {
     const slotA = crypto.randomUUID();
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
       ).bind(dayA, planId, ts),
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
       ).bind(dayB, planId, ts),
       env.DB.prepare(
         `INSERT INTO template_exercises
-         (id,day_template_id,exercise_id,order_index,target_sets,target_reps,
+         (id,workout_id,exercise_id,order_index,target_sets,target_reps,
           rest_seconds,created_at,updated_at)
          VALUES (?1,?2,'ex_bench',0,3,5,120,?3,?3)`,
       ).bind(slotA, dayA, ts),
@@ -1038,17 +1038,17 @@ describe('session create concurrency', () => {
       expected_attempt: 0,
       source: 'ios',
     })).toMatchObject({
-      session: { status: 'in_progress', day_template_id: null },
+      session: { status: 'in_progress', workout_id: null },
       set: { template_exercise_id: slotA, deleted_at: null },
     });
     expect(await setPlanSchedule(env.DB, userId, { mon: dayB }, 2, planId))
       .toMatchObject({ ok: true, version: 3 });
 
-    expect(await deleteDayTemplate(env.DB, userId, dayA, 3)).toEqual({
+    expect(await deleteWorkout(env.DB, userId, dayA, 3)).toEqual({
       error: 'day_in_progress',
     });
     expect(await env.DB.prepare(
-      'SELECT id FROM day_templates WHERE id=?1',
+      'SELECT id FROM workouts WHERE id=?1',
     ).bind(dayA).first()).toEqual({ id: dayA });
     expect(await env.DB.prepare(
       'SELECT id FROM template_exercises WHERE id=?1',
@@ -1068,12 +1068,12 @@ describe('session create concurrency', () => {
     const dayB = crypto.randomUUID();
     await env.DB.batch([
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day A','A',0,NULL,?3,?3)`,
       ).bind(dayA, planId, ts),
       env.DB.prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Day B','B',1,NULL,?3,?3)`,
       ).bind(dayB, planId, ts),
@@ -1096,12 +1096,12 @@ describe('session create concurrency', () => {
       current_version: replacement.version,
     });
     expect(
-      await env.DB.prepare('SELECT plan_id,day_template_id,status,attempt FROM sessions WHERE id=?1')
+      await env.DB.prepare('SELECT plan_id,workout_id,status,attempt FROM sessions WHERE id=?1')
         .bind(sessionId)
         .first(),
     ).toEqual({
       plan_id: planId,
-      day_template_id: dayA,
+      workout_id: dayA,
       status: 'planned',
       attempt: 1,
     });
@@ -1112,7 +1112,7 @@ describe('session create concurrency', () => {
     const dayId = crypto.randomUUID();
     const ts = Date.now();
     await env.DB.prepare(
-      `INSERT INTO day_templates
+      `INSERT INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
        VALUES (?1,?2,'Old Day','O',0,NULL,?3,?3)`,
     ).bind(dayId, planId, ts).run();
@@ -1141,7 +1141,7 @@ describe('session create concurrency', () => {
     const dayId = crypto.randomUUID();
     const ts = Date.now();
     await env.DB.prepare(
-      `INSERT INTO day_templates
+      `INSERT INTO workouts
        (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
        VALUES (?1,?2,'Old Day','O',0,NULL,?3,?3)`,
     ).bind(dayId, planId, ts).run();
@@ -1163,12 +1163,12 @@ describe('session create concurrency', () => {
       current_version: replacement.version,
     });
     expect(
-      await env.DB.prepare('SELECT plan_id,day_template_id,status,attempt FROM sessions WHERE id=?1')
+      await env.DB.prepare('SELECT plan_id,workout_id,status,attempt FROM sessions WHERE id=?1')
         .bind(sessionId)
         .first(),
     ).toEqual({
       plan_id: planId,
-      day_template_id: dayId,
+      workout_id: dayId,
       status: 'planned',
       attempt: 1,
     });
@@ -1205,7 +1205,7 @@ describe('session create concurrency', () => {
     await discardSession(env.DB, userId, session.id);
     const paused = databaseWithPausedRunAfterRead(
       'SELECT * FROM sessions WHERE user_id = ?1 AND date = ?2',
-      'SET day_template_id=?2',
+      'SET workout_id=?2',
     );
 
     const staleResolver = getOrCreateSession(
@@ -1256,7 +1256,7 @@ describe('session create concurrency', () => {
     const ts = Date.now();
     await env.DB
       .prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Override day','O',0,NULL,?3,?3)`,
       )
@@ -1295,16 +1295,16 @@ describe('session create concurrency', () => {
       current_attempt: 1,
       current_session: {
         id: session.id,
-        day_template_id: null,
+        workout_id: null,
         status: 'in_progress',
         attempt: 1,
       },
     });
     expect(
-      await env.DB.prepare('SELECT day_template_id,status,attempt FROM sessions WHERE id=?1')
+      await env.DB.prepare('SELECT workout_id,status,attempt FROM sessions WHERE id=?1')
         .bind(session.id)
         .first(),
-    ).toEqual({ day_template_id: null, status: 'in_progress', attempt: 1 });
+    ).toEqual({ workout_id: null, status: 'in_progress', attempt: 1 });
   });
 
   it('does not let a stale skip writer hide a restarted workout', async () => {
@@ -2392,7 +2392,7 @@ describe('session revival hygiene', () => {
     const ts = Date.now();
     await env.DB
       .prepare(
-        `INSERT INTO day_templates
+        `INSERT INTO workouts
          (id,plan_id,name,day_label,order_index,notes,created_at,updated_at)
          VALUES (?1,?2,'Revival day','R',0,NULL,?3,?3)`,
       )
@@ -2489,6 +2489,15 @@ describe('session revival hygiene', () => {
 
 describe('0029 duplicate-session reconciliation', () => {
   it('preserves every set, retains one export, and restores both unique indexes', async () => {
+    // Replay historical migration 0029 on its original identifier vocabulary.
+    // isolatedStorage restores the fully migrated schema after this test.
+    await env.DB.batch([
+      'ALTER TABLE workouts RENAME TO day_templates',
+      'ALTER TABLE template_exercises RENAME COLUMN workout_id TO day_template_id',
+      'ALTER TABLE sessions RENAME COLUMN workout_id TO day_template_id',
+      'DROP INDEX ix_te_workout',
+      'CREATE INDEX ix_te_day ON template_exercises(day_template_id, order_index)',
+    ].map((sql) => env.DB.prepare(sql)));
     const { userId, planId } = await seedUserAndPlan('migration-replay');
     const suffix = crypto.randomUUID();
     const winner = `${suffix}-a`;

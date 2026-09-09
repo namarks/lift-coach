@@ -134,7 +134,7 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     }
 }
 
-struct DayTemplate: Codable, Identifiable, Equatable {
+struct Workout: Codable, Identifiable, Equatable {
     let id: String
     let name: String
     let day_label: String?
@@ -148,9 +148,9 @@ struct DayTemplate: Codable, Identifiable, Equatable {
 ///
 /// Wire shape (inside the plan's `meta` JSON string):
 ///   "schedule": { "version": 1,
-///     "week": { "mon": "<day_template_id|null>", "tue": …, … "sun": … } }
+///     "week": { "mon": "<workout_id|null>", "tue": …, … "sun": … } }
 ///
-/// Keyed by weekday; null / absent = rest day; values are `day_template_id`.
+/// Keyed by weekday; null / absent = rest day; values are `workout_id`.
 /// Both the Routine screen and Claude edit this same versioned map through
 /// their respective thin API wrappers; neither owns a client-only schedule.
 struct PlanSchedule: Decodable, Equatable {
@@ -160,7 +160,7 @@ struct PlanSchedule: Decodable, Equatable {
     /// Lowercase 3-letter keys, in the contract's order.
     static let weekdayKeys = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
-    /// day_template_id scheduled for a weekday key, or nil (rest / absent).
+    /// workout_id scheduled for a weekday key, or nil (rest / absent).
     func templateID(forWeekdayKey key: String) -> String? {
         // `week[key]` is `String??`: outer = key present, inner = JSON null.
         guard let inner = week[key] else { return nil }
@@ -172,7 +172,7 @@ struct PlanTree: Codable, Equatable {
     let id: String
     let name: String
     let version: Int
-    let days: [DayTemplate]
+    let workouts: [Workout]
     /// Raw plan `meta` JSON, delivered by the backend as a JSON-encoded
     /// *string* (`plans.meta TEXT`). Schedule lives inside it; decoded
     /// lazily via `schedule` so a malformed/absent meta never breaks sync.
@@ -340,7 +340,7 @@ struct SessionRow: Codable, Identifiable {
     /// Present in `/api/state` (backend `SELECT * FROM sessions`); lets a
     /// real planned/in-progress session resolve to its template in the
     /// agenda. Optional so older payloads still decode.
-    let day_template_id: String?
+    let workout_id: String?
     /// Server mutation ordering for this canonical session. Optional for
     /// rolling compatibility, but new Workers return it on state, set, finish,
     /// and discard responses so delayed callbacks cannot outrank later state.
@@ -792,5 +792,74 @@ struct StateResponse: Codable {
             manualActivityCursorCapable,
             forKey: .manualActivityCursorCapable)
         try c.encode(server_time, forKey: .server_time)
+    }
+}
+
+// Workout vocabulary changes the domain, while decoding retains the released
+// wire/cache shapes. Encode the existing cache shape for this compatibility
+// cycle so a downgrade does not strand a persisted plan or session.
+extension PlanTree {
+    private enum CodingKeys: String, CodingKey { case id, name, version, workouts, days, meta }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        version = try c.decode(Int.self, forKey: .version)
+        meta = try c.decodeIfPresent(String.self, forKey: .meta)
+        if c.contains(.workouts) {
+            workouts = try c.decode([Workout].self, forKey: .workouts)
+            if c.contains(.days), try c.decode([Workout].self, forKey: .days) != workouts {
+                throw DecodingError.dataCorruptedError(forKey: .workouts, in: c, debugDescription: "Conflicting workout collections")
+            }
+        } else {
+            workouts = try c.decode([Workout].self, forKey: .days)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(name, forKey: .name)
+        try c.encode(version, forKey: .version)
+        try c.encode(workouts, forKey: .days)
+        try c.encodeIfPresent(meta, forKey: .meta)
+    }
+}
+
+extension SessionRow {
+    private enum CodingKeys: String, CodingKey {
+        case id, date, status, workout_id, day_template_id, summary, updated_at, attempt, write_protocol
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(String.self, forKey: .id)
+        date = try c.decode(String.self, forKey: .date)
+        status = try c.decode(String.self, forKey: .status)
+        summary = try c.decodeIfPresent(WorkoutSummary.self, forKey: .summary)
+        updated_at = try c.decodeIfPresent(Int.self, forKey: .updated_at)
+        attempt = try c.decodeIfPresent(Int.self, forKey: .attempt)
+        write_protocol = try c.decodeIfPresent(String.self, forKey: .write_protocol)
+        if c.contains(.workout_id) {
+            workout_id = try c.decodeIfPresent(String.self, forKey: .workout_id)
+            if c.contains(.day_template_id), try c.decodeIfPresent(String.self, forKey: .day_template_id) != workout_id {
+                throw DecodingError.dataCorruptedError(forKey: .workout_id, in: c, debugDescription: "Conflicting workout identity")
+            }
+        } else {
+            workout_id = try c.decodeIfPresent(String.self, forKey: .day_template_id)
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(date, forKey: .date)
+        try c.encode(status, forKey: .status)
+        try c.encodeIfPresent(workout_id, forKey: .day_template_id)
+        try c.encodeIfPresent(summary, forKey: .summary)
+        try c.encodeIfPresent(updated_at, forKey: .updated_at)
+        try c.encodeIfPresent(attempt, forKey: .attempt)
+        try c.encodeIfPresent(write_protocol, forKey: .write_protocol)
     }
 }

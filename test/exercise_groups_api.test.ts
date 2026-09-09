@@ -17,7 +17,7 @@ beforeAll(async () => {
   jwt = (await auth.json<{ jwt: string }>()).jwt;
   userId = (await ensureOwnerUser(env.DB, undefined))!.id;
   const result = await updatePlanTree(env.DB, userId, {
-    name: 'Superset fixture', days: [{ name: 'Strength', day_label: 'A', exercises: [
+    name: 'Superset fixture', workouts: [{ name: 'Strength', day_label: 'A', exercises: [
       { exercise: 'push-up', target_sets: 2, target_reps: 10, rest_seconds: 45, is_warmup: 1 },
       { exercise: 'squat', target_sets: 2, target_reps: 10, rest_seconds: 90, is_warmup: 1 },
       { exercise: 'bench', target_sets: 3, target_reps: 5, rest_seconds: 120 },
@@ -41,7 +41,7 @@ async function mcp(name: string, args: Record<string, unknown> = {}, callerId = 
   expect(result.json.result.isError).not.toBe(true);
   return JSON.parse(result.json.result.content[0].text);
 }
-const day = () => plan.days[0]!;
+const day = () => plan.workouts[0]!;
 const members = () => day().exercises.slice(0, 2).map((slot) => slot.id);
 const grouping = () => ({ group_id: groupId, expected_version: plan.version,
   exercises: members(), round_rest: 30, transition_rest: 0 });
@@ -59,7 +59,7 @@ describe('group authoring API and released-client projection', () => {
     const grouped = await mcp('group_exercises', { ...grouping(), day: 'A', exercises: ['push-up', 'squat'] });
     expect(grouped).toMatchObject({ ok: true, group_id: groupId, version: plan.version + 1 });
     const tree = await mcp('get_current_plan');
-    expect(tree.days[0].exercises.slice(0, 2)).toMatchObject([
+    expect(tree.workouts[0].exercises.slice(0, 2)).toMatchObject([
       { group_label: 'A1', group_id: groupId, is_warmup: 1, group_rest_seconds: 30, group_transition_seconds: 0 },
       { group_label: 'A2', group_id: groupId, is_warmup: 1, group_rest_seconds: 30, group_transition_seconds: 0 },
     ]);
@@ -79,15 +79,15 @@ describe('group authoring API and released-client projection', () => {
       expect(response.status).toBe(200);
       expect(response.body).not.toHaveProperty('plan_groups_version');
       const view = path === '/state' ? response.body.plan : response.body;
-      expect(view.days[0].exercises.map((slot: any) => slot.rest_seconds)).toEqual([30, 30, 120]);
-      for (const slot of view.days[0].exercises) {
+      expect(view.workouts[0].exercises.map((slot: any) => slot.rest_seconds)).toEqual([30, 30, 120]);
+      for (const slot of view.workouts[0].exercises) {
         expect(slot).not.toHaveProperty('group_id');
         expect(slot).not.toHaveProperty('group_rest_seconds');
         expect(slot).not.toHaveProperty('group_transition_seconds');
       }
     }
     const stored = await getPlanTree(env.DB, userId);
-    expect(stored!.days[0]!.exercises.map((slot) => slot.rest_seconds)).toEqual([45, 90, 120]);
+    expect(stored!.workouts[0]!.exercises.map((slot) => slot.rest_seconds)).toEqual([45, 90, 120]);
   });
 
   it.each([undefined, 'groups'])('projects a restored grouped plan for capability %s without changing stored rests', async (capability) => {
@@ -99,15 +99,15 @@ describe('group authoring API and released-client projection', () => {
       expected_plan_id: plan.id, expected_version: grouped.body.version + 1,
     }, capability);
     expect(restored.status).toBe(200);
-    expect(restored.body.plan.days[0].exercises.map((slot: any) => slot.rest_seconds))
+    expect(restored.body.plan.workouts[0].exercises.map((slot: any) => slot.rest_seconds))
       .toEqual(capability === 'groups' ? [45, 90, 120] : [30, 30, 120]);
     if (capability === 'groups') {
-      expect(restored.body.plan.days[0].exercises[0]).toMatchObject({ group_id: groupId, group_rest_seconds: 30 });
+      expect(restored.body.plan.workouts[0].exercises[0]).toMatchObject({ group_id: groupId, group_rest_seconds: 30 });
     } else {
-      expect(restored.body.plan.days[0].exercises[0]).not.toHaveProperty('group_id');
+      expect(restored.body.plan.workouts[0].exercises[0]).not.toHaveProperty('group_id');
     }
     const stored = await getPlanTree(env.DB, userId);
-    expect(stored!.days[0]!.exercises.map((slot) => slot.rest_seconds)).toEqual([45, 90, 120]);
+    expect(stored!.workouts[0]!.exercises.map((slot) => slot.rest_seconds)).toEqual([45, 90, 120]);
   });
 
   it('honors groups among other comma-separated capabilities and preserves ungrouped slots', async () => {
@@ -116,9 +116,9 @@ describe('group authoring API and released-client projection', () => {
       const response = await api(path, 'GET', undefined, 'slots, groups ,future');
       if (path === '/state') expect(response.body.plan_groups_version).toBe(1);
       const view = path === '/state' ? response.body.plan : response.body;
-      expect(view.days[0].exercises.map((slot: any) => slot.rest_seconds)).toEqual([45, 90, 120]);
-      expect(view.days[0].exercises[0]).toMatchObject({ group_id: groupId, group_rest_seconds: 30 });
-      expect(view.days[0].exercises[2].group_id).toBeNull();
+      expect(view.workouts[0].exercises.map((slot: any) => slot.rest_seconds)).toEqual([45, 90, 120]);
+      expect(view.workouts[0].exercises[0]).toMatchObject({ group_id: groupId, group_rest_seconds: 30 });
+      expect(view.workouts[0].exercises[2].group_id).toBeNull();
     }
     const delta = await api(`/state?since=${plan.version + 1}`, 'GET', undefined, 'groups');
     expect(delta.body.plan).toBeNull();
@@ -130,7 +130,7 @@ describe('group authoring API and released-client projection', () => {
       const response = await api('/state', 'GET', undefined, capability);
       expect(response.status).toBe(200);
       expect(response.body).not.toHaveProperty('plan_groups_version');
-      expect(response.body.plan.days[0].exercises[0]).not.toHaveProperty('group_id');
+      expect(response.body.plan.workouts[0].exercises[0]).not.toHaveProperty('group_id');
     }
   });
 
@@ -159,7 +159,7 @@ describe('group authoring API and released-client projection', () => {
     expect((await api(`/days/${day().id}/groups`, 'PUT', clear)).status).toBe(200);
     expect(await trail()).toEqual(before);
     const view = (await api('/plan/active')).body;
-    expect(view.days[0].exercises.map((slot: any) => slot.rest_seconds)).toEqual([45, 90, 120]);
+    expect(view.workouts[0].exercises.map((slot: any) => slot.rest_seconds)).toEqual([45, 90, 120]);
   });
 
   it('scopes REST clear to its day while replaying an acknowledged clear after day replacement', async () => {
@@ -171,7 +171,7 @@ describe('group authoring API and released-client projection', () => {
     const accepted = await api(`/days/${day().id}/groups`, 'PUT', clear);
     expect(accepted.status).toBe(200);
     await mcp('update_plan', { expected_version: accepted.body.version,
-      days: [{ name: 'Replacement', exercises: [] }] });
+      workouts: [{ name: 'Replacement', exercises: [] }] });
     const after = await trail();
     const replay = await api(`/days/${day().id}/groups`, 'PUT', clear);
     expect(replay.status).toBe(200);
@@ -224,8 +224,8 @@ describe('group authoring API and released-client projection', () => {
     });
     expect(result.status).toBe(200);
     const tree = await getPlanTree(env.DB, userId);
-    expect(tree!.days[0]!.exercises.map((slot) => slot.id)).toEqual([day().exercises[2]!.id, ...members()]);
-    expect(tree!.days[0]!.exercises.map((slot) => slot.rest_seconds)).toEqual([120, 45, 90]);
+    expect(tree!.workouts[0]!.exercises.map((slot) => slot.id)).toEqual([day().exercises[2]!.id, ...members()]);
+    expect(tree!.workouts[0]!.exercises.map((slot) => slot.rest_seconds)).toEqual([120, 45, 90]);
     expect(tree!.version).toBe(plan.version + 2);
   });
 
@@ -233,24 +233,24 @@ describe('group authoring API and released-client projection', () => {
     const args = { ...grouping(), day: day().id };
     const accepted = await mcp('group_exercises', args);
     const replaced = await mcp('update_plan', { expected_version: accepted.version,
-      days: [{ name: 'Replacement', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }] });
+      workouts: [{ name: 'Replacement', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }] });
     expect(replaced.plan.version).toBe(plan.version + 2);
     const before = await trail();
     expect(await mcp('group_exercises', args)).toMatchObject({ ok: true, version: accepted.version, replayed: true });
     expect(await trail()).toEqual(before);
-    expect((await getPlanTree(env.DB, userId))!.days[0]!.name).toBe('Replacement');
+    expect((await getPlanTree(env.DB, userId))!.workouts[0]!.name).toBe('Replacement');
   });
 
   it.each(['A', 'Strength'])('replays a name-based request for %s after IDs are rebuilt', async (dayReference) => {
     const args = { ...grouping(), day: dayReference, exercises: ['push-up', 'squat'] };
     const accepted = await mcp('group_exercises', args);
     const replaced = await mcp('update_plan', { expected_version: accepted.version,
-      days: [{ name: 'Strength', day_label: 'A', exercises: [
+      workouts: [{ name: 'Strength', day_label: 'A', exercises: [
         { exercise: 'push-up', target_sets: 4, target_reps: 12 },
         { exercise: 'squat', target_sets: 4, target_reps: 12 },
       ] }] });
-    expect(replaced.plan.days[0].id).not.toBe(day().id);
-    expect(replaced.plan.days[0].exercises.map((slot: any) => slot.id)).not.toEqual(members());
+    expect(replaced.plan.workouts[0].id).not.toBe(day().id);
+    expect(replaced.plan.workouts[0].exercises.map((slot: any) => slot.id)).not.toEqual(members());
     const before = await trail();
     const beforeTree = await getPlanTree(env.DB, userId);
     const reorderedArguments = Object.fromEntries(Object.entries(args).reverse());
@@ -266,7 +266,7 @@ describe('group authoring API and released-client projection', () => {
   it('replays names after their day is removed without bypassing argument or tenant validation', async () => {
     const args = { ...grouping(), day: 'A', exercises: ['push-up', 'squat'] };
     const accepted = await mcp('group_exercises', args);
-    await mcp('update_plan', { expected_version: accepted.version, days: [] });
+    await mcp('update_plan', { expected_version: accepted.version, workouts: [] });
     const before = await trail();
     expect(await mcp('group_exercises', args)).toEqual({ ...accepted, replayed: true });
     expect(await mcp('group_exercises', { ...args, surprise: true }))
@@ -278,7 +278,7 @@ describe('group authoring API and released-client projection', () => {
       .bind(otherUserId, `group-retry-${otherUserId}`, Date.now()).run();
     expect(await mcp('group_exercises', args, otherUserId)).toEqual({ error: 'no_active_plan' });
     expect(await trail()).toEqual(before);
-    expect((await getPlanTree(env.DB, userId))!.days).toEqual([]);
+    expect((await getPlanTree(env.DB, userId))!.workouts).toEqual([]);
   });
 
   it('rejects unknown group arguments and malformed MCP values without coercing', async () => {

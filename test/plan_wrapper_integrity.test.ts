@@ -18,7 +18,7 @@ async function fixture(label: string) {
   });
   const built = await updatePlanTree(env.DB, userId, {
     expected_version: plan.version,
-    days: [{ name: 'Strength', day_label: 'A', exercises: [
+    workouts: [{ name: 'Strength', day_label: 'A', exercises: [
       { exercise: 'bench', target_sets: 3, target_reps: 5 },
     ] }],
   }, { actor: 'mcp', operation: 'update_plan', note: 'Fixture plan.' });
@@ -120,9 +120,9 @@ describe('plan REST and MCP wrapper integrity', () => {
       'SELECT document FROM plan_snapshots WHERE user_id=?1 AND plan_id=?2 AND version=?3',
     ).bind(userId, plan.id, plan.version).first<{ document: string }>();
     const document = JSON.parse(snapshot!.document) as {
-      days: Array<{ exercises: Array<Record<string, unknown>> }>;
+      workouts: Array<{ exercises: Array<Record<string, unknown>> }>;
     };
-    document.days[0]!.exercises[0]!.target_sets = '3';
+    document.workouts[0]!.exercises[0]!.target_sets = '3';
     await env.DB.prepare(
       'UPDATE plan_snapshots SET document=?1 WHERE user_id=?2 AND plan_id=?3 AND version=?4',
     ).bind(JSON.stringify(document), userId, plan.id, plan.version).run();

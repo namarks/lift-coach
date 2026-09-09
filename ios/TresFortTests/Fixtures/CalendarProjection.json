@@ -72,7 +72,7 @@
           "id": "s-fixture",
           "date": "2026-05-11",
           "status": "planned",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [],
@@ -102,7 +102,7 @@
           "id": "s-fixture",
           "date": "2026-05-11",
           "status": "discarded",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [],
@@ -132,7 +132,7 @@
           "id": "s-fixture",
           "date": "2026-05-11",
           "status": "completed",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [],
@@ -162,7 +162,7 @@
           "id": "s-fixture",
           "date": "2026-05-11",
           "status": "in_progress",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [],
@@ -192,7 +192,7 @@
           "id": "s-fixture",
           "date": "2026-05-11",
           "status": "skipped",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [],
@@ -310,7 +310,7 @@
           "id": "s-fixture",
           "date": "2026-05-18",
           "status": "discarded",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [],
@@ -340,7 +340,7 @@
           "id": "s-fixture",
           "date": "2026-05-18",
           "status": "skipped",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [],
@@ -401,7 +401,7 @@
           "id": "s-fixture",
           "date": "2026-05-18",
           "status": "planned",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [
@@ -470,7 +470,7 @@
           "id": "s-fixture",
           "date": "2026-05-18",
           "status": "planned",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [
@@ -508,7 +508,7 @@
           "id": "s-fixture",
           "date": "2026-05-18",
           "status": "skipped",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [
@@ -546,7 +546,7 @@
           "id": "s-fixture",
           "date": "2026-05-18",
           "status": "discarded",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [
@@ -584,7 +584,7 @@
           "id": "s-fixture",
           "date": "2026-05-18",
           "status": "in_progress",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [
@@ -622,7 +622,7 @@
           "id": "s-fixture",
           "date": "2026-05-18",
           "status": "completed",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [
@@ -660,7 +660,7 @@
           "id": "s-fixture",
           "date": "2026-05-11",
           "status": "completed",
-          "day_template_id": "d_push"
+          "workout_id": "d_push"
         }
       ],
       "trips": [

@@ -6,7 +6,7 @@ import SwiftUI
 /// of this code. An unknown fixture fails closed before constructing real auth.
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, loadFailure = "load-failure"
-    case ordinary, bodyweight, timed, pending, onboarding, groups
+    case ordinary, bodyweight, timed, pending, onboarding, groups, library
     case historySmall = "history-small", historyLarge = "history-large"
 
     var isHistory: Bool { self == .historySmall || self == .historyLarge }
@@ -48,7 +48,7 @@ enum UIFixtureModel {
         if let scenario = UIFixtureScenario.selected, scenario.isHistory,
            ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_HISTORY"] != "1" {
             let history = HistoryFixtureData.dataset(sessionCount: scenario == .historySmall ? 12 : 1_040)
-            let state = StateResponse(plan: PlanTree(id: "synthetic-plan", name: "Synthetic history", version: 1, days: [], meta: nil),
+            let state = StateResponse(plan: PlanTree(id: "synthetic-plan", name: "Synthetic history", version: 1, workouts: [], meta: nil),
                 plan_version: 1, sessions: history.sessions, sets: history.sets,
                 external_events: [], external_activities: [], activities: [], server_time: history.server_time)
             StateSnapshotStore.save(state, userID: auth.userID, defaults: defaults)
@@ -158,7 +158,7 @@ private struct UIFixtureServer {
         self.scenario = scenario
         if ![.signIn, .empty, .loadFailure, .onboarding].contains(scenario) {
             plan = makePlan()
-            sessions = scenario == .groups ? [] : [makeSession()]
+            sessions = [.groups, .library].contains(scenario) ? [] : [makeSession()]
             if [.readyToFinish, .correctionFailure].contains(scenario) {
                 sets = [["id": "synthetic-set", "session_id": sessionID,
                     "exercise_id": "synthetic-exercise", "template_exercise_id": "synthetic-slot",
@@ -181,10 +181,16 @@ private struct UIFixtureServer {
 
     func makeSession(status: String = "in_progress", attempt: Int = 1) -> [String: Any] {
         ["id": sessionID, "date": "2026-09-08", "status": status,
-         "day_template_id": dayID, "updated_at": revision,
+         "workout_id": dayID, "updated_at": revision,
          "attempt": attempt, "write_protocol": "attempt-v1"]
     }
-    func makePlan(name: String = "Synthetic Training", days: Bool = true) -> [String: Any] {
+    func makePlan(name: String = "Synthetic Training", workouts: Bool = true) -> [String: Any] {
+        if scenario == .library {
+            return ["id": "synthetic-plan", "name": "My Workouts", "version": 1,
+                "meta": "{\"schedule\":{\"version\":1,\"week\":{\"tue\":\"synthetic-day\"}}}",
+                "days": [["id": dayID, "name": "Gym", "order_index": 0, "exercises": []],
+                         ["id": "hotel", "name": "Hotel", "order_index": 1, "exercises": []]]]
+        }
         if scenario == .groups {
             return ["id": "synthetic-plan", "name": groupFixture["name"]!, "version": 1,
                 "meta": "{\"schedule\":{\"version\":1,\"week\":{\"tue\":\"synthetic-day\"}}}",
@@ -200,7 +206,7 @@ private struct UIFixtureServer {
         if scenario == .timed { slot["target_duration_s"] = 5 }
         let meta = "{\"schedule\":{\"version\":1,\"week\":{\"tue\":\"synthetic-day\"}}}"
         return ["id": "synthetic-plan", "name": name, "version": 1, "meta": meta,
-            "days": days ? [["id": dayID, "name": "Workout A", "order_index": 0,
+            "days": workouts ? [["id": dayID, "name": "Workout A", "order_index": 0,
                               "exercises": [slot]]] : []]
     }
 
@@ -248,8 +254,25 @@ private struct UIFixtureServer {
                 "modality": scenario == .bodyweight ? "bw" : scenario == .timed ? "timed" : "barbell",
                 "unit": "lb", "primary_muscle": "legs"]]
         case ("PUT", "/api/plan/active"):
-            plan = makePlan(name: body["name"] as? String ?? "My Training", days: false)
+            plan = makePlan(name: body["name"] as? String ?? "My Training", workouts: false)
             response = ["plan": ["id": "synthetic-plan", "name": plan!["name"]!, "version": 1], "created": true]
+        case ("PUT", "/api/plan/schedule") where scenario == .library:
+            let version = (plan?["version"] as? Int ?? 1) + 1
+            let schedule: [String: Any] = ["version": 1, "week": body["week"] ?? [:]]
+            plan?["meta"] = String(data: try JSONSerialization.data(withJSONObject: ["schedule": schedule]), encoding: .utf8)
+            plan?["version"] = version
+            response = ["ok": true, "version": version, "schedule": schedule]
+        case ("PUT", "/api/calendar/2026-09-08") where scenario == .library:
+            let row: [String: Any] = ["id": sessionID, "date": "2026-09-08", "status": "planned",
+                "day_template_id": body["day_template_id"] ?? NSNull(), "attempt": 1, "updated_at": revision]
+            sessions = [row]
+            response = ["ok": true, "session": row]
+        case ("DELETE", "/api/days/hotel") where scenario == .library:
+            let remaining = (plan?["days"] as? [[String: Any]] ?? []).filter { $0["id"] as? String != "hotel" }
+            let version = (plan?["version"] as? Int ?? 1) + 1
+            plan?["days"] = remaining
+            plan?["version"] = version
+            response = ["ok": true, "version": plan?["version"] ?? 1]
         case ("POST", "/api/days"):
             var day: [String: Any] = ["id": dayID, "name": body["name"] ?? "Workout A",
                                       "order_index": 0, "exercises": []]

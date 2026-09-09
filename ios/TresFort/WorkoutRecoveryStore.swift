@@ -18,7 +18,7 @@ struct RunnerGroupRepair: Codable, Equatable {
     let groupID: String
     let members: [Member]
 
-    init?(groupID: String, day: DayTemplate) {
+    init?(groupID: String, day: Workout) {
         let slots = day.exercises.filter { $0.group_id == groupID }
         guard slots.count >= 2 else { return nil }
         dayID = day.id

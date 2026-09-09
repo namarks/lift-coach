@@ -10,7 +10,7 @@ export function planForCapabilities(tree: PlanTree, capabilities: ReadonlySet<st
   if (capabilities.has('groups')) return tree;
   return {
     ...tree,
-    days: tree.days.map((day) => ({
+    workouts: tree.workouts.map((day) => ({
       ...day,
       exercises: day.exercises.map((slot) => {
         const { group_id, group_rest_seconds, group_transition_seconds: _transition, ...ordinary } = slot;

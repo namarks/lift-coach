@@ -1,6 +1,6 @@
 # Workout Library
 
-Slug: workout-library · Status: planned · Updated: 2026-09-07 · Theme: gym-floor
+Slug: workout-library · Status: active · Updated: 2026-09-09 · Theme: gym-floor
 
 ## Goal
 
@@ -182,15 +182,19 @@ P1 metadata and P2 save-as-workout reuse the completed [validated atomic writer]
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P0 | blocked_by | plan:workouts-and-multi-session#P0(a) | The selected goal establishes canonical workout terminology and compatible clients before the library UI. Production rollout and compatibility cleanup do not block this repository slice. |
 | P0 | coordinates_with | plan:member-activation-and-adherence#P0 | Both edit the no-plan and Today entry surfaces; do not run concurrently on the same iOS files. |
 | P1 | coordinates_with | plan:workouts-and-multi-session#P0 | Both touch `day_templates` columns and serializers; whichever lands second rebases onto the other's migration. |
 | P2 | feeds | plan:coaching-feedback-loop | Freestyle sessions and save-as-workout give the coach evidence of what a member actually does when the plan breaks. |
 
 ## Next step
 
-**Now (@owner):** Decide whether to activate P0 next. P0 is iOS copy,
-navigation, and one calendar gesture
-over existing endpoints; it can ship in one slice with no migration.
+**Now (@agent):** After the rename's P0(a) repository contract is verified,
+implement Library P0 using the shared workout vocabulary and existing assignment
+and schedule endpoints. The 2026-09-09 goal activates P0 only; tags/archive,
+freestyle and multi-session behavior remain outside scope. Keep the first iOS
+build compatible with the deployed Worker and coordinate UI delivery with the
+server-first rollout, without waiting for compatibility cleanup.
 
 ## Notes / open questions
 

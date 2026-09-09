@@ -148,7 +148,7 @@ final class AuthModelTests: XCTestCase {
                 duration_s: nil,
                 is_timed: false),
             date: "2026-08-29",
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: "session-a",
             deliveryState: .queued,
             failedHTTPStatus: nil)
@@ -915,7 +915,7 @@ final class AuthModelTests: XCTestCase {
             id: UUID().uuidString,
             action: .finish,
             date: "2026-08-29",
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: "session-a",
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -924,7 +924,7 @@ final class AuthModelTests: XCTestCase {
             id: UUID().uuidString,
             action: .discard,
             date: "2026-08-29",
-            dayTemplateID: "day-b",
+            workoutID: "day-b",
             resolvedSessionID: "session-b",
             deliveryState: .queued,
             failedHTTPStatus: nil))

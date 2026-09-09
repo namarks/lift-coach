@@ -128,8 +128,8 @@ describe('plan tree + versioned sync', () => {
 
     const tree = await (
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
-    ).json<{ days: { exercises: unknown[] }[] }>();
-    expect(tree.days[0]?.exercises ?? []).toHaveLength(1);
+    ).json<{ workouts: { exercises: unknown[] }[] }>();
+    expect(tree.workouts[0]?.exercises ?? []).toHaveLength(1);
 
     // unknown exercise -> 400
     const bad = await SELF.fetch(`${BASE}/api/days/${day.id}/exercises`, {
@@ -161,7 +161,7 @@ describe('sessions, idempotent set logging, history, volume', () => {
     // update_plan rebuilds day UUIDs. Deleting this unused row reproduces the
     // stale optional FK an offline iOS set intent can retain across that
     // rebuild, without involving the client-side fallback under test.
-    const removed = await env.DB.prepare('DELETE FROM day_templates WHERE id = ?1')
+    const removed = await env.DB.prepare('DELETE FROM workouts WHERE id = ?1')
       .bind(day.id)
       .run();
     expect(removed.meta.changes).toBe(1);
@@ -171,7 +171,7 @@ describe('sessions, idempotent set logging, history, volume', () => {
       headers: H,
       body: JSON.stringify({
         date: '2026-05-17',
-        day_template_id: day.id,
+        workout_id: day.id,
       }),
     });
 
@@ -839,7 +839,7 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
         headers: H,
         body: JSON.stringify({
           status: 'planned',
-          day_template_id: overrideDay.id,
+          workout_id: overrideDay.id,
         }),
       });
     expect(reopened.status).toBe(200);
@@ -847,7 +847,7 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
       id,
       status: 'planned',
       attempt: 1,
-      day_template_id: overrideDay.id,
+      workout_id: overrideDay.id,
     });
 
     const logged = await SELF.fetch(`${BASE}/api/sessions/${id}/sets`, {
@@ -868,14 +868,14 @@ describe('PATCH /api/sessions/:id — skipped patch cannot bury started/finished
         id,
         status: 'in_progress',
         attempt: 1,
-        day_template_id: overrideDay.id,
+        workout_id: overrideDay.id,
       },
     });
     expect(
-      await env.DB.prepare('SELECT day_template_id FROM sessions WHERE id=?1')
+      await env.DB.prepare('SELECT workout_id FROM sessions WHERE id=?1')
         .bind(id)
-        .first<{ day_template_id: string | null }>(),
-    ).toEqual({ day_template_id: overrideDay.id });
+        .first<{ workout_id: string | null }>(),
+    ).toEqual({ workout_id: overrideDay.id });
     expect(
       await env.DB.prepare('SELECT id FROM set_logs WHERE id=?1')
         .bind(blockedSetId)
@@ -1727,7 +1727,7 @@ describe('migration 0029 session aliases — stale REST mutations self-heal', ()
       env.DB
         .prepare(
           `INSERT INTO sessions
-           (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
+           (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at)
            VALUES (?1,?2,?3,NULL,'2041-01-11','planned',NULL,NULL,NULL,NULL,?4,?4)`,
         )
         .bind(foreignSessionId, foreignUserId, foreignPlanId, ts),

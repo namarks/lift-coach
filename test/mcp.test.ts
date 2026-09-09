@@ -139,6 +139,9 @@ describe('mcp tools list', () => {
         'update_exercise',
         'swap_exercise',
         'add_exercise',
+        'add_workout',
+        'update_workout',
+        'delete_workout',
         'add_day',
         'adjust_today',
         'set_schedule',
@@ -159,7 +162,7 @@ describe('mcp tools list', () => {
         'set_stress_model',
       ]),
     );
-    expect(names).toHaveLength(40);
+    expect(names).toHaveLength(43);
     for (const t of body.result.tools) expect(t.inputSchema.type).toBe('object');
     const correction = body.result.tools.find((t: any) => t.name === 'correct_set');
     expect(correction.inputSchema.required).toEqual(['set_id']);
@@ -239,7 +242,7 @@ describe('mcp tools read live D1', () => {
 
     const plan = toolJson((await rpc('tools/call', { name: 'get_current_plan', arguments: {} })).body);
     expect(plan.name).toBe('Upper/Lower');
-    expect(plan.days[0].exercises).toHaveLength(1);
+    expect(plan.workouts[0].exercises).toHaveLength(1);
 
     const hist = toolJson(
       (await rpc('tools/call', { name: 'get_history', arguments: { exercise: 'bench' } })).body,
@@ -320,7 +323,7 @@ describe('mcp tools read live D1', () => {
     )!.id;
     await env.DB.prepare(
       `INSERT OR IGNORE INTO sessions
-         (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,
+         (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,
           perceived_fatigue,notes,created_at,updated_at)
        VALUES (?1,?2,?3,NULL,?4,'completed',NULL,NULL,NULL,NULL,?5,?5)`,
     )
@@ -442,7 +445,7 @@ describe('mcp bodyweight intensity adjustment', () => {
       name: 'update_plan',
       arguments: {
         name: 'Assistance scaling',
-        days: [{
+        workouts: [{
           name: 'A',
           day_label: 'A',
           exercises: [
@@ -464,7 +467,7 @@ describe('mcp bodyweight intensity adjustment', () => {
         reason: 'fatigued',
       },
     })).body);
-    const exercises = adjusted.plan.days[0].exercises;
+    const exercises = adjusted.plan.workouts[0].exercises;
     expect(exercises.find((exercise: any) => exercise.exercise_id === 'ex_pullup')
       .target_weight).toBe(-35);
     expect(exercises.find((exercise: any) => exercise.exercise_id === 'ex_neutral_pullup')
