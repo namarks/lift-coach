@@ -40,7 +40,7 @@ describe('mcp write tools', () => {
       // build a plan from scratch
       built = await call('update_plan', {
         name: 'Upper/Lower',
-        days: [
+        workouts: [
           {
             day_label: 'A',
             name: 'Upper A',
@@ -60,21 +60,21 @@ describe('mcp write tools', () => {
         ],
       });
       expect(built.conflict).toBe(false);
-      expect(built.plan.days).toHaveLength(2);
+      expect(built.plan.workouts).toHaveLength(2);
       v = built.plan.version;
       expect(v).toBeGreaterThan(1);
     });
 
     it('update_plan: a stale expected_version conflicts; the current one rebuilds, audited + noted', async () => {
       // optimistic concurrency: a stale expected_version conflicts
-      const stale = await call('update_plan', { name: 'x', expected_version: 1, days: [] });
+      const stale = await call('update_plan', { name: 'x', expected_version: 1, workouts: [] });
       expect(stale).toMatchObject({ conflict: true, current_version: v });
 
       // correct expected_version succeeds
       const fresh = await call('update_plan', {
         expected_version: v,
         name: 'Upper/Lower v2',
-        days: built.plan.days.map((d: any) => ({
+        workouts: built.plan.workouts.map((d: any) => ({
           day_label: d.day_label,
           name: d.name,
           exercises: d.exercises.map((e: any) => ({
@@ -195,7 +195,7 @@ describe('mcp write tools', () => {
   it('keeps MCP generation CAS compatible with a released tokenless iOS writer', async () => {
     await call('update_plan', {
       name: 'Protocol compatibility',
-      days: [
+      workouts: [
         {
           day_label: 'P',
           name: 'Protocol Day',
@@ -245,7 +245,7 @@ describe('mcp write tools', () => {
     // Establish a plan so there is a version to watch.
     const built = await call('update_plan', {
       name: 'Ride Refresh',
-      days: [
+      workouts: [
         { day_label: 'A', name: 'Day A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
       ],
     });
@@ -293,7 +293,7 @@ describe('mcp write tools', () => {
   it('reports unknown exercises instead of failing silently', async () => {
     const r = await call('update_plan', {
       name: 'bad',
-      days: [{ name: 'X', exercises: [{ exercise: 'moon press', target_sets: 3, target_reps: 5 }] }],
+      workouts: [{ name: 'X', exercises: [{ exercise: 'moon press', target_sets: 3, target_reps: 5 }] }],
     });
     expect(JSON.stringify(r)).toContain('unknown_exercise');
   });
@@ -310,7 +310,7 @@ describe('mcp write tools', () => {
       // Fresh plan with two named days.
       const built = await call('update_plan', {
         name: 'Sched Test',
-        days: [
+        workouts: [
           { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
           { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
         ],
@@ -329,7 +329,7 @@ describe('mcp write tools', () => {
       expect(set1.version).toBe(v0 + 1);
       // resolved to ids belonging to the active plan
       const dayIds = await env.DB.prepare(
-        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+        'SELECT id, name FROM workouts WHERE plan_id = ?1',
       )
         .bind(planId)
         .all<{ id: string; name: string }>();
@@ -458,7 +458,7 @@ describe('mcp write tools', () => {
     // Build a plan with two named days and schedule both.
     const built = await call('update_plan', {
       name: 'Survive Test',
-      days: [
+      workouts: [
         { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
         { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
       ],
@@ -475,7 +475,7 @@ describe('mcp write tools', () => {
     const rebuilt = await call('update_plan', {
       expected_version: setSched.version,
       name: 'Survive Test',
-      days: [
+      workouts: [
         { day_label: 'PUSH', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
         { day_label: 'D', name: 'Deadlift Day', exercises: [{ exercise: 'deadlift', target_sets: 3, target_reps: 5 }] },
       ],
@@ -484,7 +484,7 @@ describe('mcp write tools', () => {
 
     // New ids differ from old ones (full rebuild).
     const newDays = await env.DB.prepare(
-      'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+      'SELECT id, name FROM workouts WHERE plan_id = ?1',
     )
       .bind(planId)
       .all<{ id: string; name: string }>();
@@ -517,7 +517,7 @@ describe('mcp write tools', () => {
     it('(a) meta without schedule preserves+remaps the existing schedule; (d) the other meta key persists', async () => {
       const built = await call('update_plan', {
         name: 'Meta Merge A',
-        days: [
+        workouts: [
           { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
           { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
         ],
@@ -532,7 +532,7 @@ describe('mcp write tools', () => {
         expected_version: setSched.version,
         name: 'Meta Merge A',
         meta: { deload_scheme: 'week4-50%' },
-        days: [
+        workouts: [
           { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
           { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
         ],
@@ -545,7 +545,7 @@ describe('mcp write tools', () => {
       expect(cp.schedule.thu).toBe('Pull Day');
 
       const newDays = await env.DB.prepare(
-        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+        'SELECT id, name FROM workouts WHERE plan_id = ?1',
       )
         .bind(planId)
         .all<{ id: string; name: string }>();
@@ -563,7 +563,7 @@ describe('mcp write tools', () => {
     it('(b) an explicit meta.schedule replaces the existing one (and still rides the day remap)', async () => {
       const built = await call('update_plan', {
         name: 'Meta Merge B',
-        days: [
+        workouts: [
           { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
           { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
         ],
@@ -585,7 +585,7 @@ describe('mcp write tools', () => {
             week: { mon: null, tue: null, wed: null, thu: null, fri: oldPushId, sat: null, sun: null },
           },
         },
-        days: [
+        workouts: [
           { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
           { day_label: 'B', name: 'Pull Day', exercises: [{ exercise: 'barbell row', target_sets: 3, target_reps: 8 }] },
         ],
@@ -593,7 +593,7 @@ describe('mcp write tools', () => {
       expect(updated.conflict).toBe(false);
 
       const newDays = await env.DB.prepare(
-        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+        'SELECT id, name FROM workouts WHERE plan_id = ?1',
       )
         .bind(planId)
         .all<{ id: string; name: string }>();
@@ -610,7 +610,7 @@ describe('mcp write tools', () => {
     it('(c) no meta at all leaves behavior unchanged (schedule survives by name)', async () => {
       const built = await call('update_plan', {
         name: 'Meta Merge C',
-        days: [
+        workouts: [
           { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
         ],
       });
@@ -621,14 +621,14 @@ describe('mcp write tools', () => {
       const updated = await call('update_plan', {
         expected_version: setSched.version,
         name: 'Meta Merge C',
-        days: [
+        workouts: [
           { day_label: 'A', name: 'Push Day', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] },
         ],
       });
       expect(updated.conflict).toBe(false);
 
       const newDays = await env.DB.prepare(
-        'SELECT id, name FROM day_templates WHERE plan_id = ?1',
+        'SELECT id, name FROM workouts WHERE plan_id = ?1',
       )
         .bind(planId)
         .all<{ id: string; name: string }>();
@@ -653,7 +653,7 @@ describe('mcp skip_planned_session — rejects burying started/finished history'
   async function ownerAndPlan(): Promise<{ userId: string; planId: string }> {
     await call('update_plan', {
       name: 'MCP Skip Guard',
-      days: [{ day_label: 'A', name: 'Day A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }],
+      workouts: [{ day_label: 'A', name: 'Day A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5 }] }],
     });
     const userId = (
       await env.DB.prepare('SELECT id FROM users ORDER BY created_at LIMIT 1').first<{ id: string }>()
@@ -673,7 +673,7 @@ describe('mcp skip_planned_session — rejects burying started/finished history'
   ): Promise<string> {
     const sid = crypto.randomUUID();
     await env.DB.prepare(
-      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,NULL,NULL,?8,?8)',
+      'INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,?7,NULL,NULL,?8,?8)',
     )
       .bind(sid, userId, planId, date, status, status === 'planned' ? null : 1, status === 'completed' ? 2 : null, Date.now())
       .run();
@@ -735,44 +735,44 @@ describe('mcp skip_planned_session — rejects burying started/finished history'
 });
 
 describe('mcp update_plan — FK-safe rebuild remaps session + set_log references', () => {
-  // Repro: a real `sessions` row references a day_template_id that
+  // Repro: a real `sessions` row references a workout_id that
   // update_plan would DELETE during the rebuild. Pre-fix: D1_ERROR
   // FOREIGN KEY constraint failed. Post-fix: sessions remap to the new
   // day id (matched by label/name); a removed day → NULL.
-  it('remaps a session.day_template_id when the day survives by label', async () => {
+  it('remaps a session.workout_id when the day survives by label', async () => {
     await call('update_plan', {
       name: 'Remap test',
-      days: [{ name: 'Full Body A', day_label: 'A', exercises: [
+      workouts: [{ name: 'Full Body A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', target_sets: 3, target_reps: 5 },
       ] }],
     });
     // Plant a real session pointing at day A
     await call('set_planned_session', { date: '2026-09-01', day: 'A' });
-    const before = await env.DB.prepare("SELECT day_template_id FROM sessions WHERE date='2026-09-01'")
-      .first<{ day_template_id: string | null }>();
-    const oldDayId = before!.day_template_id!;
+    const before = await env.DB.prepare("SELECT workout_id FROM sessions WHERE date='2026-09-01'")
+      .first<{ workout_id: string | null }>();
+    const oldDayId = before!.workout_id!;
     expect(oldDayId).not.toBeNull();
 
     // Rebuild — same day label "A", new UUID. Pre-fix: FK error.
     const rebuilt = await call('update_plan', {
       name: 'Remap test',
-      days: [{ name: 'Full Body A renamed', day_label: 'A', exercises: [
+      workouts: [{ name: 'Full Body A renamed', day_label: 'A', exercises: [
         { exercise: 'Bench Press', target_sets: 4, target_reps: 5 },
       ] }],
     });
     expect(rebuilt.conflict).toBe(false);
-    const newDayId = rebuilt.plan.days[0].id;
+    const newDayId = rebuilt.plan.workouts[0].id;
     expect(newDayId).not.toBe(oldDayId);
 
-    const after = await env.DB.prepare("SELECT day_template_id FROM sessions WHERE date='2026-09-01'")
-      .first<{ day_template_id: string | null }>();
-    expect(after!.day_template_id).toBe(newDayId);
+    const after = await env.DB.prepare("SELECT workout_id FROM sessions WHERE date='2026-09-01'")
+      .first<{ workout_id: string | null }>();
+    expect(after!.workout_id).toBe(newDayId);
   });
 
-  it('NULLs a session.day_template_id when the day is removed in the rebuild', async () => {
+  it('NULLs a session.workout_id when the day is removed in the rebuild', async () => {
     await call('update_plan', {
       name: 'Drop test',
-      days: [
+      workouts: [
         { name: 'A day', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 3, target_reps: 5 }] },
         { name: 'B day', day_label: 'B', exercises: [{ exercise: 'Conventional Deadlift', target_sets: 3, target_reps: 5 }] },
       ],
@@ -782,24 +782,24 @@ describe('mcp update_plan — FK-safe rebuild remaps session + set_log reference
     // Rebuild WITHOUT day B
     const rebuilt = await call('update_plan', {
       name: 'Drop test',
-      days: [{ name: 'A day', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 3, target_reps: 5 }] }],
+      workouts: [{ name: 'A day', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 3, target_reps: 5 }] }],
     });
     expect(rebuilt.conflict).toBe(false);
 
-    const sess = await env.DB.prepare("SELECT day_template_id FROM sessions WHERE date='2026-09-02'")
-      .first<{ day_template_id: string | null }>();
-    expect(sess!.day_template_id).toBeNull();
+    const sess = await env.DB.prepare("SELECT workout_id FROM sessions WHERE date='2026-09-02'")
+      .first<{ workout_id: string | null }>();
+    expect(sess!.workout_id).toBeNull();
   });
 
   it('remaps set_logs.template_exercise_id to the new te id when the exercise survives', async () => {
     await call('update_plan', {
       name: 'TE remap',
-      days: [{ name: 'A', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 3, target_reps: 5 }] }],
+      workouts: [{ name: 'A', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 3, target_reps: 5 }] }],
     });
     await call('set_planned_session', { date: '2026-09-03', day: 'A' });
     // Read the current te id
     const teBefore = await env.DB.prepare(
-      "SELECT te.id FROM template_exercises te JOIN day_templates d ON d.id=te.day_template_id WHERE d.day_label='A'",
+      "SELECT te.id FROM template_exercises te JOIN workouts d ON d.id=te.workout_id WHERE d.day_label='A'",
     ).first<{ id: string }>();
     const oldTeId = teBefore!.id;
     // Plant a set_log with that template_exercise_id
@@ -813,10 +813,10 @@ describe('mcp update_plan — FK-safe rebuild remaps session + set_log reference
     // Rebuild keeps day A + Bench Press → te should remap
     const rebuilt = await call('update_plan', {
       name: 'TE remap',
-      days: [{ name: 'A', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 4, target_reps: 8 }] }],
+      workouts: [{ name: 'A', day_label: 'A', exercises: [{ exercise: 'Bench Press', target_sets: 4, target_reps: 8 }] }],
     });
     expect(rebuilt.conflict).toBe(false);
-    const newTeId = rebuilt.plan.days[0].exercises[0].id;
+    const newTeId = rebuilt.plan.workouts[0].exercises[0].id;
 
     const set = await env.DB.prepare('SELECT template_exercise_id FROM set_logs WHERE id=?1')
       .bind(setId)
@@ -827,7 +827,7 @@ describe('mcp update_plan — FK-safe rebuild remaps session + set_log reference
   it('rejects an exercise item with missing/empty `exercise` (structured, no .trim() crash)', async () => {
     const r = await call('update_plan', {
       name: 'trim test',
-      days: [{ name: 'A', day_label: 'A', exercises: [{ target_sets: 3, target_reps: 5 } as never] }],
+      workouts: [{ name: 'A', day_label: 'A', exercises: [{ target_sets: 3, target_reps: 5 } as never] }],
     });
     // Structured error: same shape every other exercise-resolution
     // failure uses — agents can pattern-match r.error === 'unknown_exercise'.
@@ -839,7 +839,7 @@ describe('mcp update_plan — FK-safe rebuild remaps session + set_log reference
   it('rejects an unrecognized exercise name with a structured unknown_exercise error', async () => {
     const r = await call('update_plan', {
       name: 'unknown name test',
-      days: [{ name: 'A', day_label: 'A', exercises: [{ exercise: 'Kettlebell Underhand Push', target_sets: 3, target_reps: 5 }] }],
+      workouts: [{ name: 'A', day_label: 'A', exercises: [{ exercise: 'Kettlebell Underhand Push', target_sets: 3, target_reps: 5 }] }],
     });
     expect(r.error).toBe('unknown_exercise');
     expect(r.query).toBe('Kettlebell Underhand Push');
@@ -849,7 +849,7 @@ describe('mcp update_plan — FK-safe rebuild remaps session + set_log reference
   it('collects ALL unknowns in one response — no fail-fix-retry round trips', async () => {
     const r = await call('update_plan', {
       name: 'multi-unknown',
-      days: [{
+      workouts: [{
         name: 'A', day_label: 'A', exercises: [
           { exercise: 'Bench Press', target_sets: 3, target_reps: 5 }, // OK
           { exercise: 'Kettlebell Underhand Push', target_sets: 3, target_reps: 5 }, // unknown
@@ -873,7 +873,7 @@ describe('mcp set_planned_session — clean revival of a discarded session', () 
   it('returns a planned session with cleared started_at/completed_at when reviving a discarded row', async () => {
     await call('update_plan', {
       name: 'Revival',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
@@ -913,7 +913,7 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
   it('add_exercise appends densely (max+1), not the old 99 sentinel', async () => {
     await call('update_plan', {
       name: 'Order test',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
         { exercise: 'Barbell Row',  order_index: 1, target_sets: 3, target_reps: 8 },
       ] }],
@@ -935,7 +935,7 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
   it('update_exercise applies order_index', async () => {
     await call('update_plan', {
       name: 'Order patch',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
@@ -948,7 +948,7 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
   it('add_day appends densely (max+1), not the old 99 sentinel', async () => {
     await call('update_plan', {
       name: 'Day order',
-      days: [
+      workouts: [
         { name: 'A', day_label: 'A', order_index: 0, exercises: [
           { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
         ] },
@@ -961,7 +961,7 @@ describe('mcp order_index — settable on add and update; rejects unknown patch 
   it('update_exercise rejects unknown patch keys instead of silent 200', async () => {
     await call('update_plan', {
       name: 'Unknown key',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
@@ -978,7 +978,7 @@ describe('mcp update_day — patch a day in place (no full plan rebuild)', () =>
   it('updates notes/name/day_label/order_index via day label; densifies and bumps version', async () => {
     const built = await call('update_plan', {
       name: 'Day patch',
-      days: [{ name: 'Old A', day_label: 'A', notes: 'old', exercises: [
+      workouts: [{ name: 'Old A', day_label: 'A', notes: 'old', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
@@ -995,13 +995,13 @@ describe('mcp update_day — patch a day in place (no full plan rebuild)', () =>
 
     const after = await call('get_current_plan', {});
     expect(after.version).toBeGreaterThan(v0);
-    expect(after.days[0].name).toBe('New A');
+    expect(after.workouts[0].name).toBe('New A');
   });
 
   it('rejects unknown patch keys with structured error', async () => {
     await call('update_plan', {
       name: 'Unknown day key',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
@@ -1016,7 +1016,7 @@ describe('mcp update_day — patch a day in place (no full plan rebuild)', () =>
   it('returns day_not_found for an unknown ref', async () => {
     await call('update_plan', {
       name: 'Missing day',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
@@ -1029,7 +1029,7 @@ describe('mcp delete_exercise — removes a slot; detaches historical sets', () 
   it('deletes by (day, exercise) and NULLs set_logs.template_exercise_id', async () => {
     await call('update_plan', {
       name: 'Delete slot',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press',  order_index: 0, target_sets: 3, target_reps: 5 },
         { exercise: 'Barbell Row',  order_index: 1, target_sets: 3, target_reps: 8 },
       ] }],
@@ -1037,7 +1037,7 @@ describe('mcp delete_exercise — removes a slot; detaches historical sets', () 
     // Plant a set_log that references the te id we're about to delete.
     const te = await env.DB
       .prepare(
-        "SELECT te.id FROM template_exercises te JOIN day_templates d ON d.id=te.day_template_id WHERE d.day_label='A' AND te.exercise_id='ex_bench'",
+        "SELECT te.id FROM template_exercises te JOIN workouts d ON d.id=te.workout_id WHERE d.day_label='A' AND te.exercise_id='ex_bench'",
       )
       .first<{ id: string }>();
     const teId = te!.id;
@@ -1056,7 +1056,7 @@ describe('mcp delete_exercise — removes a slot; detaches historical sets', () 
     // Slot gone; sibling row still there.
     const remaining = await env.DB
       .prepare(
-        "SELECT exercise_id FROM template_exercises te JOIN day_templates d ON d.id=te.day_template_id WHERE d.day_label='A'",
+        "SELECT exercise_id FROM template_exercises te JOIN workouts d ON d.id=te.workout_id WHERE d.day_label='A'",
       )
       .all<{ exercise_id: string }>();
     expect(remaining.results.map((r) => r.exercise_id)).toEqual(['ex_barbell_row']);
@@ -1072,7 +1072,7 @@ describe('mcp delete_exercise — removes a slot; detaches historical sets', () 
   it('returns slot_not_found for an unknown ref', async () => {
     await call('update_plan', {
       name: 'No slot',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
@@ -1085,7 +1085,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
   it('add_exercise persists target_duration_s and it round-trips via get_current_plan', async () => {
     await call('update_plan', {
       name: 'Timed via add',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
       ] }],
     });
@@ -1099,7 +1099,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     expect(added.target_duration_s).toBe(45);
 
     const tree = await call('get_current_plan', {});
-    const plank = tree.days[0].exercises.find(
+    const plank = tree.workouts[0].exercises.find(
       (e: { exercise_id: string }) => e.exercise_id === 'ex_side_plank',
     );
     expect(plank).toBeDefined();
@@ -1109,7 +1109,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
   it('update_exercise patches target_duration_s; null clears it', async () => {
     await call('update_plan', {
       name: 'Timed via patch',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Plank', order_index: 0, target_sets: 1, target_reps: 1, target_duration_s: 30 },
       ] }],
     });
@@ -1127,14 +1127,14 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
   it('update_plan accepts target_duration_s on exercise items in the tree', async () => {
     const r = await call('update_plan', {
       name: 'Timed in tree',
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'Bench Press', order_index: 0, target_sets: 3, target_reps: 5 },
         { exercise: 'Plank',       order_index: 1, target_sets: 2, target_reps: 1, target_duration_s: 30 },
         { exercise: 'Dead Hang',   order_index: 2, target_sets: 2, target_reps: 1, target_duration_s: 15 },
       ] }],
     });
     expect(r.conflict).toBe(false);
-    const exs = r.plan.days[0].exercises;
+    const exs = r.plan.workouts[0].exercises;
     expect(exs.find((e: { exercise_id: string }) => e.exercise_id === 'ex_plank').target_duration_s).toBe(30);
     expect(exs.find((e: { exercise_id: string }) => e.exercise_id === 'ex_dead_hang').target_duration_s).toBe(15);
     // Non-timed slot stays null.
@@ -1144,7 +1144,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
   it('log_set preserves a same-weight MCP straight-set series', async () => {
     await call('update_plan', {
       name: 'Straight sets',
-      days: [
+      workouts: [
         {
           day_label: 'S',
           name: 'Straight Sets',
@@ -1174,7 +1174,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
   it('log_set preserves repeated timed MCP efforts', async () => {
     await call('update_plan', {
       name: 'Timed repeats',
-      days: [
+      workouts: [
         {
           day_label: 'T',
           name: 'Timed Repeats',
@@ -1222,7 +1222,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
       // Plan + a session iOS just logged a 185x5 squat into.
       const built = await call('update_plan', {
         name: 'Dedupe',
-        days: [
+        workouts: [
           {
             day_label: 'L',
             name: 'Legs',
@@ -1408,7 +1408,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
   it('log_set rejects a recent duplicate before reviving its discarded target date', async () => {
     const built = await call('update_plan', {
       name: 'Duplicate rejection is mutation-free',
-      days: [
+      workouts: [
         {
           day_label: 'L',
           name: 'Legs',
@@ -1438,7 +1438,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
       await env.DB
         .prepare(
           `UPDATE sessions
-              SET plan_id=?2, day_template_id=NULL, status='discarded',
+              SET plan_id=?2, workout_id=NULL, status='discarded',
                   started_at=NULL, completed_at=NULL, perceived_fatigue=NULL,
                   notes=NULL, updated_at=?3, attempt=?4, write_protocol='legacy'
             WHERE id=?1`,
@@ -1449,7 +1449,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
       await env.DB
         .prepare(
           `INSERT INTO sessions
-             (id,user_id,plan_id,day_template_id,date,status,started_at,
+             (id,user_id,plan_id,workout_id,date,status,started_at,
               completed_at,perceived_fatigue,notes,created_at,updated_at,
               attempt,write_protocol)
            VALUES (?1,?2,?3,NULL,?4,'discarded',NULL,NULL,NULL,NULL,?5,?5,?6,'legacy')`,
@@ -1465,7 +1465,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     await env.DB
       .prepare(
         `INSERT INTO sessions
-           (id,user_id,plan_id,day_template_id,date,status,started_at,
+           (id,user_id,plan_id,workout_id,date,status,started_at,
             completed_at,perceived_fatigue,notes,created_at,updated_at,
             attempt,write_protocol)
          VALUES (?1,?2,?3,NULL,'1999-12-31','in_progress',?4,NULL,NULL,NULL,?4,?4,0,'legacy')`,
@@ -1523,7 +1523,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     // Fresh plan + one MCP-logged set.
     const built = await call('update_plan', {
       name: 'Delete',
-      days: [
+      workouts: [
         {
           day_label: 'P',
           name: 'Press',
@@ -1571,7 +1571,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
     beforeAll(async () => {
       const built = await call('update_plan', {
         name: 'Corrections',
-        days: [
+        workouts: [
           {
             day_label: 'C',
             name: 'Correction day',
@@ -1701,7 +1701,7 @@ describe('mcp target_duration_s — timed slots specified natively (no rep-overl
           .bind(foreignPlanId, foreignUserId, now),
         env.DB
           .prepare(
-            "INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,'2040-01-02','in_progress',?4,NULL,NULL,NULL,?4,?4)",
+            "INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,'2040-01-02','in_progress',?4,NULL,NULL,NULL,?4,?4)",
           )
           .bind(foreignSessionId, foreignUserId, foreignPlanId, now),
         env.DB
@@ -1735,7 +1735,7 @@ describe('update_plan preserves warm-up flags', () => {
     // Build a day with a prescribed warm-up slot + a working slot.
     const built = await call('update_plan', {
       name: 'Warmup preservation',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Warmup Day',
@@ -1747,7 +1747,7 @@ describe('update_plan preserves warm-up flags', () => {
       ],
     });
     expect(built.conflict).toBe(false);
-    const day0 = built.plan.days[0];
+    const day0 = built.plan.workouts[0];
     const warm = day0.exercises.find((e: any) => e.is_warmup === 1);
     const work = day0.exercises.find((e: any) => e.is_warmup === 0);
     expect(warm).toBeTruthy();
@@ -1756,7 +1756,7 @@ describe('update_plan preserves warm-up flags', () => {
     // Rebuild the SAME tree as an older caller would: omit is_warmup entirely.
     const rebuilt = await call('update_plan', {
       name: 'Warmup preservation',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Warmup Day',
@@ -1770,7 +1770,7 @@ describe('update_plan preserves warm-up flags', () => {
     expect(rebuilt.conflict).toBe(false);
 
     // The warm-up flag survived — not silently demoted to a working slot.
-    const rday = rebuilt.plan.days[0];
+    const rday = rebuilt.plan.workouts[0];
     const rerg = rday.exercises.find((e: any) => e.exercise_id === warm.exercise_id);
     const rbench = rday.exercises.find((e: any) => e.exercise_id === work.exercise_id);
     expect(rerg.is_warmup).toBe(1);
@@ -1780,7 +1780,7 @@ describe('update_plan preserves warm-up flags', () => {
   it('honors an explicit is_warmup:false over the preserved value', async () => {
     const built = await call('update_plan', {
       name: 'Explicit clear',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Clear Day',
@@ -1788,11 +1788,11 @@ describe('update_plan preserves warm-up flags', () => {
         },
       ],
     });
-    const warmId = built.plan.days[0].exercises[0].exercise_id;
+    const warmId = built.plan.workouts[0].exercises[0].exercise_id;
 
     const cleared = await call('update_plan', {
       name: 'Explicit clear',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Clear Day',
@@ -1800,7 +1800,7 @@ describe('update_plan preserves warm-up flags', () => {
         },
       ],
     });
-    const slot = cleared.plan.days[0].exercises.find((e: any) => e.exercise_id === warmId);
+    const slot = cleared.plan.workouts[0].exercises.find((e: any) => e.exercise_id === warmId);
     expect(slot.is_warmup).toBe(0);
   });
 
@@ -1809,7 +1809,7 @@ describe('update_plan preserves warm-up flags', () => {
     // working sets. Both resolve to the same exercise_id.
     const built = await call('update_plan', {
       name: 'Dup occurrence',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Ramp Day',
@@ -1820,7 +1820,7 @@ describe('update_plan preserves warm-up flags', () => {
         },
       ],
     });
-    let ex = built.plan.days[0].exercises;
+    let ex = built.plan.workouts[0].exercises;
     expect(ex).toHaveLength(2);
     expect(ex[0].is_warmup).toBe(1);
     expect(ex[1].is_warmup).toBe(0);
@@ -1828,7 +1828,7 @@ describe('update_plan preserves warm-up flags', () => {
     // Older caller omits is_warmup on both occurrences during a rebuild.
     const rebuilt = await call('update_plan', {
       name: 'Dup occurrence',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Ramp Day',
@@ -1839,7 +1839,7 @@ describe('update_plan preserves warm-up flags', () => {
         },
       ],
     });
-    ex = rebuilt.plan.days[0].exercises;
+    ex = rebuilt.plan.workouts[0].exercises;
     expect(ex).toHaveLength(2);
     // Each occurrence keeps its own flag — the warm-up isn't smeared onto the
     // working slot, nor the working flag onto the warm-up.
@@ -1851,7 +1851,7 @@ describe('update_plan preserves warm-up flags', () => {
     // Day with the same exercise twice: warm-up ramp (occ0) + working (occ1).
     const planBody = {
       name: 'Dup remap',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Remap Day',
@@ -1863,7 +1863,7 @@ describe('update_plan preserves warm-up flags', () => {
       ],
     };
     const built = await call('update_plan', planBody);
-    const slots0 = built.plan.days[0].exercises;
+    const slots0 = built.plan.workouts[0].exercises;
     expect(slots0).toHaveLength(2);
     const workingOldId = slots0[1].id; // occ1 — the working slot
     expect(slots0[1].is_warmup).toBe(0);
@@ -1876,7 +1876,7 @@ describe('update_plan preserves warm-up flags', () => {
     )!.id;
     const sid = crypto.randomUUID();
     await env.DB.prepare(
-      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
+      'INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
     )
       .bind(sid, userId, planId, '2026-09-01', 'in_progress', Date.now(), Date.now())
       .run();
@@ -1889,7 +1889,7 @@ describe('update_plan preserves warm-up flags', () => {
 
     // Rebuild with both occurrences intact (new slot ids minted).
     const rebuilt = await call('update_plan', planBody);
-    const slots1 = rebuilt.plan.days[0].exercises;
+    const slots1 = rebuilt.plan.workouts[0].exercises;
     const newWarmupId = slots1[0].id; // new occ0
     const newWorkingId = slots1[1].id; // new occ1
 
@@ -1906,7 +1906,7 @@ describe('update_plan preserves warm-up flags', () => {
     // NOT reattach to the surviving warm-up slot when the rebuild drops occ1.
     const dupBody = {
       name: 'Dup detach',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Detach Day',
@@ -1918,7 +1918,7 @@ describe('update_plan preserves warm-up flags', () => {
       ],
     };
     const built = await call('update_plan', dupBody);
-    const slots0 = built.plan.days[0].exercises;
+    const slots0 = built.plan.workouts[0].exercises;
     expect(slots0).toHaveLength(2);
     const workingOldId = slots0[1].id; // occ1 — the working slot
 
@@ -1928,7 +1928,7 @@ describe('update_plan preserves warm-up flags', () => {
     )!.id;
     const sid = crypto.randomUUID();
     await env.DB.prepare(
-      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
+      'INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
     )
       .bind(sid, userId, planId, '2026-09-02', 'in_progress', Date.now(), Date.now())
       .run();
@@ -1942,7 +1942,7 @@ describe('update_plan preserves warm-up flags', () => {
     // Rebuild dropping the working slot, keeping ONLY the warm-up occurrence.
     const rebuilt = await call('update_plan', {
       name: 'Dup detach',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Detach Day',
@@ -1952,7 +1952,7 @@ describe('update_plan preserves warm-up flags', () => {
         },
       ],
     });
-    const slots1 = rebuilt.plan.days[0].exercises;
+    const slots1 = rebuilt.plan.workouts[0].exercises;
     expect(slots1).toHaveLength(1);
     const survivingWarmupId = slots1[0].id;
 
@@ -1972,7 +1972,7 @@ describe('update_plan preserves warm-up flags', () => {
     // old-occ0 → new-occ0 and slid warm-up sets onto the working erg.
     const dupBody = {
       name: 'Lead detach',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Lead Day',
@@ -1984,7 +1984,7 @@ describe('update_plan preserves warm-up flags', () => {
       ],
     };
     const built = await call('update_plan', dupBody);
-    const slots0 = built.plan.days[0].exercises;
+    const slots0 = built.plan.workouts[0].exercises;
     expect(slots0).toHaveLength(2);
     const warmupOldId = slots0[0].id; // occ0 — the warm-up slot
     expect(slots0[0].is_warmup).toBe(1);
@@ -1995,7 +1995,7 @@ describe('update_plan preserves warm-up flags', () => {
     )!.id;
     const sid = crypto.randomUUID();
     await env.DB.prepare(
-      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
+      'INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,NULL,?4,?5,?6,NULL,NULL,NULL,?7,?7)',
     )
       .bind(sid, userId, planId, '2026-09-03', 'in_progress', Date.now(), Date.now())
       .run();
@@ -2010,7 +2010,7 @@ describe('update_plan preserves warm-up flags', () => {
     // Rebuild dropping the warm-up, keeping ONLY the working erg.
     const rebuilt = await call('update_plan', {
       name: 'Lead detach',
-      days: [
+      workouts: [
         {
           day_label: 'A',
           name: 'Lead Day',
@@ -2020,7 +2020,7 @@ describe('update_plan preserves warm-up flags', () => {
         },
       ],
     });
-    const slots1 = rebuilt.plan.days[0].exercises;
+    const slots1 = rebuilt.plan.workouts[0].exercises;
     expect(slots1).toHaveLength(1);
     const survivingWorkingId = slots1[0].id;
     expect(slots1[0].is_warmup).toBe(0);

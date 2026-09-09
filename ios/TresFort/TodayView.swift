@@ -265,7 +265,7 @@ struct TodayView: View {
                         Button {
                             showRoutine = true
                         } label: {
-                            Label(sync.plan == nil ? "Build routine" : "Edit routine",
+                            Label(sync.plan == nil ? "Create workout" : "Workouts",
                                   systemImage: "calendar.badge.clock")
                         }
                         .disabled(sync.plan == nil && (sync.isLoading || sync.loadError != nil))
@@ -312,7 +312,7 @@ struct TodayView: View {
                 isPresented: $showOverridePicker,
                 titleVisibility: .visible
             ) {
-                ForEach(sync.plan?.days ?? []) { d in
+                ForEach(sync.plan?.workouts ?? []) { d in
                     Button(d.title) {
                         prepareNewWorkout {
                             sync.startOverride(dayID: d.id)
@@ -322,7 +322,7 @@ struct TodayView: View {
                 }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Starts a one-off session. Your weekly schedule is unchanged; edit it from Routine.")
+                Text("Starts a one-off session. Your weekly schedule is unchanged; edit it from Workouts.")
             }
             .confirmationDialog(
                 "Discard this workout?",
@@ -341,7 +341,7 @@ struct TodayView: View {
                 EditWorkoutSheet(sync: sync, dayID: t.id)
             }
             .sheet(isPresented: $showRoutine) {
-                RoutineView(sync: sync)
+                WorkoutsView(sync: sync)
             }
         }
         .preferredColorScheme(.dark)
@@ -377,7 +377,7 @@ struct TodayView: View {
                 Button {
                     showRoutine = true
                 } label: {
-                    Label("Build a routine", systemImage: "plus.circle.fill")
+                    Label("Create a workout", systemImage: "plus.circle.fill")
                         .font(Theme.mono(14, .bold))
                         .foregroundStyle(Theme.bg)
                         .padding(.horizontal, 18).padding(.vertical, 13)
@@ -495,7 +495,7 @@ private struct RestDayView: View {
                     : nil)
                 .padding(16)
                 .disabled(
-                    (sync.plan?.days.isEmpty ?? true)
+                    (sync.plan?.workouts.isEmpty ?? true)
                         || sync.hasUnacknowledgedDiscardForToday
                         || sync.blocksNewWorkoutStart)
         }
@@ -671,7 +671,7 @@ private struct WorkoutDoneView: View {
 private struct TodayWorkoutView: View {
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
-    let day: DayTemplate
+    let day: Workout
     let onOverride: () -> Void
     let onEdit: () -> Void
     let onStart: () -> Void

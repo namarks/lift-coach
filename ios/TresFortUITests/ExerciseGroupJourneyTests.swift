@@ -12,7 +12,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         app.launch()
         XCTAssertTrue(app.buttons["Workout options"].waitForExistence(timeout: 10))
         app.buttons["Workout options"].tap()
-        app.buttons["Edit routine"].tap()
+        app.buttons["Workouts"].tap()
         let workout = app.buttons.containing(.staticText, identifier: "Warm-up and strength").firstMatch
         XCTAssertTrue(workout.waitForExistence(timeout: 10))
         workout.tap()
@@ -69,7 +69,7 @@ final class ExerciseGroupJourneyTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Transition rest: 15s"].exists)
         screenshot("authored-two-groups")
         app.navigationBars["Edit workout"].buttons["Done"].tap()
-        app.navigationBars["Routine"].buttons["Done"].tap()
+        app.navigationBars["Workouts"].buttons["Done"].tap()
         let start = app.buttons["START WORKOUT"]
         reveal(start, in: app)
         screenshot("group-workout-preview")

@@ -49,7 +49,7 @@ private final class SetAuthAPIStub: AuthAPI {
 private final class SetWriteAPIStub: SetWriteAPI {
     struct CreateCall: Equatable {
         let date: String
-        let dayTemplateID: String?
+        let workoutID: String?
         let expectedAttempt: Int?
         let restartDiscardedAttempt: Int?
         let jwt: String
@@ -74,7 +74,7 @@ private final class SetWriteAPIStub: SetWriteAPI {
     private(set) var logCalls: [LogCall] = []
     private(set) var reopenCalls: [(
         sessionID: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         expectedAttempt: Int?,
         jwt: String
     )] = []
@@ -84,30 +84,30 @@ private final class SetWriteAPIStub: SetWriteAPI {
 
     func createSession(
         date: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         jwt: String
     ) async throws -> SessionRow {
         createCalls.append(.init(
-            date: date, dayTemplateID: dayTemplateID,
+            date: date, workoutID: workoutID,
             expectedAttempt: nil, restartDiscardedAttempt: nil, jwt: jwt))
         guard let createHandler else { throw URLError(.badServerResponse) }
-        return try await createHandler(date, dayTemplateID, jwt)
+        return try await createHandler(date, workoutID, jwt)
     }
 
     func createSession(
         date: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         expectedAttempt: Int?,
         restartDiscardedAttempt: Int?,
         jwt: String
     ) async throws -> SessionRow {
         createCalls.append(.init(
-            date: date, dayTemplateID: dayTemplateID,
+            date: date, workoutID: workoutID,
             expectedAttempt: expectedAttempt,
             restartDiscardedAttempt: restartDiscardedAttempt,
             jwt: jwt))
         guard let createHandler else { throw URLError(.badServerResponse) }
-        return try await createHandler(date, dayTemplateID, jwt)
+        return try await createHandler(date, workoutID, jwt)
     }
 
     func logSet(
@@ -122,14 +122,14 @@ private final class SetWriteAPIStub: SetWriteAPI {
 
     func reopenSkippedSession(
         sessionId: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         expectedAttempt: Int?,
         jwt: String
     ) async throws -> SessionRow {
-        reopenCalls.append((sessionId, dayTemplateID, expectedAttempt, jwt))
+        reopenCalls.append((sessionId, workoutID, expectedAttempt, jwt))
         guard let reopenHandler else { throw URLError(.badServerResponse) }
         return try await reopenHandler(
-            sessionId, dayTemplateID, expectedAttempt, jwt)
+            sessionId, workoutID, expectedAttempt, jwt)
     }
 
     func getState(jwt: String) async throws -> StateResponse {
@@ -322,9 +322,9 @@ private final class SetRoutineEditingAPIStub: RoutineEditingAPI {
     var comparisonHandler: ((Int, Int, String) async throws -> PlanComparisonResponse)?
     var restoreHandler: ((Int, String, Int, String?, String) async throws -> APIClient.RestorePlanResult)?
     var ensureHandler: ((String, String) async throws -> APIClient.EnsureActivePlanResult)?
-    var addDayHandler: ((String, String, Int, String) async throws -> APIClient.DayIDRow)?
-    var updateDayHandler: ((String, [String: Any], Int, String) async throws -> APIClient.DayIDRow)?
-    var deleteDayHandler: ((String, Int, String) async throws -> APIClient.DeleteDayResult)?
+    var addDayHandler: ((String, String, Int, String) async throws -> APIClient.WorkoutIDRow)?
+    var updateDayHandler: ((String, [String: Any], Int, String) async throws -> APIClient.WorkoutIDRow)?
+    var deleteDayHandler: ((String, Int, String) async throws -> APIClient.DeleteWorkoutResult)?
     var scheduleHandler: (([String: String], String, Int, String) async throws -> APIClient.ScheduleWriteResult)?
     var calendarHandler: ((String, String?, Int?, String) async throws -> APIClient.CalendarWriteResult)?
     private(set) var updateDayCalls = 0
@@ -363,31 +363,31 @@ private final class SetRoutineEditingAPIStub: RoutineEditingAPI {
         return try await ensureHandler(name, jwt)
     }
 
-    func addDay(
+    func addWorkout(
         name: String,
         expectedPlanID: String,
         expectedVersion: Int,
         jwt: String
     ) async throws
-        -> APIClient.DayIDRow
+        -> APIClient.WorkoutIDRow
     {
         guard let addDayHandler else { throw URLError(.badServerResponse) }
         return try await addDayHandler(name, expectedPlanID, expectedVersion, jwt)
     }
 
-    func updateDay(
+    func updateWorkout(
         dayID: String,
         fields: [String: Any],
         expectedVersion: Int,
         jwt: String
-    ) async throws -> APIClient.DayIDRow {
+    ) async throws -> APIClient.WorkoutIDRow {
         updateDayCalls += 1
         guard let updateDayHandler else { throw URLError(.badServerResponse) }
         return try await updateDayHandler(dayID, fields, expectedVersion, jwt)
     }
 
-    func deleteDay(dayID: String, expectedVersion: Int, jwt: String) async throws
-        -> APIClient.DeleteDayResult
+    func deleteWorkout(dayID: String, expectedVersion: Int, jwt: String) async throws
+        -> APIClient.DeleteWorkoutResult
     {
         deleteDayCalls += 1
         guard let deleteDayHandler else { throw URLError(.badServerResponse) }
@@ -632,8 +632,8 @@ final class SetOutboxTests: XCTestCase {
             group_transition_seconds: groupID == nil ? nil : transitionRest)
     }
 
-    private func day(with exercises: [TemplateExercise]) -> DayTemplate {
-        DayTemplate(
+    private func day(with exercises: [TemplateExercise]) -> Workout {
+        Workout(
             id: "day-a", name: "Day A", day_label: "A",
             order_index: 0, exercises: exercises)
     }
@@ -646,7 +646,7 @@ final class SetOutboxTests: XCTestCase {
     ) {
         model.plan = PlanTree(
             id: "plan-a", name: "Plan A", version: 1,
-            days: [day(with: [exercise])], meta: nil)
+            workouts: [day(with: [exercise])], meta: nil)
         model.selectedDayID = "day-a"
         model.todaySession = session
         if running { model.startWorkout() }
@@ -661,7 +661,7 @@ final class SetOutboxTests: XCTestCase {
     ) -> SessionRow {
         SessionRow(
             id: id, date: date ?? fixedCivilDate, status: status,
-            day_template_id: "day-a", updated_at: updatedAt,
+            workout_id: "day-a", updated_at: updatedAt,
             attempt: attempt)
     }
 
@@ -704,13 +704,13 @@ final class SetOutboxTests: XCTestCase {
         state(
             session: session,
             sets: sets,
-            days: [day(with: exercises)])
+            workouts: [day(with: exercises)])
     }
 
     private func state(
         session: SessionRow,
         sets: [SetLog],
-        days: [DayTemplate],
+        workouts: [Workout],
         serverTime: Int = 2_000_000_000_000,
         planID: String = "plan-a",
         planName: String = "Plan A",
@@ -721,7 +721,7 @@ final class SetOutboxTests: XCTestCase {
         StateResponse(
             plan: PlanTree(
                 id: planID, name: planName, version: planVersion,
-                days: days, meta: planMeta),
+                workouts: workouts, meta: planMeta),
             plan_version: planVersion,
             sessions: [session],
             sets: sets,
@@ -845,7 +845,7 @@ final class SetOutboxTests: XCTestCase {
         model.replaceState(with: state(
             session: s,
             sets: [],
-            days: [day(with: [ex])],
+            workouts: [day(with: [ex])],
             serverTime: baselineTime))
         model.startWorkout()
 
@@ -903,7 +903,7 @@ final class SetOutboxTests: XCTestCase {
         model.replaceState(with: state(
             session: s,
             sets: [],
-            days: [day(with: [ex])],
+            workouts: [day(with: [ex])],
             serverTime: baselineTime))
         model.startWorkout()
 
@@ -968,7 +968,7 @@ final class SetOutboxTests: XCTestCase {
             outbox.enqueue(.init(
                 body: body,
                 date: s.date,
-                dayTemplateID: "day-a",
+                workoutID: "day-a",
                 resolvedSessionID: s.id,
                 deliveryState: .queued,
                 failedHTTPStatus: nil,
@@ -1057,7 +1057,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil,
@@ -1147,7 +1147,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil,
@@ -1239,7 +1239,7 @@ final class SetOutboxTests: XCTestCase {
         model.replaceState(with: state(
             session: s,
             sets: [],
-            days: [day(with: [ex])],
+            workouts: [day(with: [ex])],
             serverTime: baselineTime))
         model.startWorkout()
 
@@ -1299,7 +1299,7 @@ final class SetOutboxTests: XCTestCase {
             id: s.id,
             date: s.date,
             status: s.status,
-            day_template_id: "day-remapped",
+            workout_id: "day-remapped",
             updated_at: mutationTime,
             attempt: s.attempt)
         let acknowledgementEntered = SetAsyncLatch()
@@ -1335,7 +1335,7 @@ final class SetOutboxTests: XCTestCase {
         model.replaceState(with: state(
             session: s,
             sets: [],
-            days: [day(with: [ex])],
+            workouts: [day(with: [ex])],
             serverTime: baselineTime))
 
         let write = Task { await model.logSet(ex, weight: 135, reps: 5) }
@@ -1379,7 +1379,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(live?.reps, 3)
         XCTAssertEqual(live?.template_exercise_id, nil)
         XCTAssertEqual(live?.updated_at, mutationTime)
-        XCTAssertEqual(model.todaySession?.day_template_id, "day-remapped")
+        XCTAssertEqual(model.todaySession?.workout_id, "day-remapped")
         let persisted = StateSnapshotStore.load(
             userID: "user-a", defaults: defaults)?.state.sets.first {
                 $0.id == self.fixedUUID.uuidString
@@ -1389,7 +1389,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(
             StateSnapshotStore.load(
                 userID: "user-a", defaults: defaults)?.state.sessions.first?
-                .day_template_id,
+                .workout_id,
             "day-remapped")
     }
 
@@ -1690,7 +1690,7 @@ final class SetOutboxTests: XCTestCase {
                     duration_s: nil,
                     is_timed: false),
                 date: s.date,
-                dayTemplateID: "day-a",
+                workoutID: "day-a",
                 resolvedSessionID: s.id,
                 deliveryState: state,
                 failedHTTPStatus: state == .failed ? 422 : nil))
@@ -1726,7 +1726,7 @@ final class SetOutboxTests: XCTestCase {
                 duration_s: nil,
                 is_timed: false),
             date: "1900-01-01",
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: "session-old",
             deliveryState: .failed,
             failedHTTPStatus: 422))
@@ -2225,7 +2225,7 @@ final class SetOutboxTests: XCTestCase {
         setOutbox.enqueue(.init(
             body: body,
             date: fixedCivilDate,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .failed,
             failedHTTPStatus: 422,
@@ -2236,7 +2236,7 @@ final class SetOutboxTests: XCTestCase {
             id: "terminal-a",
             action: .finish,
             date: fixedCivilDate,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .failed,
             failedHTTPStatus: 422,
@@ -2885,7 +2885,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: oldBody,
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -3067,7 +3067,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: olderBody,
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -3130,7 +3130,7 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         model.plan = PlanTree(
             id: "plan-a", name: "Plan A", version: 1,
-            days: [day(with: [timed, successor])], meta: nil)
+            workouts: [day(with: [timed, successor])], meta: nil)
         model.selectedDayID = "day-a"
         model.todaySession = s
         model.startWorkout()
@@ -3170,7 +3170,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: otherBody,
             date: fixedCivilDate,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -3191,7 +3191,7 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         model.plan = PlanTree(
             id: "plan-a", name: "Plan A", version: 1,
-            days: [day(with: [timed, other])], meta: nil)
+            workouts: [day(with: [timed, other])], meta: nil)
         model.selectedDayID = "day-a"
         model.todaySession = s
         model.startWorkout()
@@ -3696,7 +3696,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: fixedCivilDate,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .failed,
             failedHTTPStatus: 422,
@@ -3878,7 +3878,7 @@ final class SetOutboxTests: XCTestCase {
         let meta = #"{"schedule":{"version":2,"week":{"mon":"day-a","tue":null,"wed":null,"thu":null,"fri":null,"sat":null,"sun":null}}}"#
         stateAPI.stateHandler = { [self] _ in
             state(
-                session: s, sets: [], days: [day(with: [ex])],
+                session: s, sets: [], workouts: [day(with: [ex])],
                 planVersion: 2, planMeta: meta)
         }
         let model = SyncModel(
@@ -3889,7 +3889,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: s, sets: [], days: [day(with: [ex])]))
+            session: s, sets: [], workouts: [day(with: [ex])]))
 
         await model.saveRecurringSchedule(["mon": "day-a", "tue": ""])
 
@@ -3898,6 +3898,38 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(capturedWeek["mon"], "day-a")
         XCTAssertEqual(model.plan?.version, 2)
         XCTAssertEqual(model.plan?.schedule?.templateID(forWeekdayKey: "mon"), "day-a")
+    }
+
+    func testUnscheduleKeepsWorkoutAndDatedSessionAndOtherWeekdays() async {
+        let defaults = defaults()
+        let s = session(status: "planned", attempt: 3)
+        let workouts = [day(with: [exercise()])]
+        let before = #"{"schedule":{"version":1,"week":{"mon":"day-a","thu":"day-a","fri":"other"}}}"#
+        let after = #"{"schedule":{"version":1,"week":{"mon":null,"thu":null,"fri":"other"}}}"#
+        let routineAPI = SetRoutineEditingAPIStub()
+        routineAPI.scheduleHandler = { week, planID, version, _ in
+            XCTAssertEqual(planID, "plan-a"); XCTAssertEqual(version, 1)
+            XCTAssertEqual(week["mon"], ""); XCTAssertEqual(week["thu"], "")
+            XCTAssertEqual(week["fri"], "other")
+            return APIClient.ScheduleWriteResult(ok: true, version: 2,
+                schedule: PlanSchedule(version: 1, week: ["fri": "other"]))
+        }
+        let stateAPI = SetWriteAPIStub()
+        stateAPI.stateHandler = { [self] _ in
+            state(session: s, sets: [], workouts: workouts, planVersion: 2, planMeta: after)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
+            catalogAPI: SetCatalogAPIStub(), routineEditingAPI: routineAPI,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], workouts: workouts, planMeta: before))
+        await model.unscheduleWorkout(workoutID: "day-a")
+        XCTAssertEqual(model.plan?.workouts, workouts)
+        XCTAssertEqual(model.sessionsByDate[fixedCivilDate]?.attempt, 3)
+        XCTAssertEqual(routineAPI.scheduleCalls, 1)
+        XCTAssertEqual(routineAPI.deleteDayCalls, 0)
+        XCTAssertEqual(routineAPI.calendarCalls, 0)
+        await model.unscheduleWorkout(workoutID: "day-a")
+        XCTAssertEqual(routineAPI.scheduleCalls, 1)
     }
 
     func testHistoryRestorePinsReviewedPlanIdentityAndVersionAndKeepsAcknowledgement() async {
@@ -3921,7 +3953,7 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         model.replaceState(with: state(
             session: session(status: "planned", attempt: 0), sets: [],
-            days: [day(with: [exercise()])], planVersion: 11))
+            workouts: [day(with: [exercise()])], planVersion: 11))
 
         let acknowledged = await model.restorePlanVersion(
             4, expectedPlanID: "plan-a", reviewedCurrentVersion: 9,
@@ -3945,7 +3977,7 @@ final class SetOutboxTests: XCTestCase {
         let stateAPI = SetWriteAPIStub()
         stateAPI.stateHandler = { [self] _ in
             state(session: session(status: "planned", attempt: 0), sets: [],
-                  days: [day(with: [exercise()])], planVersion: 12)
+                  workouts: [day(with: [exercise()])], planVersion: 12)
         }
         let model = SyncModel(
             auth: retainedAuth(defaults: defaults), setWriteAPI: stateAPI,
@@ -3953,7 +3985,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults, now: { self.fixedDate })
         model.replaceState(with: state(
             session: session(status: "planned", attempt: 0), sets: [],
-            days: [day(with: [exercise()])], planVersion: 9))
+            workouts: [day(with: [exercise()])], planVersion: 9))
 
         let acknowledged = await model.restorePlanVersion(
             4, expectedPlanID: "plan-a", reviewedCurrentVersion: 9, reason: nil)
@@ -4027,12 +4059,12 @@ final class SetOutboxTests: XCTestCase {
             XCTAssertEqual(name, "First day")
             capturedPlanID = planID
             capturedVersion = version
-            return APIClient.DayIDRow(id: "day-new")
+            return APIClient.WorkoutIDRow(id: "day-new")
         }
         let stateAPI = SetWriteAPIStub()
         stateAPI.stateHandler = { [self] _ in
             state(
-                session: s, sets: [], days: [day(with: [ex])],
+                session: s, sets: [], workouts: [day(with: [ex])],
                 planName: "Concurrent coach plan", planVersion: 8)
         }
         let model = SyncModel(
@@ -4043,7 +4075,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: s, sets: [], days: [day(with: [ex])]))
+            session: s, sets: [], workouts: [day(with: [ex])]))
 
         let dayID = await model.addWorkoutDay(
             name: "First day",
@@ -4092,7 +4124,7 @@ final class SetOutboxTests: XCTestCase {
         }
         let api = SetWriteAPIStub()
         api.stateHandler = { [self] _ in
-            state(session: s, sets: [], days: [day(with: [replacement])], planVersion: 2)
+            state(session: s, sets: [], workouts: [day(with: [replacement])], planVersion: 2)
         }
         let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
                               planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
@@ -4101,7 +4133,7 @@ final class SetOutboxTests: XCTestCase {
                                             exercise: "ring-row", expectedVersion: 1)
         XCTAssertTrue(saved)
         XCTAssertEqual(editor.replaceCalls, 1)
-        XCTAssertEqual(model.plan?.days[0].exercises[0].exercise_id, "ring-row")
+        XCTAssertEqual(model.plan?.workouts[0].exercises[0].exercise_id, "ring-row")
         XCTAssertEqual(model.plan?.version, 2)
         XCTAssertFalse(model.workoutEditorRefreshNeeded)
     }
@@ -4126,7 +4158,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(editor.replaceCalls, 1)
         XCTAssertTrue(model.workoutEditorRefreshNeeded)
         XCTAssertNotNil(model.loadError)
-        XCTAssertEqual(model.plan?.days[0].exercises[0], ex)
+        XCTAssertEqual(model.plan?.workouts[0].exercises[0], ex)
     }
 
     func testReplacementConflictRefreshesWithoutReapplyingStaleSelection() async {
@@ -4140,7 +4172,7 @@ final class SetOutboxTests: XCTestCase {
         }
         let api = SetWriteAPIStub()
         api.stateHandler = { [self] _ in
-            state(session: s, sets: [], days: [day(with: [changed])], planVersion: 2)
+            state(session: s, sets: [], workouts: [day(with: [changed])], planVersion: 2)
         }
         let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
                               planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
@@ -4149,7 +4181,7 @@ final class SetOutboxTests: XCTestCase {
                                             exercise: "ring-row", expectedVersion: 1)
         XCTAssertFalse(saved)
         XCTAssertEqual(editor.replaceCalls, 1)
-        XCTAssertEqual(model.plan?.days[0].exercises[0], changed)
+        XCTAssertEqual(model.plan?.workouts[0].exercises[0], changed)
         XCTAssertTrue(model.loadError?.contains("Workout changed") == true)
     }
 
@@ -4168,7 +4200,7 @@ final class SetOutboxTests: XCTestCase {
                                             exercise: "bench", expectedVersion: 1)
         XCTAssertFalse(saved)
         XCTAssertNotNil(model.loadError)
-        XCTAssertEqual(model.plan?.days[0].exercises[0], ex)
+        XCTAssertEqual(model.plan?.workouts[0].exercises[0], ex)
         XCTAssertFalse(model.workoutEditorRefreshNeeded)
     }
 
@@ -4294,7 +4326,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(editor.updateCalls, 1)
         XCTAssertNotNil(model.loadError)
         XCTAssertTrue(model.workoutEditorRefreshNeeded)
-        XCTAssertEqual(model.plan?.days[0].exercises[0].target_reps, ex.target_reps)
+        XCTAssertEqual(model.plan?.workouts[0].exercises[0].target_reps, ex.target_reps)
     }
 
     func testTargetSaveRefreshFailureCanReconcileNewerStateWithoutSecondWrite() async {
@@ -4310,7 +4342,7 @@ final class SetOutboxTests: XCTestCase {
             return state(
                 session: s,
                 sets: [],
-                days: [day(with: [coachUpdate])],
+                workouts: [day(with: [coachUpdate])],
                 planVersion: 3)
         }
         let model = SyncModel(
@@ -4335,7 +4367,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertNotNil(model.loadError)
         XCTAssertTrue(model.workoutEditorRefreshNeeded)
         XCTAssertEqual(editor.updateCalls, 1)
-        XCTAssertEqual(model.plan?.days[0].exercises[0].target_sets, 3)
+        XCTAssertEqual(model.plan?.workouts[0].exercises[0].target_sets, 3)
 
         await model.load()
 
@@ -4344,7 +4376,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(stateAPI.stateCalls, 2)
         XCTAssertEqual(editor.updateCalls, 1)
         XCTAssertEqual(model.plan?.version, 3)
-        XCTAssertEqual(model.plan?.days[0].exercises[0].target_sets, 6)
+        XCTAssertEqual(model.plan?.workouts[0].exercises[0].target_sets, 6)
     }
 
     func testUnrelatedErrorDoesNotRequireWorkoutEditorRefresh() {
@@ -4396,7 +4428,7 @@ final class SetOutboxTests: XCTestCase {
         let routineAPI = SetRoutineEditingAPIStub()
         routineAPI.deleteDayHandler = { _, _, _ in
             XCTFail("A locally running day must not reach deletion")
-            return APIClient.DeleteDayResult(ok: true, version: 2)
+            return APIClient.DeleteWorkoutResult(ok: true, version: 2)
         }
         let model = SyncModel(
             auth: retainedAuth(defaults: defaults),
@@ -4406,7 +4438,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: planned, sets: [], days: [day(with: [ex])]))
+            session: planned, sets: [], workouts: [day(with: [ex])]))
         model.startWorkout()
         XCTAssertTrue(model.running)
 
@@ -4427,7 +4459,7 @@ final class SetOutboxTests: XCTestCase {
             id: original.id,
             date: original.date,
             status: "skipped",
-            day_template_id: original.day_template_id,
+            workout_id: original.workout_id,
             updated_at: 2_000_000_000_100,
             attempt: 3)
         let routineAPI = SetRoutineEditingAPIStub()
@@ -4440,7 +4472,7 @@ final class SetOutboxTests: XCTestCase {
         }
         let stateAPI = SetWriteAPIStub()
         stateAPI.stateHandler = { [self] _ in
-            state(session: skipped, sets: [], days: [day(with: [ex])])
+            state(session: skipped, sets: [], workouts: [day(with: [ex])])
         }
         let model = SyncModel(
             auth: retainedAuth(defaults: defaults),
@@ -4450,7 +4482,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: original, sets: [], days: [day(with: [ex])]))
+            session: original, sets: [], workouts: [day(with: [ex])]))
 
         await model.setCalendarOverride(date: fixedCivilDate, dayID: nil)
 
@@ -4466,7 +4498,7 @@ final class SetOutboxTests: XCTestCase {
         let futureDate = "2037-01-05"
         let created = SessionRow(
             id: "future-session", date: futureDate,
-            status: "planned", day_template_id: "day-a", attempt: 1)
+            status: "planned", workout_id: "day-a", attempt: 1)
         let routineAPI = SetRoutineEditingAPIStub()
         var capturedAttempt: Int?
         routineAPI.calendarHandler = { date, dayID, attempt, _ in
@@ -4477,7 +4509,7 @@ final class SetOutboxTests: XCTestCase {
         }
         let stateAPI = SetWriteAPIStub()
         stateAPI.stateHandler = { [self] _ in
-            state(session: original, sets: [], days: [day(with: [ex])])
+            state(session: original, sets: [], workouts: [day(with: [ex])])
         }
         let model = SyncModel(
             auth: retainedAuth(defaults: defaults),
@@ -4487,7 +4519,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: original, sets: [], days: [day(with: [ex])]))
+            session: original, sets: [], workouts: [day(with: [ex])]))
 
         await model.setCalendarOverride(date: futureDate, dayID: "day-a")
 
@@ -4519,7 +4551,7 @@ final class SetOutboxTests: XCTestCase {
         model.replaceState(with: state(
             session: original,
             sets: [],
-            days: [day(with: [ex])],
+            workouts: [day(with: [ex])],
             planMeta: planMeta))
 
         await model.setCalendarOverride(date: blackoutDate, dayID: "day-a")
@@ -4547,7 +4579,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: original, sets: [], days: [day(with: [ex])]))
+            session: original, sets: [], workouts: [day(with: [ex])]))
         model.startWorkout()
         XCTAssertTrue(model.running)
 
@@ -4564,20 +4596,20 @@ final class SetOutboxTests: XCTestCase {
         let meta = #"{"schedule":{"version":1,"week":{"mon":"day-a","tue":null}}}"#
         let original = PlanTree(
             id: "plan-a", name: "Plan A", version: 1,
-            days: [day(with: [ex])], meta: meta)
+            workouts: [day(with: [ex])], meta: meta)
         let unrelatedPlanEdit = PlanTree(
             id: "plan-a", name: "Renamed", version: 2,
-            days: [day(with: [])], meta: meta)
+            workouts: [day(with: [])], meta: meta)
         let removedWorkout = PlanTree(
             id: "plan-a", name: "Renamed", version: 3,
-            days: [], meta: meta)
+            workouts: [], meta: meta)
         let changedWeek = PlanTree(
             id: "plan-a", name: "Renamed", version: 3,
-            days: [day(with: [])],
+            workouts: [day(with: [])],
             meta: #"{"schedule":{"version":1,"week":{"mon":null,"tue":"day-a"}}}"#)
         let replacement = PlanTree(
             id: "plan-b", name: "Plan B", version: 1,
-            days: [day(with: [ex])], meta: meta)
+            workouts: [day(with: [ex])], meta: meta)
 
         let initial = RoutineScheduleDraftPolicy.reconcile(
             currentDraft: [:], loadedIdentity: [], plan: original)
@@ -4621,7 +4653,7 @@ final class SetOutboxTests: XCTestCase {
         let stateAPI = SetWriteAPIStub()
         stateAPI.stateHandler = { [self] _ in
             state(
-                session: s, sets: [], days: [day(with: [ex])],
+                session: s, sets: [], workouts: [day(with: [ex])],
                 planName: "Coach Update", planVersion: 2)
         }
         let model = SyncModel(
@@ -4632,7 +4664,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: s, sets: [], days: [day(with: [ex])]))
+            session: s, sets: [], workouts: [day(with: [ex])]))
 
         await model.renameWorkoutDay(dayID: "day-a", name: "Stale Rename")
 
@@ -4654,7 +4686,7 @@ final class SetOutboxTests: XCTestCase {
         let stateAPI = SetWriteAPIStub()
         stateAPI.stateHandler = { [self] _ in
             state(
-                session: s, sets: [], days: [day(with: [ex])],
+                session: s, sets: [], workouts: [day(with: [ex])],
                 planID: "plan-b", planName: "Replacement", planVersion: 1)
         }
         let model = SyncModel(
@@ -4665,7 +4697,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: s, sets: [], days: [day(with: [ex])]))
+            session: s, sets: [], workouts: [day(with: [ex])]))
 
         await model.renameWorkoutDay(dayID: "day-a", name: "Stale rename")
 
@@ -4687,7 +4719,7 @@ final class SetOutboxTests: XCTestCase {
         let stateAPI = SetWriteAPIStub()
         stateAPI.stateHandler = { [self] _ in
             state(
-                session: s, sets: [], days: [day(with: [ex])],
+                session: s, sets: [], workouts: [day(with: [ex])],
                 planID: "plan-b", planName: "Replacement", planVersion: 1)
         }
         let model = SyncModel(
@@ -4698,7 +4730,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: s, sets: [], days: [day(with: [ex])]))
+            session: s, sets: [], workouts: [day(with: [ex])]))
 
         await model.setCalendarOverride(date: "2037-01-05", dayID: "day-a")
 
@@ -4727,7 +4759,7 @@ final class SetOutboxTests: XCTestCase {
             defaults: defaults,
             now: { self.fixedDate })
         model.replaceState(with: state(
-            session: s, sets: [], days: [day(with: [ex])]))
+            session: s, sets: [], workouts: [day(with: [ex])]))
 
         await model.renameWorkoutDay(dayID: "day-a", name: "Stale Rename")
 
@@ -4754,7 +4786,7 @@ final class SetOutboxTests: XCTestCase {
                 schedule: PlanSchedule(version: 2, week: [:]))
         }
         routineAPI.updateDayHandler = { _, _, _, _ in
-            APIClient.DayIDRow(id: "day-a")
+            APIClient.WorkoutIDRow(id: "day-a")
         }
         let stateAPI = SetWriteAPIStub()
         stateAPI.stateHandler = { [self] _ in
@@ -4890,7 +4922,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: nil,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -4910,12 +4942,12 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.sets.map(\.id), [body.id])
     }
 
-    func testStaleDayTemplateFallsBackBeforeRetryingSet() async {
+    func testStaleWorkoutFallsBackBeforeRetryingSet() async {
         let defaults = defaults()
         let ex = exercise()
         let s = SessionRow(
             id: "session-a", date: fixedCivilDate, status: "in_progress",
-            day_template_id: nil)
+            workout_id: nil)
         let body = SetRequestBody(
             id: fixedUUID.uuidString,
             exercise_id: ex.exercise_id,
@@ -4931,17 +4963,17 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: s.date,
-            dayTemplateID: "removed-day-id",
+            workoutID: "removed-day-id",
             resolvedSessionID: nil,
             deliveryState: .queued,
             failedHTTPStatus: nil))
         SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
         let api = SetWriteAPIStub()
-        api.createHandler = { _, dayTemplateID, _ in
-            if dayTemplateID != nil { throw APIError.http(422, "unknown_day") }
+        api.createHandler = { _, workoutID, _ in
+            if workoutID != nil { throw APIError.http(422, "unknown_day") }
             let stored = SetOutboxStore.load(
                 userID: "user-a", defaults: defaults)
-            XCTAssertNil(stored.pending.first?.dayTemplateID)
+            XCTAssertNil(stored.pending.first?.workoutID)
             return s
         }
         api.logHandler = { [self] sessionID, request, _ in
@@ -4961,7 +4993,7 @@ final class SetOutboxTests: XCTestCase {
 
         await model.drainSetOutbox()
 
-        XCTAssertEqual(api.createCalls.map(\.dayTemplateID), [
+        XCTAssertEqual(api.createCalls.map(\.workoutID), [
             "removed-day-id", nil,
         ])
         XCTAssertEqual(api.logCalls.first?.body, body.scoped(to: 0))
@@ -4987,7 +5019,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -5231,7 +5263,7 @@ final class SetOutboxTests: XCTestCase {
                 duration_s: nil,
                 is_timed: false),
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -5336,7 +5368,7 @@ final class SetOutboxTests: XCTestCase {
                     duration_s: nil,
                     is_timed: false),
                 date: s.date,
-                dayTemplateID: "day-a",
+                workoutID: "day-a",
                 resolvedSessionID: s.id,
                 deliveryState: .queued,
                 failedHTTPStatus: nil)
@@ -5414,7 +5446,7 @@ final class SetOutboxTests: XCTestCase {
         prepare(model, exercise: exA, session: s)
         model.plan = PlanTree(
             id: "plan-a", name: "Plan A", version: 1,
-            days: [day(with: [exA, exB])], meta: nil)
+            workouts: [day(with: [exA, exB])], meta: nil)
 
         let first = Task { await model.logSet(exA, weight: 135, reps: 5) }
         await reconciliationEntered.wait()
@@ -5462,7 +5494,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -6026,7 +6058,7 @@ final class SetOutboxTests: XCTestCase {
         persisted.enqueue(.init(
             body: body,
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -6194,7 +6226,7 @@ final class SetOutboxTests: XCTestCase {
             id: fixedUUID.uuidString,
             action: .finish,
             date: s.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: s.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -6312,7 +6344,7 @@ final class SetOutboxTests: XCTestCase {
             id: fixedUUID.uuidString,
             action: .discard,
             date: revived.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: revived.id,
             deliveryState: .acknowledged,
             failedHTTPStatus: nil))
@@ -6348,7 +6380,7 @@ final class SetOutboxTests: XCTestCase {
             id: fixedUUID.uuidString,
             action: .discard,
             date: discarded.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: discarded.id,
             deliveryState: .acknowledged,
             failedHTTPStatus: nil))
@@ -6490,7 +6522,7 @@ final class SetOutboxTests: XCTestCase {
             id: fixedUUID.uuidString,
             action: .discard,
             date: discarded.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: discarded.id,
             deliveryState: .acknowledged,
             failedHTTPStatus: nil,
@@ -6527,7 +6559,7 @@ final class SetOutboxTests: XCTestCase {
         let defaults = defaults()
         let original = exercise()
         let override = exercise(id: "slot-b", exerciseID: "exercise-b")
-        let overrideDay = DayTemplate(
+        let overrideDay = Workout(
             id: "day-b", name: "Day B", day_label: "B",
             order_index: 1, exercises: [override])
         let skipped = session(
@@ -6535,9 +6567,9 @@ final class SetOutboxTests: XCTestCase {
         let entered = SetAsyncLatch()
         let release = SetAsyncLatch()
         let api = SetWriteAPIStub()
-        api.reopenHandler = { sessionID, dayTemplateID, expectedAttempt, _ in
+        api.reopenHandler = { sessionID, workoutID, expectedAttempt, _ in
             XCTAssertEqual(sessionID, skipped.id)
-            XCTAssertEqual(dayTemplateID, overrideDay.id)
+            XCTAssertEqual(workoutID, overrideDay.id)
             XCTAssertEqual(expectedAttempt, 0)
             await entered.open()
             await release.wait()
@@ -6545,7 +6577,7 @@ final class SetOutboxTests: XCTestCase {
                 id: skipped.id,
                 date: skipped.date,
                 status: "planned",
-                day_template_id: overrideDay.id,
+                workout_id: overrideDay.id,
                 updated_at: 200,
                 attempt: 1)
         }
@@ -6557,7 +6589,7 @@ final class SetOutboxTests: XCTestCase {
                     id: sessionID,
                     date: skipped.date,
                     status: "in_progress",
-                    day_template_id: overrideDay.id,
+                    workout_id: overrideDay.id,
                     updated_at: 300,
                     attempt: 1))
         }
@@ -6568,14 +6600,14 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         model.replaceState(with: state(
             session: skipped, sets: [],
-            days: [day(with: [original]), overrideDay]))
+            workouts: [day(with: [original]), overrideDay]))
 
         model.startOverride(dayID: overrideDay.id)
         // A same-turn live apply may restore the skipped row's original day
         // before the unstructured reopen task evaluates its request.
         model.replaceState(with: state(
             session: skipped, sets: [],
-            days: [day(with: [original]), overrideDay]))
+            workouts: [day(with: [original]), overrideDay]))
         await entered.wait()
 
         XCTAssertTrue(model.isReopeningSkippedWorkout)
@@ -6587,7 +6619,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(model.running)
         XCTAssertEqual(model.selectedDayID, overrideDay.id)
         XCTAssertEqual(model.currentExercise?.id, override.id)
-        XCTAssertEqual(model.todaySession?.day_template_id, overrideDay.id)
+        XCTAssertEqual(model.todaySession?.workout_id, overrideDay.id)
         XCTAssertEqual(model.todaySession?.status, "planned")
         XCTAssertEqual(model.todaySession?.attempt, 1)
         XCTAssertEqual(
@@ -6614,7 +6646,7 @@ final class SetOutboxTests: XCTestCase {
         let defaults = defaults()
         let original = exercise()
         let override = exercise(id: "slot-b", exerciseID: "exercise-b")
-        let overrideDay = DayTemplate(
+        let overrideDay = Workout(
             id: "day-b", name: "Day B", day_label: "B",
             order_index: 1, exercises: [override])
         let skipped = session(
@@ -6623,7 +6655,7 @@ final class SetOutboxTests: XCTestCase {
             id: skipped.id,
             date: skipped.date,
             status: "planned",
-            day_template_id: overrideDay.id,
+            workout_id: overrideDay.id,
             updated_at: 200,
             attempt: 1)
         let entered = SetAsyncLatch()
@@ -6638,7 +6670,7 @@ final class SetOutboxTests: XCTestCase {
             state(
                 session: planned,
                 sets: [],
-                days: [day(with: [original]), overrideDay])
+                workouts: [day(with: [original]), overrideDay])
         }
         let oldToken = jwt(subject: "user-a")
         let newToken = jwt(
@@ -6655,7 +6687,7 @@ final class SetOutboxTests: XCTestCase {
         old.replaceState(with: state(
             session: skipped,
             sets: [],
-            days: [day(with: [original]), overrideDay]))
+            workouts: [day(with: [original]), overrideDay]))
 
         old.startOverride(dayID: overrideDay.id)
         await entered.wait()
@@ -6679,7 +6711,7 @@ final class SetOutboxTests: XCTestCase {
             userID: "user-a", defaults: defaults))
         XCTAssertEqual(replacement.todaySession?.status, "planned")
         XCTAssertEqual(replacement.todaySession?.attempt, 1)
-        XCTAssertEqual(replacement.todaySession?.day_template_id, overrideDay.id)
+        XCTAssertEqual(replacement.todaySession?.workout_id, overrideDay.id)
         XCTAssertGreaterThanOrEqual(api.stateCalls, 1)
     }
 
@@ -6790,12 +6822,12 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         await release.open()
         await edit.value
-        for _ in 0..<100 where replacement.plan?.days.first?.exercises.count != 1 {
+        for _ in 0..<100 where replacement.plan?.workouts.first?.exercises.count != 1 {
             await Task.yield()
         }
 
         XCTAssertEqual(editor.deleteCalls, 1)
-        XCTAssertEqual(replacement.plan?.days.first?.exercises.map(\.id), [first.id])
+        XCTAssertEqual(replacement.plan?.workouts.first?.exercises.map(\.id), [first.id])
         XCTAssertGreaterThanOrEqual(setAPI.stateCalls, 1)
     }
 
@@ -6903,7 +6935,7 @@ final class SetOutboxTests: XCTestCase {
             id: fixedUUID.uuidString,
             action: .discard,
             date: discarded.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: discarded.id,
             deliveryState: .acknowledged,
             failedHTTPStatus: nil,
@@ -6954,7 +6986,7 @@ final class SetOutboxTests: XCTestCase {
             id: fixedUUID.uuidString,
             action: .discard,
             date: discarded.date,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: discarded.id,
             deliveryState: .acknowledged,
             failedHTTPStatus: nil,
@@ -7017,7 +7049,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: fixedCivilDate,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: liveSession.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -7431,7 +7463,7 @@ final class SetOutboxTests: XCTestCase {
             state(
                 session: liveSession,
                 sets: [],
-                days: [day(with: [ex])],
+                workouts: [day(with: [ex])],
                 serverTime: 2_000_000_000_000,
                 externalSyncCursorsVersion: 2),
             userID: "user-a",
@@ -7649,10 +7681,10 @@ final class SetOutboxTests: XCTestCase {
         let defaults = defaults()
         let first = exercise(id: "slot-a", exerciseID: "exercise-a")
         let scheduled = exercise(id: "slot-b", exerciseID: "exercise-b")
-        let selectedDay = DayTemplate(
+        let selectedDay = Workout(
             id: "day-a", name: "Selected Day", day_label: "A",
             order_index: 0, exercises: [first])
-        let scheduledDay = DayTemplate(
+        let scheduledDay = Workout(
             id: "day-b", name: "Scheduled Day", day_label: "B",
             order_index: 1, exercises: [scheduled])
         let weekday = try! XCTUnwrap(
@@ -7664,14 +7696,14 @@ final class SetOutboxTests: XCTestCase {
         """
         let remoteSession = SessionRow(
             id: "session-a", date: fixedCivilDate,
-            status: "in_progress", day_template_id: nil)
+            status: "in_progress", workout_id: nil)
         let model = SyncModel(
             auth: retainedAuth(defaults: defaults),
             defaults: defaults,
             now: { self.fixedDate })
         model.plan = PlanTree(
             id: "plan-a", name: "Plan A", version: 1,
-            days: [selectedDay, scheduledDay], meta: meta)
+            workouts: [selectedDay, scheduledDay], meta: meta)
         model.selectedDayID = selectedDay.id
         model.sessions = [remoteSession]
         model.todaySession = remoteSession
@@ -7702,7 +7734,7 @@ final class SetOutboxTests: XCTestCase {
             id: "plan-a",
             name: "Plan A",
             version: 1,
-            days: [day(with: [exercise()])],
+            workouts: [day(with: [exercise()])],
             meta: meta)
         model.sessions = [session(status: "completed")]
         model.rides = [ExternalEvent(
@@ -7823,7 +7855,7 @@ final class SetOutboxTests: XCTestCase {
         let initialState = state(
             session: activeSession,
             sets: [],
-            days: [day(with: [original])],
+            workouts: [day(with: [original])],
             planName: "Old Plan")
         StateSnapshotStore.save(
             initialState, userID: "user-a", defaults: defaults)
@@ -7839,7 +7871,7 @@ final class SetOutboxTests: XCTestCase {
             return state(
                 session: completedSession,
                 sets: [],
-                days: [day(with: [replacement])],
+                workouts: [day(with: [replacement])],
                 planName: "New Plan")
         }
         let terminalAPI = SetTerminalAPIStub()
@@ -7872,7 +7904,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(setAPI.stateCalls, 2)
         XCTAssertEqual(replacementModel.plan?.name, "New Plan")
         XCTAssertEqual(
-            replacementModel.plan?.days.first?.exercises.map(\.id),
+            replacementModel.plan?.workouts.first?.exercises.map(\.id),
             [replacement.id])
         let snapshot = try! XCTUnwrap(StateSnapshotStore.load(
             userID: "user-a", defaults: defaults)?.state)
@@ -8075,7 +8107,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: fixedCivilDate,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: liveSession.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -8112,7 +8144,7 @@ final class SetOutboxTests: XCTestCase {
             id: fixedUUID.uuidString,
             action: .finish,
             date: fixedCivilDate,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: active.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -8198,15 +8230,15 @@ final class SetOutboxTests: XCTestCase {
     func testRecoveredOverrideCheckpointOwnsPreResumeDayAndCTAContent() {
         let defaults = defaults()
         let overrideSlot = exercise(id: "slot-a", exerciseID: "exercise-a")
-        let overrideDay = DayTemplate(
+        let overrideDay = Workout(
             id: "day-a", name: "Override", day_label: "A",
             order_index: 0, exercises: [overrideSlot])
-        let pinnedDay = DayTemplate(
+        let pinnedDay = Workout(
             id: "day-b", name: "Pinned", day_label: "B",
             order_index: 1, exercises: [])
         let liveSession = SessionRow(
             id: "session-a", date: fixedCivilDate,
-            status: "in_progress", day_template_id: pinnedDay.id)
+            status: "in_progress", workout_id: pinnedDay.id)
         WorkoutRunnerCheckpointStore.save(
             .init(
                 date: fixedCivilDate,
@@ -8226,7 +8258,7 @@ final class SetOutboxTests: XCTestCase {
         model.replaceState(with: state(
             session: liveSession,
             sets: [],
-            days: [overrideDay, pinnedDay]))
+            workouts: [overrideDay, pinnedDay]))
 
         XCTAssertTrue(model.hasResumableWorkout)
         XCTAssertEqual(model.selectedDayID, overrideDay.id)
@@ -8303,7 +8335,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: body,
             date: fixedCivilDate,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: liveSession.id,
             deliveryState: .queued,
             failedHTTPStatus: nil))
@@ -8366,7 +8398,7 @@ final class SetOutboxTests: XCTestCase {
             now: { self.fixedDate })
         model.plan = PlanTree(
             id: "plan-a", name: "Plan A", version: 1,
-            days: [day(with: [first, second])], meta: nil)
+            workouts: [day(with: [first, second])], meta: nil)
         model.selectedDayID = "day-a"
 
         model.startWorkout()
@@ -8405,7 +8437,7 @@ final class SetOutboxTests: XCTestCase {
             await releaseFirst.wait()
             return state(
                 session: session(status: "planned", updatedAt: 300),
-                sets: [], days: [day(with: [ex])],
+                sets: [], workouts: [day(with: [ex])],
                 serverTime: 9_000, planName: "Stale Plan")
         }
         secondAPI.stateHandler = { [self] _ in
@@ -8413,7 +8445,7 @@ final class SetOutboxTests: XCTestCase {
             await releaseSecond.wait()
             return state(
                 session: session(status: "completed", updatedAt: 400),
-                sets: [], days: [day(with: [ex])],
+                sets: [], workouts: [day(with: [ex])],
                 serverTime: 1_000, planName: "Current Plan")
         }
         let first = SyncModel(
@@ -8478,7 +8510,7 @@ final class SetOutboxTests: XCTestCase {
         replacement.replaceState(with: StateResponse(
             plan: PlanTree(
                 id: "plan-a", name: "Replacement Plan", version: 2,
-                days: [day(with: [ex])], meta: nil),
+                workouts: [day(with: [ex])], meta: nil),
             plan_version: 2,
             sessions: [active, unrelated],
             sets: [], external_events: [], external_activities: [],
@@ -8638,7 +8670,7 @@ final class SetOutboxTests: XCTestCase {
         var terminal = WorkoutTerminalOutbox()
         terminal.enqueue(.init(
             id: "discard-a", action: .discard, date: fixedCivilDate,
-            dayTemplateID: "day-a", resolvedSessionID: active.id,
+            workoutID: "day-a", resolvedSessionID: active.id,
             deliveryState: .acknowledged, failedHTTPStatus: nil))
         WorkoutTerminalOutboxStore.save(
             terminal, userID: "user-a", defaults: defaults)
@@ -8651,7 +8683,7 @@ final class SetOutboxTests: XCTestCase {
                 set_index: 1, weight: 135, reps: 5,
                 is_warmup: false, logged_at: 2_000_000_000_000,
                 duration_s: nil, is_timed: false),
-            date: fixedCivilDate, dayTemplateID: "day-a",
+            date: fixedCivilDate, workoutID: "day-a",
             resolvedSessionID: active.id,
             deliveryState: .queued, failedHTTPStatus: nil))
         SetOutboxStore.save(sets, userID: "user-a", defaults: defaults)
@@ -8958,7 +8990,7 @@ final class SetOutboxTests: XCTestCase {
         var terminal = WorkoutTerminalOutbox()
         terminal.enqueue(.init(
             id: "discard-a", action: .discard, date: fixedCivilDate,
-            dayTemplateID: "day-a", resolvedSessionID: discarded.id,
+            workoutID: "day-a", resolvedSessionID: discarded.id,
             deliveryState: .acknowledged, failedHTTPStatus: nil,
             expectedAttempt: 0))
         WorkoutTerminalOutboxStore.save(
@@ -8988,7 +9020,7 @@ final class SetOutboxTests: XCTestCase {
         let routineAPI = SetRoutineEditingAPIStub()
         routineAPI.deleteDayHandler = { _, _, _ in
             XCTFail("A recovered workout day must not reach deletion")
-            return APIClient.DeleteDayResult(ok: true, version: 2)
+            return APIClient.DeleteWorkoutResult(ok: true, version: 2)
         }
         routineAPI.calendarHandler = { _, _, _, _ in
             XCTFail("A recovered workout date must not be reassigned")
@@ -9218,7 +9250,7 @@ final class SetOutboxTests: XCTestCase {
         var terminal = WorkoutTerminalOutbox()
         terminal.enqueue(.init(
             id: "discard-a", action: .discard, date: fixedCivilDate,
-            dayTemplateID: "day-a", resolvedSessionID: discarded.id,
+            workoutID: "day-a", resolvedSessionID: discarded.id,
             deliveryState: .acknowledged, failedHTTPStatus: nil))
         WorkoutTerminalOutboxStore.save(
             terminal, userID: "user-a", defaults: defaults)
@@ -9335,7 +9367,7 @@ final class SetOutboxTests: XCTestCase {
         outbox.enqueue(.init(
             body: newBody,
             date: fixedCivilDate,
-            dayTemplateID: "day-a",
+            workoutID: "day-a",
             resolvedSessionID: nil,
             deliveryState: .queued,
             failedHTTPStatus: nil,
@@ -9383,7 +9415,7 @@ final class SetOutboxTests: XCTestCase {
         var terminal = WorkoutTerminalOutbox()
         terminal.enqueue(.init(
             id: "discard-a", action: .discard, date: fixedCivilDate,
-            dayTemplateID: "day-a", resolvedSessionID: discarded.id,
+            workoutID: "day-a", resolvedSessionID: discarded.id,
             deliveryState: .acknowledged, failedHTTPStatus: nil,
             expectedAttempt: 0))
         WorkoutTerminalOutboxStore.save(
@@ -9461,7 +9493,7 @@ final class SetOutboxTests: XCTestCase {
         var outbox = SetOutbox()
         outbox.enqueue(.init(
             body: body, date: fixedCivilDate,
-            dayTemplateID: "day-a", resolvedSessionID: nil,
+            workoutID: "day-a", resolvedSessionID: nil,
             deliveryState: .queued, failedHTTPStatus: nil,
             expectedAttempt: 0))
         SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
@@ -9512,7 +9544,7 @@ final class SetOutboxTests: XCTestCase {
         var outbox = SetOutbox()
         outbox.enqueue(.init(
             body: body, date: fixedCivilDate,
-            dayTemplateID: "day-a", resolvedSessionID: nil,
+            workoutID: "day-a", resolvedSessionID: nil,
             deliveryState: .queued, failedHTTPStatus: nil,
             expectedAttempt: 0))
         SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
@@ -9569,7 +9601,7 @@ final class SetOutboxTests: XCTestCase {
         var outbox = SetOutbox()
         outbox.enqueue(.init(
             body: body, date: fixedCivilDate,
-            dayTemplateID: "day-a", resolvedSessionID: nil,
+            workoutID: "day-a", resolvedSessionID: nil,
             deliveryState: .queued, failedHTTPStatus: nil,
             expectedAttempt: 0))
         SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
@@ -9640,7 +9672,7 @@ final class SetOutboxTests: XCTestCase {
         var outbox = SetOutbox()
         outbox.enqueue(.init(
             body: oldBody, date: fixedCivilDate,
-            dayTemplateID: "day-a", resolvedSessionID: current.id,
+            workoutID: "day-a", resolvedSessionID: current.id,
             deliveryState: .queued, failedHTTPStatus: nil,
             expectedAttempt: 0))
         SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
@@ -9798,7 +9830,7 @@ final class SetOutboxTests: XCTestCase {
             id: completed.id,
             date: completed.date,
             status: completed.status,
-            day_template_id: "day-remapped",
+            workout_id: "day-remapped",
             updated_at: completed.updated_at,
             attempt: completed.attempt)
         let entered = SetAsyncLatch()
@@ -9825,11 +9857,11 @@ final class SetOutboxTests: XCTestCase {
         await finish.value
 
         XCTAssertEqual(model.todaySession?.status, "completed")
-        XCTAssertEqual(model.todaySession?.day_template_id, "day-remapped")
+        XCTAssertEqual(model.todaySession?.workout_id, "day-remapped")
         XCTAssertEqual(
             StateSnapshotStore.load(
                 userID: "user-a", defaults: defaults)?.state.sessions.first?
-                .day_template_id,
+                .workout_id,
             "day-remapped")
     }
 
@@ -9842,7 +9874,7 @@ final class SetOutboxTests: XCTestCase {
             id: created.id,
             date: created.date,
             status: created.status,
-            day_template_id: "day-remapped",
+            workout_id: "day-remapped",
             updated_at: created.updated_at,
             attempt: created.attempt)
         let entered = SetAsyncLatch()
@@ -9891,11 +9923,11 @@ final class SetOutboxTests: XCTestCase {
         let acknowledged = await write.value
         XCTAssertFalse(acknowledged)
         XCTAssertEqual(model.todaySession?.status, "planned")
-        XCTAssertEqual(model.todaySession?.day_template_id, "day-remapped")
+        XCTAssertEqual(model.todaySession?.workout_id, "day-remapped")
         XCTAssertEqual(
             StateSnapshotStore.load(
                 userID: "user-a", defaults: defaults)?.state.sessions.first?
-                .day_template_id,
+                .workout_id,
             "day-remapped")
     }
 
@@ -9910,7 +9942,7 @@ final class SetOutboxTests: XCTestCase {
             id: discarded.id,
             date: discarded.date,
             status: discarded.status,
-            day_template_id: "day-remapped",
+            workout_id: "day-remapped",
             updated_at: discarded.updated_at,
             attempt: discarded.attempt)
         let entered = SetAsyncLatch()
@@ -9938,7 +9970,7 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(
             StateSnapshotStore.load(
                 userID: "user-a", defaults: defaults)?.state.sessions.first?
-                .day_template_id,
+                .workout_id,
             "day-remapped")
     }
 }
@@ -10082,7 +10114,7 @@ extension SetOutboxTests {
             }
         }
         return PlanTree(id: "plan-a", name: "Plan A", version: 1,
-            days: [day(with: [ex])], meta: noise.base64EncodedString())
+            workouts: [day(with: [ex])], meta: noise.base64EncodedString())
     }
 
     func testCorrectionPackingFailurePersistsInvalidationBeforeRetiringIntent() async throws {
@@ -10137,7 +10169,7 @@ extension SetOutboxTests {
         api.stateHandler = { [self] _ in
             state(session: active,
                 sets: [correctionFixture(ex, weight: api.stateCalls == 1 ? 135 : 95)],
-                days: hugePlan.days, planMeta: hugePlan.meta)
+                workouts: hugePlan.workouts, planMeta: hugePlan.meta)
         }
         let sharedAuth = retainedAuth(defaults: defaults)
         let model = SyncModel(auth: sharedAuth, setWriteAPI: api, catalogAPI: catalog,
@@ -10190,7 +10222,7 @@ extension SetOutboxTests {
             return result
         }
         api.stateHandler = { [self] _ in
-            state(session: serverSession, sets: serverSets, days: hugePlan.days, planMeta: hugePlan.meta)
+            state(session: serverSession, sets: serverSets, workouts: hugePlan.workouts, planMeta: hugePlan.meta)
         }
         terminal.completeHandler = { [self] _, _ in
             serverSession = session(status: "completed", updatedAt: 200, attempt: 0)
@@ -10586,7 +10618,7 @@ extension SetOutboxTests {
             template_exercise_id: a.id, set_index: 1, weight: 100, reps: 5,
             is_warmup: false, logged_at: prior.logged_at, duration_s: nil, is_timed: false)
         var outbox = SetOutbox()
-        outbox.enqueue(.init(body: body, date: fixedCivilDate, dayTemplateID: "day-a",
+        outbox.enqueue(.init(body: body, date: fixedCivilDate, workoutID: "day-a",
                              resolvedSessionID: active.id, deliveryState: .queued,
                              failedHTTPStatus: nil, expectedAttempt: 0))
         SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
@@ -10736,7 +10768,7 @@ extension SetOutboxTests {
         }
         let ungrouped = [exercise(), exercise(id: "slot-b", exerciseID: "exercise-b")]
         api.stateHandler = { [self] _ in
-            state(session: session(), sets: [], days: [day(with: ungrouped)], planVersion: 2)
+            state(session: session(), sets: [], workouts: [day(with: ungrouped)], planVersion: 2)
         }
         let cleared = await model.clearExerciseGroup(dayID: "day-a", groupID: "group-a", expectedVersion: 1)
         XCTAssertTrue(cleared)
@@ -10751,7 +10783,7 @@ extension SetOutboxTests {
         let sharedAuth = retainedAuth(defaults: defaults)
         editor.clearGroupHandler = { _, _, _, _ in throw APIError.http(409, #"{"conflict":true,"current_version":2}"#) }
         api.stateHandler = { [self] _ in
-            state(session: session(), sets: [], days: [day(with: [a, b])], planVersion: 2)
+            state(session: session(), sets: [], workouts: [day(with: [a, b])], planVersion: 2)
         }
         let model = SyncModel(auth: sharedAuth, setWriteAPI: api,
             planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
@@ -11017,7 +11049,7 @@ extension SetOutboxTests {
         let drain = Task { await model.drainWorkoutWriteOutboxes() }
         await entered.wait()
         model.replaceState(with: state(session: active, sets: accepted,
-            days: [day(with: [changedA, changedB, c])], planVersion: 2))
+            workouts: [day(with: [changedA, changedB, c])], planVersion: 2))
         XCTAssertEqual(model.sets.count, 2)
         XCTAssertEqual(model.runnerSetsDone(changedB), 0)
         XCTAssertEqual(model.currentExercise?.id, c.id)
@@ -11300,13 +11332,13 @@ extension SetOutboxTests {
                          groupID: otherGroup ? "group-b" : nil)
         // A checkpoint's explicit workout override may differ from the session
         // pin and the day initially selected while the cached state loads.
-        let overrideDay = DayTemplate(id: "day-override", name: "Override", day_label: "O",
+        let overrideDay = Workout(id: "day-override", name: "Override", day_label: "O",
             order_index: 1, exercises: [a, b, c, d])
         let pinned = exercise(id: "pinned", exerciseID: "pinned-exercise")
         let days = [day(with: [pinned]), overrideDay]
         let active = session(updatedAt: 100, attempt: 0)
         let originalA = correctionFixture(a, id: "original-a"), originalB = correctionFixture(b, id: "original-b")
-        StateSnapshotStore.save(state(session: active, sets: [originalA, originalB], days: days),
+        StateSnapshotStore.save(state(session: active, sets: [originalA, originalB], workouts: days),
                                 userID: "user-a", defaults: defaults)
         let progress: GroupRunnerProgress? = otherGroup ? .init(id: "group-b", members: [
             .init(id: c.id, target: 2, completedIDs: [], skipped: false),
@@ -11332,7 +11364,7 @@ extension SetOutboxTests {
         let drain = Task { await model.drainWorkoutWriteOutboxes() }
         if liveReadFirst {
             await entered.wait()
-            model.replaceState(with: state(session: active, sets: [deletion.set, originalB], days: days))
+            model.replaceState(with: state(session: active, sets: [deletion.set, originalB], workouts: days))
             XCTAssertEqual(model.resumableCheckpoint?.currentSlotID, olderDeletion ? c.id : a.id)
             await release.open()
         }
@@ -11343,7 +11375,7 @@ extension SetOutboxTests {
         XCTAssertEqual(saved.selectedDayID, overrideDay.id)
         XCTAssertEqual(saved.focus?.isExplicit, olderDeletion)
         if !liveReadFirst { XCTAssertNil(model.resumableCheckpoint) }
-        model.replaceState(with: state(session: active, sets: [originalB], days: days))
+        model.replaceState(with: state(session: active, sets: [originalB], workouts: days))
         XCTAssertEqual(model.resumableCheckpoint?.currentSlotID, olderDeletion ? c.id : a.id)
         model.resumeWorkout()
         XCTAssertEqual(model.currentExercise?.id, olderDeletion ? c.id : a.id)
@@ -11615,7 +11647,7 @@ extension SetOutboxTests {
         await entered.wait()
         model.jump(to: 0)
         model.replaceState(with: state(session: active, sets: [a1, a2, b1],
-            days: [day(with: [changedA, changedB])], planVersion: 2))
+            workouts: [day(with: [changedA, changedB])], planVersion: 2))
         XCTAssertEqual(model.currentExercise?.id, b.id)
         XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.focus?.isExplicit, false)
         await release.open()
@@ -11726,7 +11758,7 @@ extension SetOutboxTests {
                          groupID: otherGroup ? "group-b" : nil)
         let d = exercise(id: "slot-d", exerciseID: "exercise-d", targetSets: 2,
                          groupID: otherGroup ? "group-b" : nil)
-        let overrideDay = DayTemplate(id: "day-override", name: "Override", day_label: "O",
+        let overrideDay = Workout(id: "day-override", name: "Override", day_label: "O",
             order_index: 1, exercises: [a, b, c, d])
         let pinned = day(with: [exercise(id: "pinned", exerciseID: "pinned-exercise")])
         let days = [pinned, overrideDay]
@@ -11743,7 +11775,7 @@ extension SetOutboxTests {
         }
         let sharedAuth = retainedAuth(defaults: defaults)
         let model = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
-        model.replaceState(with: state(session: active, sets: [originalA, originalB], days: days))
+        model.replaceState(with: state(session: active, sets: [originalA, originalB], workouts: days))
         model.selectedDayID = overrideDay.id
         model.startWorkout()
         model.jump(to: 2)
@@ -11756,7 +11788,7 @@ extension SetOutboxTests {
         await entered.wait()
         if liveReadFirst {
             model.replaceState(with: state(session: active,
-                sets: [try XCTUnwrap(deletion).set, originalB], days: days))
+                sets: [try XCTUnwrap(deletion).set, originalB], workouts: days))
         }
         await release.open()
         await drain.value
@@ -11790,15 +11822,15 @@ extension SetOutboxTests {
             let changedB = exercise(id: b.id, exerciseID: b.exercise_id,
                 targetSets: change == "rounds" ? 2 : 1, warmup: change == "class",
                 groupID: change == "group" ? nil : "group-a")
-            liveDays = [pinned, DayTemplate(id: overrideDay.id, name: "Override", day_label: "O",
+            liveDays = [pinned, Workout(id: overrideDay.id, name: "Override", day_label: "O",
                 order_index: 1, exercises: [changedA, changedB, c, d])]
         }
         if change == "order" {
-            liveDays = [pinned, DayTemplate(id: overrideDay.id, name: "Override", day_label: "O",
+            liveDays = [pinned, Workout(id: overrideDay.id, name: "Override", day_label: "O",
                 order_index: 1, exercises: [b, a, c, d])]
         }
         let liveSession = change == "attempt" ? session(updatedAt: 200, attempt: 1) : active
-        cold.replaceState(with: state(session: liveSession, sets: [originalB], days: liveDays))
+        cold.replaceState(with: state(session: liveSession, sets: [originalB], workouts: liveDays))
         if change == "attempt" || change == "date" {
             XCTAssertNil(cold.resumableCheckpoint)
             XCTAssertNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: coldDefaults))
@@ -11813,7 +11845,7 @@ extension SetOutboxTests {
         XCTAssertEqual(cold.currentExercise?.id, expectedSlot)
         XCTAssertFalse(cold.timedActive)
         XCTAssertEqual(cold.runnerSetsDone(c), 0)
-        cold.replaceState(with: state(session: liveSession, sets: [originalB], days: liveDays))
+        cold.replaceState(with: state(session: liveSession, sets: [originalB], workouts: liveDays))
         XCTAssertEqual(cold.currentExercise?.id, expectedSlot)
     }
 

@@ -86,7 +86,7 @@ describe('plan meta: race / periodization / trips / stress_model (M2)', () => {
     // Minimal active plan so there is something to attach meta to.
     const built = await call('update_plan', {
       name: 'Multisport',
-      days: [
+      workouts: [
         { day_label: 'A', name: 'Full Body', exercises: [{ exercise: 'squat', target_sets: 3, target_reps: 5 }] },
       ],
     });

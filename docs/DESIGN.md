@@ -1,7 +1,7 @@
 # tres-fort — Design Doc
 
 > Claude is the coach. It adapts the shared plan through conversation; members
-> can also author routines and workout dates directly in iOS.
+> can also author reusable workouts and workout dates directly in iOS.
 > You execute and log in a native iOS app. A Cloudflare backend is the
 > single source of truth that both Claude (via MCP) and the app read/write.
 
@@ -55,7 +55,7 @@ already covered and the domain is owned.
 ## 3. D1 schema
 
 Epoch-ms integers for timestamps. `id` is a UUID string. Plan-tree tables
-(`plans`, `day_templates`, `template_exercises`) are the versioned document;
+(`plans`, `workouts`, `template_exercises`) are the versioned document;
 `set_logs`/`notes`/`sessions` are the append-only log.
 
 This excerpt shows the post-rollout logical application schema. Migration
@@ -96,7 +96,7 @@ CREATE TABLE plans (
   updated_at  INTEGER NOT NULL
 );
 
-CREATE TABLE day_templates (
+CREATE TABLE workouts (
   id          TEXT PRIMARY KEY,
   plan_id     TEXT NOT NULL REFERENCES plans(id),
   name        TEXT NOT NULL,                    -- "Lower A"
@@ -109,7 +109,7 @@ CREATE TABLE day_templates (
 
 CREATE TABLE template_exercises (
   id               TEXT PRIMARY KEY,
-  day_template_id  TEXT NOT NULL REFERENCES day_templates(id),
+  workout_id  TEXT NOT NULL REFERENCES workouts(id),
   exercise_id      TEXT NOT NULL REFERENCES exercises(id),
   order_index      INTEGER NOT NULL,
   target_sets      INTEGER NOT NULL,
@@ -136,7 +136,7 @@ CREATE TABLE sessions (
   id                TEXT PRIMARY KEY,
   user_id           TEXT NOT NULL REFERENCES users(id),
   plan_id           TEXT NOT NULL REFERENCES plans(id),
-  day_template_id   TEXT REFERENCES day_templates(id),   -- NULL = ad-hoc
+  workout_id   TEXT REFERENCES workouts(id),   -- NULL = unpinned (status/schedule decide rest)
   date              TEXT NOT NULL,                        -- 'YYYY-MM-DD' device-local
   status            TEXT NOT NULL DEFAULT 'planned',      -- planned|in_progress|completed|skipped
   started_at        INTEGER,
@@ -202,7 +202,7 @@ CREATE INDEX ix_audit_user_actor_created ON audit_log(user_id, actor, created_at
 -- oauth_tokens is defined by the OAuth migrations and omitted above.
 CREATE INDEX ix_oauth_tokens_user ON oauth_tokens(user_id);
 CREATE UNIQUE INDEX ux_session_user_date ON sessions(user_id, date);
-CREATE INDEX ix_te_day ON template_exercises(day_template_id, order_index);
+CREATE INDEX ix_te_workout ON template_exercises(workout_id, order_index);
 ```
 
 Migration `0034` also creates
@@ -234,7 +234,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `POST /auth/apple` | Body `{identityToken, authorizationCode?, fullName?}` → `{jwt, user}`. Verifies Apple JWT and resolves the caller. When the native client supplies Apple's single-use code, the route reserves that caller against concurrent deletion, exchanges the code, verifies the returned `id_token` has the same Apple subject, and stores only the caller-scoped refresh token before issuing the app JWT. Storage retains the exact reservation until a second acknowledgement, so a D1 commit whose response is lost can still become sticky revocation uncertainty. Code omission remains compatible with older clients. |
 | `GET /api/state?since=<planVersion>&sets_since=<epochMs>&events_since=<epochMs>&activities_since=<epochMs>&log_since=<epochMs>` | **The sync pull.** Returns `{plan: tree|null, plan_version, plan_groups_version?, external_sync_cursors_version, sessions[], sets[], external_events[], external_activities[], activities[], server_time}`. `plan` is null when `version <= since`; otherwise the full small tree. A zero collection cursor requests a complete current snapshot; an active cursor returns changes plus tombstones. P2 Workers return `external_sync_cursors_version: 2`; compatible clients activate the external cursors only for version 2 or later. `server_time` is captured at request start. Called on launch/foreground/post-write. |
 | `GET /api/today` | Today's session (created from today's template if absent) + its sets + per-exercise last-time actuals + suggested weight. |
-| `POST /api/sessions` | `{date, day_template_id?}` → create/start session. |
+| `POST /api/sessions` | `{date, workout_id?}` → create/start session. |
 | `PATCH /api/sessions/{id}` | `{status?, perceived_fatigue?, notes?}` plus the existing attempt guard. A completed acknowledgement includes an optional persisted `summary`; a summary failure cannot revoke completion. |
 | `GET /api/sessions/{id}/summary` | Owner-scoped persisted work, comparable records, and differences from starting targets. Discarded or unowned sessions return 404. |
 | `POST /api/sessions/{id}/sets` | Idempotent on body `id`. `{id, exercise_id, set_index, weight, reps, rpe?, is_warmup?, notes?, logged_at}` with existing slot/timed/attempt context and optional `prescription: {plan_id, version, day_id}` from the plan shown at the tap. |
@@ -244,19 +244,30 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `GET /api/me/export` | Download the signed caller's portable account and training-data snapshot as a non-cacheable JSON attachment. Excludes credentials, tokens, invite capabilities, and other members' private data. |
 | `DELETE /api/me` | Permanently delete the signed caller after explicit in-app confirmation and recent Apple authentication. A UUID-bound intent serializes provider revocation and local deletion; a durable receipt makes a lost success response safe to acknowledge. The response reports `apple_revocation: revoked|manual_required`; provider failure, legacy accounts without a stored token, or an uncertain exchange never retain local data and instead trigger the manual Apple Account handoff. |
 | `PUT /api/plan/active` | Idempotently ensure an active plan for manual authoring. Returns the existing winner on retry/concurrent coach creation and never archives it; explicit plan replacement archives and inserts atomically so the two creation paths cannot violate the one-active-plan invariant. |
-| `POST /api/days` | Add a workout day; omitted `order_index` appends densely. The first-day flow pins both `expected_plan_id` and `expected_version` to the plan returned by `PUT /api/plan/active`; app and MCP adds use the same atomic plan-version writer. |
-| `PATCH /api/days/{id}` | `{name?, day_label?, order_index?, notes?, expected_version?}` — rename/reorder a day through the same atomic plan-version writer as MCP. |
-| `DELETE /api/days/{id}?expected_version=` | Remove a day and scrub its recurring assignments. Completed history is detached, direct or same-plan schedule-resolved planned sessions become explicit rest, and removal is rejected while that day has a direct, same-plan schedule-resolved, or locally running workout. |
-| `POST /api/days/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
-| `PATCH /api/days/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
-| `POST /api/days/{id}/exercises/{teId}/swap` | `{to_exercise, expected_version}` — replace the exact caller-owned active slot, preserving its saved prescription, position, warm-up flag, and identity. Invalid carried targets return 400; a stale plan version returns 409. Historical sets retain their original exercise and values. |
-| `DELETE /api/days/{id}/exercises/{teId}` | Remove a slot; detaches (NULLs) historical `set_logs.template_exercise_id`. |
-| `PUT /api/days/{id}/groups` | `{group_id, exercises:[slot IDs], expected_version, round_rest, transition_rest?, target_sets?, order_index?}` creates or rewrites a group; optional `order_index` moves the complete block. Send `exercises:[]` with only `group_id` and `expected_version` to ungroup. Uses the same atomic, audited service as MCP. An exact acknowledged retry returns the original result before stale-version rejection, without reapplying a superseded grouping. |
+| `POST /api/workouts` | Add a workout day; omitted `order_index` appends densely. The first-day flow pins both `expected_plan_id` and `expected_version` to the plan returned by `PUT /api/plan/active`; app and MCP adds use the same atomic plan-version writer. |
+| `PATCH /api/workouts/{id}` | `{name?, day_label?, order_index?, notes?, expected_version?}` — rename/reorder a day through the same atomic plan-version writer as MCP. |
+| `DELETE /api/workouts/{id}?expected_version=` | Remove a day and scrub its recurring assignments. Completed history is detached, direct or same-plan schedule-resolved planned sessions become explicit rest, and removal is rejected while that day has a direct, same-plan schedule-resolved, or locally running workout. |
+| `POST /api/workouts/{id}/exercises` | Add an exercise slot (incl. `is_warmup`, `target_duration_s`). |
+| `PATCH /api/workouts/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
+| `POST /api/workouts/{id}/exercises/{teId}/swap` | `{to_exercise, expected_version}` — replace the exact caller-owned active slot, preserving its saved prescription, position, warm-up flag, and identity. Invalid carried targets return 400; a stale plan version returns 409. Historical sets retain their original exercise and values. |
+| `DELETE /api/workouts/{id}/exercises/{teId}` | Remove a slot; detaches (NULLs) historical `set_logs.template_exercise_id`. |
+| `PUT /api/workouts/{id}/groups` | `{group_id, exercises:[slot IDs], expected_version, round_rest, transition_rest?, target_sets?, order_index?}` creates or rewrites a group; optional `order_index` moves the complete block. Send `exercises:[]` with only `group_id` and `expected_version` to ungroup. Uses the same atomic, audited service as MCP. An exact acknowledged retry returns the original result before stale-version rejection, without reapplying a superseded grouping. |
 | `PUT /api/plan/schedule` | Replace the recurring weekday → day/rest map with optimistic concurrency on both `expected_plan_id` and `expected_version`. |
-| `PUT /api/calendar/{date}` | Assign one concrete date to a day (`day_template_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
+| `PUT /api/calendar/{date}` | Assign one concrete date to a day (`workout_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
 
-In-app manual authoring uses the same `plans` / `day_templates` /
-`template_exercises` tree and `plans.meta.schedule` that MCP uses. The Routine
+Canonical routes use `/api/workouts`; `/api/days` remains an alias for one
+TestFlight compatibility cycle. Plan responses carry `workouts` plus deprecated
+`days`; workout references carry `workout_id` plus `day_template_id`. Requests
+accept either and reject conflicting dual fields. MCP registers `add_workout`,
+`update_workout` and `delete_workout`, retaining `add_day` and `update_day` during
+the cycle. Export schema v2 preserves `training.day_templates` alongside
+`training.workouts`. Snapshot schema v2 uses `workouts`; immutable v1 documents
+remain readable/restorable without rewriting history. The first iOS build reads
+both vocabularies and sends the old one. See the [server-first rollout](plans/workouts-and-multi-session/rollout.md)
+for the physical-schema transition and the later outgoing-client switch.
+
+In-app manual authoring uses the same `plans` / `workouts` /
+`template_exercises` tree and `plans.meta.schedule` that MCP uses. The Workouts
 screen creates and orders days, edits exercise prescriptions, and maps weekdays;
 the calendar writes only concrete `sessions` exceptions. These REST endpoints
 are thin wrappers over the shared service layer and audit as `actor='ios'`.
@@ -600,12 +611,15 @@ for datasets, budgets and memory tradeoffs.
   completion keys on `template_exercise_id` (the slot), not `exercise_id`, so the
   same movement in two slots / out-of-order logging never mis-completes.
 - **Edit workout:** in-app add/remove/reorder/replace of exercises + warm-ups
-  (`EditWorkoutSheet`), editing the active plan's day template via the REST
+  (`EditWorkoutSheet`), editing the active plan's library workout via the REST
   editor endpoints. Members and Claude share the versioned prescription; this is the executor
   letting you tweak the session in front of you.
 - **History:** per-exercise Swift Charts trend, last-session preview.
-- **Routine:** create and order workouts, edit prescriptions, assign the recurring
-  schedule and manage the shared plan; calendar exceptions remain date-scoped.
+- **Workouts:** keep reusable workouts with weekday badges or "On demand".
+  Edit prescriptions, use a workout on a date, or configure an optional weekly
+  schedule. Unschedule clears recurring weekdays only; Delete workout retains
+  the existing history-preserving deletion semantics. Calendar exceptions use
+  the shared attempt-CAS writer and leave the weekly schedule unchanged.
 - **Auth:** Sign in with Apple → Keychain JWT; 401 → re-auth.
 - **No in-app chat** (by design — you chat in the Claude app; this reflects state).
 - UI per the React artifact (dark scoreboard, condensed display type, mono

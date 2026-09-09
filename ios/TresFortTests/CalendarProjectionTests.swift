@@ -60,7 +60,7 @@ final class CalendarProjectionTests: XCTestCase {
             status: status,
             // The schedule projects d_pull. A real d_push session proves the
             // result came from the session rather than schedule projection.
-            day_template_id: "d_push")
+            workout_id: "d_push")
     }
 
     func testBlackoutKeepsOnlyRealLoggedSessionsVisible() {
@@ -118,7 +118,7 @@ final class CalendarProjectionTests: XCTestCase {
             id: "session-null-template",
             date: "2026-05-20",
             status: "in_progress",
-            day_template_id: nil)
+            workout_id: nil)
 
         let projection = CalendarProjection.project(
             dateString: real.date,

@@ -209,8 +209,8 @@ describe('manual routine authoring over REST', () => {
     expect(moved.status).toBe(200);
     const afterMove = await (
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
-    ).json<{ version: number; days: { id: string; order_index: number }[] }>();
-    expect(afterMove.days.map((day) => [day.id, day.order_index])).toEqual([
+    ).json<{ version: number; workouts: { id: string; order_index: number }[] }>();
+    expect(afterMove.workouts.map((day) => [day.id, day.order_index])).toEqual([
       [dayB.id, 0], [dayA.id, 1],
     ]);
 
@@ -270,11 +270,11 @@ describe('manual routine authoring over REST', () => {
 
     const tree = await (
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
-    ).json<{ version: number; days: { name: string; order_index: number }[] }>();
+    ).json<{ version: number; workouts: { name: string; order_index: number }[] }>();
     expect(tree.version).toBe(plan.version + 1);
-    expect(tree.days).toHaveLength(1);
-    expect(tree.days[0]?.order_index).toBe(0);
-    expect(['Upper', 'Lower']).toContain(tree.days[0]?.name);
+    expect(tree.workouts).toHaveLength(1);
+    expect(tree.workouts[0]?.order_index).toBe(0);
+    expect(['Upper', 'Lower']).toContain(tree.workouts[0]?.name);
   });
 
   it('walks barbell and bodyweight routines from iOS writes through Today projection and MCP editing', async () => {
@@ -370,7 +370,7 @@ describe('manual routine authoring over REST', () => {
       '2026-09-03', '2026-09-03', '2026-09-03',
     );
     expect(today[0]).toMatchObject({
-      status: 'projected', day_template_id: barbell.id, real: false,
+      status: 'projected', workout_id: barbell.id, real: false,
     });
 
     const mcp = async (name: string, args: Record<string, unknown>) => {
@@ -390,7 +390,7 @@ describe('manual routine authoring over REST', () => {
       return JSON.parse(rpc.result.content[0].text);
     };
     const coachTree = await mcp('get_current_plan', {});
-    const coachBodyweight = coachTree.days.find(
+    const coachBodyweight = coachTree.workouts.find(
       (day: { id: string }) => day.id === bodyweight.id,
     );
     expect(coachBodyweight.exercises).toMatchObject([
@@ -411,9 +411,9 @@ describe('manual routine authoring over REST', () => {
     const appTree = await (
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
     ).json<{
-      days: { id: string; exercises: { id: string; target_duration_s: number | null }[] }[];
+      workouts: { id: string; exercises: { id: string; target_duration_s: number | null }[] }[];
     }>();
-    expect(appTree.days.find((day) => day.id === bodyweight.id)
+    expect(appTree.workouts.find((day) => day.id === bodyweight.id)
       ?.exercises.find((slot) => slot.id === slots[2]!.id)?.target_duration_s).toBe(60);
   });
 
@@ -427,19 +427,19 @@ describe('manual routine authoring over REST', () => {
 
     const workout = await SELF.fetch(`${BASE}/api/calendar/2026-11-05`, {
       method: 'PUT', headers: H,
-      body: JSON.stringify({ day_template_id: dayId }),
+      body: JSON.stringify({ workout_id: dayId }),
     });
     expect(workout.status).toBe(200);
     expect(await workout.json()).toMatchObject({
       ok: true,
       session: {
-        date: '2026-11-05', day_template_id: dayId,
+        date: '2026-11-05', workout_id: dayId,
         status: 'planned', attempt: 1,
       },
     });
     const rest = await SELF.fetch(`${BASE}/api/calendar/2026-11-06`, {
       method: 'PUT', headers: H,
-      body: JSON.stringify({ day_template_id: null }),
+      body: JSON.stringify({ workout_id: null }),
     });
     expect(rest.status).toBe(200);
     expect(await rest.json()).toMatchObject({
@@ -447,13 +447,13 @@ describe('manual routine authoring over REST', () => {
       session: { date: '2026-11-06', status: 'skipped', attempt: 1 },
     });
 
-    for (const [date, day_template_id] of [
+    for (const [date, workout_id] of [
       ['2026-11-15', dayId],
       ['2026-11-16', null],
     ] as const) {
       const staleAbsence = await SELF.fetch(`${BASE}/api/calendar/${date}`, {
         method: 'PUT', headers: H,
-        body: JSON.stringify({ day_template_id, expected_attempt: 2 }),
+        body: JSON.stringify({ workout_id, expected_attempt: 2 }),
       });
       expect(staleAbsence.status).toBe(409);
       expect(await staleAbsence.json()).toEqual({
@@ -483,7 +483,7 @@ describe('manual routine authoring over REST', () => {
     const session = await (
       await SELF.fetch(`${BASE}/api/sessions`, {
         method: 'POST', headers: H,
-        body: JSON.stringify({ date: '2026-11-08', day_template_id: firstDay }),
+        body: JSON.stringify({ date: '2026-11-08', workout_id: firstDay }),
       })
     ).json<{ id: string; attempt: number }>();
     const started = await SELF.fetch(`${BASE}/api/sessions/${session.id}`, {
@@ -495,7 +495,7 @@ describe('manual routine authoring over REST', () => {
     const retag = await SELF.fetch(`${BASE}/api/calendar/2026-11-08`, {
       method: 'PUT', headers: H,
       body: JSON.stringify({
-        day_template_id: secondDay.id,
+        workout_id: secondDay.id,
         expected_attempt: session.attempt,
       }),
     });
@@ -504,9 +504,9 @@ describe('manual routine authoring over REST', () => {
       error: 'session_already_started', status: 'in_progress',
     });
     const kept = await env.DB.prepare(
-      'SELECT status, day_template_id FROM sessions WHERE id=?1',
-    ).bind(session.id).first<{ status: string; day_template_id: string | null }>();
-    expect(kept).toEqual({ status: 'in_progress', day_template_id: firstDay });
+      'SELECT status, workout_id FROM sessions WHERE id=?1',
+    ).bind(session.id).first<{ status: string; workout_id: string | null }>();
+    expect(kept).toEqual({ status: 'in_progress', workout_id: firstDay });
 
     expect((await SELF.fetch(`${BASE}/api/sessions/${session.id}`, {
       method: 'PATCH', headers: H,
@@ -515,7 +515,7 @@ describe('manual routine authoring over REST', () => {
     const completedRetag = await SELF.fetch(`${BASE}/api/calendar/2026-11-08`, {
       method: 'PUT', headers: H,
       body: JSON.stringify({
-        day_template_id: secondDay.id,
+        workout_id: secondDay.id,
         expected_attempt: session.attempt,
       }),
     });
@@ -537,7 +537,7 @@ describe('manual routine authoring over REST', () => {
     const session = await (
       await SELF.fetch(`${BASE}/api/sessions`, {
         method: 'POST', headers: H,
-        body: JSON.stringify({ date: '2026-11-07', day_template_id: dayId }),
+        body: JSON.stringify({ date: '2026-11-07', workout_id: dayId }),
       })
     ).json<{ id: string }>();
     const setId = crypto.randomUUID();
@@ -572,11 +572,11 @@ describe('manual routine authoring over REST', () => {
     expect(removed.status).toBe(200);
 
     const keptSession = await env.DB.prepare(
-      'SELECT status, day_template_id, updated_at FROM sessions WHERE id=?1',
+      'SELECT status, workout_id, updated_at FROM sessions WHERE id=?1',
     ).bind(session.id).first<{
-      status: string; day_template_id: string | null; updated_at: number;
+      status: string; workout_id: string | null; updated_at: number;
     }>();
-    expect(keptSession).toMatchObject({ status: 'completed', day_template_id: null });
+    expect(keptSession).toMatchObject({ status: 'completed', workout_id: null });
     expect(keptSession!.updated_at).toBeGreaterThan(1);
     const keptSet = await env.DB.prepare(
       'SELECT reps, template_exercise_id, deleted_at FROM set_logs WHERE id=?1',
@@ -615,15 +615,15 @@ describe('manual routine authoring over REST', () => {
         method: 'POST', headers: H,
         body: JSON.stringify({ date: '2026-11-09' }),
       })
-    ).json<{ id: string; day_template_id: string | null }>();
+    ).json<{ id: string; workout_id: string | null }>();
     const active = await (
       await SELF.fetch(`${BASE}/api/sessions`, {
         method: 'POST', headers: H,
         body: JSON.stringify({ date: '2026-11-10' }),
       })
-    ).json<{ id: string; day_template_id: string | null }>();
-    expect(planned.day_template_id).toBeNull();
-    expect(active.day_template_id).toBeNull();
+    ).json<{ id: string; workout_id: string | null }>();
+    expect(planned.workout_id).toBeNull();
+    expect(active.workout_id).toBeNull();
     expect((await SELF.fetch(`${BASE}/api/sessions/${active.id}`, {
       method: 'PATCH', headers: H,
       body: JSON.stringify({ status: 'in_progress' }),
@@ -637,8 +637,8 @@ describe('manual routine authoring over REST', () => {
       { method: 'DELETE', headers: H },
     )).status).toBe(200);
     expect(await env.DB.prepare(
-      'SELECT status, day_template_id FROM sessions WHERE id=?1',
-    ).bind(planned.id).first()).toEqual({ status: 'skipped', day_template_id: null });
+      'SELECT status, workout_id FROM sessions WHERE id=?1',
+    ).bind(planned.id).first()).toEqual({ status: 'skipped', workout_id: null });
 
     plan = await (
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
@@ -650,9 +650,9 @@ describe('manual routine authoring over REST', () => {
     expect(rejected.status).toBe(409);
     expect(await rejected.json()).toEqual({ error: 'day_in_progress' });
     expect(await env.DB.prepare(
-      'SELECT status, day_template_id FROM sessions WHERE id=?1',
+      'SELECT status, workout_id FROM sessions WHERE id=?1',
     ).bind(active.id).first()).toEqual({
-      status: 'in_progress', day_template_id: null,
+      status: 'in_progress', workout_id: null,
     });
   });
 
@@ -728,14 +728,14 @@ describe('manual routine authoring over REST', () => {
     );
     expect(removed.status).toBe(200);
     expect(await env.DB.prepare(
-      'SELECT plan_id,status,day_template_id FROM sessions WHERE id=?1',
+      'SELECT plan_id,status,workout_id FROM sessions WHERE id=?1',
     ).bind(oldActive.id).first()).toEqual({
-      plan_id: archivedPlan.id, status: 'in_progress', day_template_id: null,
+      plan_id: archivedPlan.id, status: 'in_progress', workout_id: null,
     });
     expect(await env.DB.prepare(
-      'SELECT plan_id,status,day_template_id FROM sessions WHERE id=?1',
+      'SELECT plan_id,status,workout_id FROM sessions WHERE id=?1',
     ).bind(oldPlanned.id).first()).toEqual({
-      plan_id: archivedPlan.id, status: 'planned', day_template_id: null,
+      plan_id: archivedPlan.id, status: 'planned', workout_id: null,
     });
   });
 });
@@ -787,9 +787,9 @@ describe('add / edit / delete a plan slot over REST', () => {
     // It rides the plan tree with the warm-up flag intact, and the version bumped.
     const tree = await (
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
-    ).json<{ version: number; days: { id: string; exercises: { id: string; is_warmup: number }[] }[] }>();
+    ).json<{ version: number; workouts: { id: string; exercises: { id: string; is_warmup: number }[] }[] }>();
     expect(tree.version).toBeGreaterThan(before.version);
-    const day = tree.days.find((d) => d.id === dayId)!;
+    const day = tree.workouts.find((d) => d.id === dayId)!;
     const found = day.exercises.find((e) => e.id === slot.id)!;
     expect(found.is_warmup).toBe(1);
 
@@ -851,7 +851,7 @@ describe('add / edit / delete a plan slot over REST', () => {
       await SELF.fetch(`${BASE}/api/sessions`, {
         method: 'POST',
         headers: H,
-        body: JSON.stringify({ date: '2026-06-01', day_template_id: dayId }),
+        body: JSON.stringify({ date: '2026-06-01', workout_id: dayId }),
       })
     ).json<{ id: string }>();
 
@@ -878,8 +878,8 @@ describe('add / edit / delete a plan slot over REST', () => {
     // The slot is gone from the tree…
     const tree = await (
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
-    ).json<{ days: { id: string; exercises: { id: string }[] }[] }>();
-    const day = tree.days.find((d) => d.id === dayId)!;
+    ).json<{ workouts: { id: string; exercises: { id: string }[] }[] }>();
+    const day = tree.workouts.find((d) => d.id === dayId)!;
     expect(day.exercises.find((e) => e.id === slot.id)).toBeUndefined();
 
     // …but the logged set survives, with its slot link nulled out.
@@ -920,8 +920,8 @@ describe('add / edit / delete a plan slot over REST', () => {
 
     const tree = await (
       await SELF.fetch(`${BASE}/api/plan/active`, { headers: H })
-    ).json<{ days: { id: string; exercises: { id: string }[] }[] }>();
-    const day = tree.days.find((d) => d.id === dayId)!;
+    ).json<{ workouts: { id: string; exercises: { id: string }[] }[] }>();
+    const day = tree.workouts.find((d) => d.id === dayId)!;
     expect(day.exercises.map((e) => e.id)).toEqual([b.id, a.id]);
   });
 });
@@ -945,7 +945,7 @@ describe('logging a set against a warm-up slot inherits is_warmup', () => {
       await SELF.fetch(`${BASE}/api/sessions`, {
         method: 'POST',
         headers: H,
-        body: JSON.stringify({ date: '2026-06-02', day_template_id: dayId }),
+        body: JSON.stringify({ date: '2026-06-02', workout_id: dayId }),
       })
     ).json<{ id: string }>();
 
@@ -1073,7 +1073,7 @@ describe('logging a set against a warm-up slot inherits is_warmup', () => {
       await SELF.fetch(`${BASE}/api/sessions`, {
         method: 'POST',
         headers: H,
-        body: JSON.stringify({ date: '2026-06-05', day_template_id: dayId }),
+        body: JSON.stringify({ date: '2026-06-05', workout_id: dayId }),
       })
     ).json<{ id: string }>();
 

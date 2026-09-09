@@ -25,7 +25,7 @@ import Foundation
 //                     other sessions are suppressed with schedule/endurance.
 //                     Outside a blackout, a real session WINS (planned /
 //                     in_progress / completed / skipped). Otherwise:
-//                       weekday(date) → schedule.week → day_template_id
+//                       weekday(date) → schedule.week → workout_id
 //                       resolvable     → .projected(template)
 //                       null/missing/dangling → .rest
 //

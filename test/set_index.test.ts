@@ -13,8 +13,14 @@ import { beforeAll, describe, expect, it } from 'vitest';
 
 const BASE = 'https://tres-fort.test';
 
+let H: Record<string, string>;
+let sid: string;
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+  // Every case starts from this empty session; isolatedStorage rolls its writes
+  // back. Authentication and plan creation are setup, not part of slot safety.
+  H = auth(await devJwt());
+  sid = await newSession(H, '2026-06-01');
 });
 
 async function devJwt(): Promise<string> {
@@ -64,8 +70,6 @@ async function logSet(H: Record<string, string>, sid: string, body: Record<strin
 
 describe('#7 set_index collision safety', () => {
   it('renumbers a colliding set_index instead of duplicating the slot', async () => {
-    const H = auth(await devJwt());
-    const sid = await newSession(H, '2026-06-01');
 
     const a = await logSet(H, sid, setBody({ weight: 225, reps: 5 }));
     expect(a.json.set.set_index).toBe(1);
@@ -85,8 +89,6 @@ describe('#7 set_index collision safety', () => {
   });
 
   it('a warmup and a working set can share set_index 1 (is_warmup discriminates)', async () => {
-    const H = auth(await devJwt());
-    const sid = await newSession(H, '2026-06-02');
 
     const work = await logSet(H, sid, setBody({ set_index: 1, is_warmup: false }));
     expect(work.json.set.set_index).toBe(1);
@@ -97,8 +99,6 @@ describe('#7 set_index collision safety', () => {
   });
 
   it('a soft-deleted set frees its slot for reuse at the same index', async () => {
-    const H = auth(await devJwt());
-    const sid = await newSession(H, '2026-06-03');
 
     const first = await logSet(H, sid, setBody({ set_index: 1, weight: 225 }));
     expect(first.json.set.set_index).toBe(1);
@@ -113,16 +113,6 @@ describe('#7 set_index collision safety', () => {
     const second = await logSet(H, sid, setBody({ set_index: 1, weight: 235 }));
     expect(second.json.set.set_index).toBe(1);
 
-    // Tombstones are one-way. Reanimating the original could attach an
-    // old-attempt set after a discard/restart, so the public API rejects it.
-    const undel = await SELF.fetch(`${BASE}/api/sets/${first.json.set.id}`, {
-      method: 'PATCH',
-      headers: H,
-      body: JSON.stringify({ deleted: false }),
-    });
-    expect(undel.status).toBe(400);
-    const undelBody = await undel.json<any>();
-    expect(undelBody).toEqual({ error: 'invalid_fields', fields: ['deleted'] });
     // Only the replacement remains live.
     const live = await env.DB
       .prepare(
@@ -133,9 +123,28 @@ describe('#7 set_index collision safety', () => {
     expect(live.results.map((r) => r.set_index)).toEqual([1]);
   });
 
+  it('a tombstone cannot be reanimated into a live slot', async () => {
+    const first = await logSet(H, sid, setBody());
+    expect(first.status).toBe(201);
+    const deleted = await SELF.fetch(`${BASE}/api/sets/${first.json.set.id}`, {
+      method: 'PATCH', headers: H, body: JSON.stringify({ deleted: true }),
+    });
+    expect(deleted.status).toBe(200);
+    // Tombstones are one-way. Reanimating the original could attach an
+    // old-attempt set after a discard/restart, so the public API rejects it.
+    const undel = await SELF.fetch(`${BASE}/api/sets/${first.json.set.id}`, {
+      method: 'PATCH',
+      headers: H,
+      body: JSON.stringify({ deleted: false }),
+    });
+    expect(undel.status).toBe(400);
+    const undelBody = await undel.json<any>();
+    expect(undelBody).toEqual({ error: 'invalid_fields', fields: ['deleted'] });
+    expect(await env.DB.prepare('SELECT deleted_at FROM set_logs WHERE id=?')
+      .bind(first.json.set.id).first('deleted_at')).not.toBeNull();
+  });
+
   it('idempotent retry by id still dedupes (no bump, no second row)', async () => {
-    const H = auth(await devJwt());
-    const sid = await newSession(H, '2026-06-04');
     const body = setBody({ set_index: 1 });
     const a = await logSet(H, sid, body);
     expect(a.json.deduped).toBe(false);

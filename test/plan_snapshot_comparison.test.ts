@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   comparePlanSnapshots,
-  type PlanSnapshotDay,
+  type PlanSnapshotWorkout,
   type PlanSnapshotDocument,
   type PlanSnapshotExercise,
 } from '../src/planSnapshots';
@@ -14,15 +14,15 @@ function slot(id: string, exerciseId: string, overrides: Partial<PlanSnapshotExe
   };
 }
 
-function day(id: string, name: string, label: string | null, exercises: PlanSnapshotExercise[]): PlanSnapshotDay {
+function day(id: string, name: string, label: string | null, exercises: PlanSnapshotExercise[]): PlanSnapshotWorkout {
   return { id, name, day_label: label, order_index: 0, notes: null, exercises };
 }
 
-function document(days: PlanSnapshotDay[], schedule: Record<string, string | null> = {}): PlanSnapshotDocument {
+function document(workouts: PlanSnapshotWorkout[], schedule: Record<string, string | null> = {}): PlanSnapshotDocument {
   return {
-    schema_version: 1,
+    schema_version: 2,
     plan: { name: 'Training', meta: JSON.stringify({ schedule: { week: schedule } }) },
-    days,
+    workouts,
   };
 }
 

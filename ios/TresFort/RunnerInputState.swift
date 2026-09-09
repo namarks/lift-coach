@@ -44,7 +44,7 @@ enum RunnerInputPolicy {
             $0.exercise_id == exercise.exercise_id && $0.isWarmup == exercise.isWarmup
                 && $0.isTimed == exercise.isTimed
         }
-        let sameDaySessions = Set(sessions.filter { dayID != nil && $0.day_template_id == dayID }.map(\.id))
+        let sameDaySessions = Set(sessions.filter { dayID != nil && $0.workout_id == dayID }.map(\.id))
         return sets.filter {
             completed.contains($0.session_id) && $0.deleted_at == nil
                 && $0.exercise_id == exercise.exercise_id

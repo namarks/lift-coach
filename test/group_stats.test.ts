@@ -218,12 +218,12 @@ describe('group stats: workout_count + streak_days', () => {
       .bind(planId, a.id, ts)
       .run();
     await env.DB.prepare(
-      "INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Lower A','A',0,NULL,?3,?3)",
+      "INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Lower A','A',0,NULL,?3,?3)",
     )
       .bind(dayId, planId, ts)
       .run();
     await env.DB.prepare(
-      "INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,'planned',NULL,NULL,NULL,NULL,?6,?6)",
+      "INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,'planned',NULL,NULL,NULL,NULL,?6,?6)",
     )
       .bind(sessionId, a.id, planId, dayId, today, ts)
       .run();

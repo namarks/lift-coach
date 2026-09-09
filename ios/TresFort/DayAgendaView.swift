@@ -50,7 +50,7 @@ struct DayAgendaView: View {
                         Button {
                             showDateEditor = true
                         } label: {
-                            Label("Change this date", systemImage: "calendar.badge.clock")
+                            Label("Choose workout for this date", systemImage: "calendar.badge.clock")
                                 .font(Theme.mono(13, .bold))
                                 .foregroundStyle(Theme.accent)
                                 .frame(maxWidth: .infinity)
@@ -83,11 +83,11 @@ struct DayAgendaView: View {
         }
         .preferredColorScheme(.dark)
         .confirmationDialog(
-            "Change this date",
+            "Choose workout for this date",
             isPresented: $showDateEditor,
             titleVisibility: .visible
         ) {
-            ForEach(sync.plan?.days ?? []) { day in
+            ForEach(sync.plan?.workouts ?? []) { day in
                 Button(day.name) {
                     Task {
                         await sync.setCalendarOverride(
@@ -118,15 +118,8 @@ struct DayAgendaView: View {
         projection: DayProjection,
         today: String
     ) -> Bool {
-        guard dateString >= today,
-              !(dateString == today && sync.running),
-              !projection.suppressesScheduleAndEndurance,
-              !(sync.plan?.days.isEmpty ?? true)
-        else {
-            return false
-        }
-        guard let status = realSession?.status else { return true }
-        return status != "in_progress" && status != "completed"
+        !(sync.plan?.workouts.isEmpty ?? true)
+            && sync.calendarAssignmentUnavailableReason(date: dateString, today: today) == nil
     }
 
     // MARK: header
@@ -173,7 +166,7 @@ struct DayAgendaView: View {
             default:            return compositeTitle(s.uppercased())
             }
         case .projected(let tid):
-            return withBike(sync.dayTemplate(id: tid)?.title.uppercased() ?? "WORKOUT")
+            return withBike(sync.workout(id: tid)?.title.uppercased() ?? "WORKOUT")
         // No lift on this day: a ride/run makes it a "<noun> DAY" (a ride
         // day is not a rest day); nothing at all is a true rest day.
         case .rest, .none:
@@ -212,7 +205,7 @@ struct DayAgendaView: View {
     /// The day template to DISPLAY for a real (planned) session on this
     /// date — the SAME shared session→schedule resolver Today / the
     /// calendar / `nextWorkout` use (FIX5's class), not a bare
-    /// `day_template_id` read. When the session's own `day_template_id`
+    /// `workout_id` read. When the session's own `workout_id`
     /// is null (server drops it for an existing same-date row) this still
     /// recovers the template via the weekly schedule unless a hard blackout
     /// suppresses that schedule alongside endurance content.
@@ -221,7 +214,7 @@ struct DayAgendaView: View {
     /// in `CalendarMonthView.dayCell`: `dateString >= today` — the same
     /// civil-date boundary `CalendarProjection.project` uses
     /// (`dateString < today`). For a PAST date with a null
-    /// `day_template_id` this returns nil (no schedule-inferred relabel —
+    /// `workout_id` this returns nil (no schedule-inferred relabel —
     /// don't reintroduce the FIX6 class in the agenda); for today/future
     /// the gate is true so a planned session resolves its template, except
     /// when `allowScheduleInference` is false for a hard blackout.
@@ -231,7 +224,7 @@ struct DayAgendaView: View {
     private func plannedDisplayDay(
         today: String,
         allowScheduleInference: Bool = true
-    ) -> DayTemplate? {
+    ) -> Workout? {
         sync.sessionDisplayTemplate(
             forDateString: dateString,
             allowScheduleInference:
@@ -239,7 +232,7 @@ struct DayAgendaView: View {
     }
 
     /// Template title for a real planned session (via the shared,
-    /// FIX6-gated resolver above — not a bare `day_template_id`).
+    /// FIX6-gated resolver above — not a bare `workout_id`).
     private func planTitle(
         today: String,
         allowScheduleInference: Bool = true
@@ -276,7 +269,7 @@ struct DayAgendaView: View {
                     allowScheduleInference: hardBlackoutTripType == nil)
             }
         case .projected(let tid):
-            if let day = sync.dayTemplate(id: tid) {
+            if let day = sync.workout(id: tid) {
                 templateTargets(day)
             } else {
                 note("Workout (template unavailable).")
@@ -305,7 +298,7 @@ struct DayAgendaView: View {
     }
 
     // planned (or phantom-empty in-progress) → the day-template targets.
-    // Shared FIX6-gated resolver (not a bare day_template_id): recovers the
+    // Shared FIX6-gated resolver (not a bare workout_id): recovers the
     // template via the weekly schedule when the session's own id is null,
     // for today/future only. Past planned w/ null id stays the graceful
     // no-template note (no schedule-inferred relabel — FIX6 class preserved).
@@ -380,7 +373,7 @@ struct DayAgendaView: View {
     }
 
     // planned / projected → template name + targets.
-    private func templateTargets(_ day: DayTemplate) -> some View {
+    private func templateTargets(_ day: Workout) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             if day.exercises.isEmpty {
                 note("This template has no exercises.")

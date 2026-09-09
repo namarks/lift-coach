@@ -5,7 +5,7 @@ Durable repository guidance for coding agents working in this repository.
 ## What this is
 
 An AI-coached lifting system. Claude (via MCP) adapts the training plan
-through conversation; members can also author routines and workout dates in
+through conversation; members can also author reusable workouts and workout dates in
 the native iOS gym executor; a single
 Cloudflare Worker + D1 database is the source of truth both sides read/write.
 The backend contains **no AI** — it is pure data. Full rationale, schema, and
@@ -34,11 +34,10 @@ npx vitest run -t "logs a set"             # single test by name
 npm run typecheck              # tsc --noEmit
 npm run dev                    # wrangler dev (local Worker + local D1)
 npm run db:migrate:local       # apply migrations/ to local D1
-npm run db:migrate:remote      # apply migrations/ to deployed D1
-npm run deploy                 # wrangler deploy
-npm run release                # db:migrate:remote && deploy (migration MUST run first
-                               # — deploying code that SELECTs a new column before the
-                               # column exists 500s every read)
+npm run db:migrate:remote      # guarded during workout rename; see rollout.md
+npm run deploy                 # deploy only, separate production authority required
+npm run release                # guarded: use the staged workout rollout below
+npm run test:workout-rollout    # local same-Worker rename and rollback rehearsal
 npm run ios:testflight         # build, archive, export, upload to TestFlight
 npm run beta:feedback          # mirror TestFlight beta feedback into GitHub issues
 ```
@@ -52,6 +51,17 @@ open ios/TresFort.xcodeproj
 
 Build/run with the **TresFort** scheme, never the widget-extension scheme.
 The `.xcodeproj` is generated; treat `project.yml` as the source of truth.
+
+## Workout rename compatibility
+
+The logical model uses `workouts` / `workout_id`. During P0's compatibility
+window, `workoutSchema.ts` adapts service SQL to either physical schema and
+`workoutWire.ts` emits both new and deprecated fields. Old `/api/days` routes
+and `add_day` / `update_day` MCP names remain aliases. New tools are
+`add_workout`, `update_workout`, and `delete_workout`. The first compatible app
+reads both formats and sends the old one. Use the [staged rollout](docs/plans/workouts-and-multi-session/rollout.md)
+for production; never apply migration 0045 before the adaptive Worker is live.
+Repository delivery does not prove production migration or client rollout.
 
 ## Architecture
 
@@ -81,14 +91,14 @@ intervals-sourced rows are unaffected. See `docs/MULTISOURCE-INGESTION.md`.
 **Two data classes, two consistency strategies** — this split is the core
 design and dictates how you mutate things:
 
-- *Versioned document* — the plan tree (`plans` / `day_templates` /
+- *Versioned document* — the plan tree (`plans` / `workouts` /
   `template_exercises`). One monotonic `plans.version`, bumped on any plan
   mutation. The MCP `update_plan` tool takes an expected version and on
   mismatch returns a structured `{ conflict: true, current_version }` result
   inside a normal HTTP 200 `tools/call` response — **not** a 409 (the caller
-  refetches and reapplies); `PATCH /api/days/:id`, `POST
-  /api/days/:id/exercises` (add), `PATCH /api/days/:id/exercises/:teId`
-  (edit), and `DELETE /api/days/:id/exercises/:teId` (remove, detaching
+  refetches and reapplies); `PATCH /api/workouts/:id`, `POST
+  /api/workouts/:id/exercises` (add), `PATCH /api/workouts/:id/exercises/:teId`
+  (edit), and `DELETE /api/workouts/:id/exercises/:teId` (remove, detaching
   historical `set_logs.template_exercise_id`) each patch a single-field
   allowlist or one slot through a write-time version claim. Legacy slot
   APIs retain their existing inputs without requiring an expected version;
@@ -128,7 +138,7 @@ invalidated on every published session/set/catalog mutation. Keep these caches
 out of write-authority decisions and preserve the calendar parity contract.
 
 **Weekly schedule & calendar projection.** The recurring weekly pattern
-(weekday → `day_template_id`, `null` = rest) lives in `plans.meta.schedule`
+(weekday → `workout_id`, `null` = rest) lives in `plans.meta.schedule`
 JSON — *not* a table (consistent with the "no weeks tables" design). It is
 part of the versioned document: `set_schedule` bumps `plans.version`, uses
 optimistic concurrency, and writes audit+note like any plan mutation; it

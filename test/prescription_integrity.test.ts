@@ -27,12 +27,12 @@ describe('prescription integrity', () => {
   it('audits malformed legacy rows and recovers through validated full replacement', async () => {
     const userId = await user('legacy-prescription-audit');
     const built = await updatePlanTree(env.DB, userId, {
-      days: [{ name: 'Legacy day', day_label: 'L', exercises: [
+      workouts: [{ name: 'Legacy day', day_label: 'L', exercises: [
         { exercise: 'bench', target_sets: 3, target_reps: 5, target_reps_max: 8, target_weight: 100 },
       ] }],
     });
     if (!('plan' in built)) throw new Error('legacy_fixture_failed');
-    const slotId = built.plan.days[0]!.exercises[0]!.id;
+    const slotId = built.plan.workouts[0]!.exercises[0]!.id;
     // Model a pre-validation database row, including malformed text that a
     // coercing repair must not silently default or accept.
     await env.DB.prepare(
@@ -46,7 +46,7 @@ describe('prescription integrity', () => {
     const auditBefore = await env.DB.prepare(
       'SELECT COUNT(*) AS n FROM audit_log WHERE user_id=?1',
     ).bind(userId).first<number>('n');
-    const stored = (await getPlanTree(env.DB, userId))!.days[0]!.exercises[0]!;
+    const stored = (await getPlanTree(env.DB, userId))!.workouts[0]!.exercises[0]!;
     const diagnostic = validateExercisePrescription({
       ...stored,
       progression: stored.progression === null ? null : JSON.parse(stored.progression),
@@ -60,7 +60,7 @@ describe('prescription integrity', () => {
       env.DB, userId, { template_exercise_id: slotId }, { cues: 'Do not launder legacy values' },
     );
     expect(rejected).toEqual(diagnostic);
-    expect((await getPlanTree(env.DB, userId))!.days[0]!.exercises[0]).toMatchObject({
+    expect((await getPlanTree(env.DB, userId))!.workouts[0]!.exercises[0]).toMatchObject({
       target_sets: 'three', target_reps_max: 2, target_rpe: 99,
       rest_seconds: -1, target_weight: -5, is_warmup: 2, cues: null,
     });
@@ -71,19 +71,19 @@ describe('prescription integrity', () => {
     const corrected = await updatePlanTree(env.DB, userId, {
       expected_version: versionBeforeAudit,
       name: built.plan.name,
-      days: [{ name: 'Legacy day', day_label: 'L', exercises: [
+      workouts: [{ name: 'Legacy day', day_label: 'L', exercises: [
         { exercise: 'bench', target_sets: 3, target_reps: 5, target_reps_max: 8,
           target_rpe: 8, rest_seconds: 120, target_weight: 100, is_warmup: 0 },
       ] }],
     });
     if (!('plan' in corrected)) throw new Error('legacy_correction_failed');
-    const repaired = corrected.plan.days[0]!.exercises[0]!;
+    const repaired = corrected.plan.workouts[0]!.exercises[0]!;
     expect(corrected.plan.version).toBe(versionBeforeAudit + 1);
     expect(validateExercisePrescription({
       ...repaired,
       progression: repaired.progression === null ? null : JSON.parse(repaired.progression),
     }, { modality: repaired.exercise_modality })).toBeNull();
-    expect(JSON.parse(JSON.stringify(corrected.plan)).days[0].exercises[0]).toMatchObject({
+    expect(JSON.parse(JSON.stringify(corrected.plan)).workouts[0].exercises[0]).toMatchObject({
       target_sets: 3, target_reps: 5, target_reps_max: 8,
       target_rpe: 8, rest_seconds: 120, target_weight: 100, is_warmup: 0,
     });
@@ -92,13 +92,13 @@ describe('prescription integrity', () => {
   it('rejects malformed first-plan payloads without creating state', async () => {
     const userId = await user('invalid-first-plan');
     const result = await updatePlanTree(env.DB, userId, {
-      days: [{ name: 'A', exercises: [{ exercise: 'bench', target_sets: 'three', target_reps: 5 } as never] }],
+      workouts: [{ name: 'A', exercises: [{ exercise: 'bench', target_sets: 'three', target_reps: 5 } as never] }],
     });
-    expect(result).toEqual({ error: 'invalid_fields', fields: ['days.0.exercises.0.target_sets'] });
+    expect(result).toEqual({ error: 'invalid_fields', fields: ['workouts.0.exercises.0.target_sets'] });
     expect(await getActivePlan(env.DB, userId)).toBeNull();
 
     const unknown = await updatePlanTree(env.DB, userId, {
-      days: [{ name: 'A', exercises: [{ exercise: 'not in catalog', target_sets: 3, target_reps: 5 }] }],
+      workouts: [{ name: 'A', exercises: [{ exercise: 'not in catalog', target_sets: 3, target_reps: 5 }] }],
     });
     expect(unknown).toMatchObject({ error: 'unknown_exercise' });
     expect(await getActivePlan(env.DB, userId)).toBeNull();
@@ -107,13 +107,13 @@ describe('prescription integrity', () => {
   it('validates complete and merged shapes while preserving legitimate values', async () => {
     const userId = await user('valid-values');
     const built = await updatePlanTree(env.DB, userId, {
-      days: [{ name: 'A', exercises: [
+      workouts: [{ name: 'A', exercises: [
         { exercise: 'pull-up', target_sets: 3, target_reps: 5, target_reps_max: 8, target_weight: -12.5, target_rpe: 8.5, rest_seconds: 0 },
       ] }],
     });
     expect('conflict' in built && built.conflict).toBe(false);
     const tree = await getPlanTree(env.DB, userId);
-    const slot = tree!.days[0]!.exercises[0]!;
+    const slot = tree!.workouts[0]!.exercises[0]!;
     expect(slot).toMatchObject({ target_weight: -12.5, target_rpe: 8.5, rest_seconds: 0 });
 
     const before = (await getActivePlan(env.DB, userId))!.version;
@@ -122,21 +122,21 @@ describe('prescription integrity', () => {
     expect(await updateExercise(env.DB, userId, { template_exercise_id: slot.id }, { target_rpe: 99 }))
       .toEqual({ error: 'invalid_fields', fields: ['target_rpe'] });
     expect((await getActivePlan(env.DB, userId))!.version).toBe(before);
-    expect((await getPlanTree(env.DB, userId))!.days[0]!.exercises[0]!.target_reps).toBe(5);
+    expect((await getPlanTree(env.DB, userId))!.workouts[0]!.exercises[0]!.target_reps).toBe(5);
   });
 
   it('rejects signed assistance for a destination that cannot represent it', async () => {
     const userId = await user('signed-load');
     const result = await updatePlanTree(env.DB, userId, {
-      days: [{ name: 'A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5, target_weight: -5 }] }],
+      workouts: [{ name: 'A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5, target_weight: -5 }] }],
     });
-    expect(result).toEqual({ error: 'invalid_fields', fields: ['days.0.exercises.0.target_weight'] });
+    expect(result).toEqual({ error: 'invalid_fields', fields: ['workouts.0.exercises.0.target_weight'] });
     expect(await getActivePlan(env.DB, userId)).toBeNull();
   });
 
   it('rejects malformed values through MCP and REST wrappers without coercion', async () => {
     const userId = await user('wrappers');
-    await updatePlanTree(env.DB, userId, { days: [{ name: 'A', day_label: 'A', exercises: [] }] });
+    await updatePlanTree(env.DB, userId, { workouts: [{ name: 'A', day_label: 'A', exercises: [] }] });
     const mcp = await handleMcp({
       jsonrpc: '2.0', id: 1, method: 'tools/call',
       params: { name: 'add_exercise', arguments: {
@@ -183,20 +183,20 @@ describe('prescription integrity', () => {
   it('composes disjoint legacy patches instead of restoring stale fields', async () => {
     const userId = await user('disjoint');
     await updatePlanTree(env.DB, userId, {
-      days: [{ name: 'A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5, target_weight: 100, cues: 'old' }] }],
+      workouts: [{ name: 'A', exercises: [{ exercise: 'bench', target_sets: 3, target_reps: 5, target_weight: 100, cues: 'old' }] }],
     });
-    const slot = (await getPlanTree(env.DB, userId))!.days[0]!.exercises[0]!;
+    const slot = (await getPlanTree(env.DB, userId))!.workouts[0]!.exercises[0]!;
     await Promise.all([
       updateExercise(env.DB, userId, { template_exercise_id: slot.id }, { target_weight: 110 }),
       updateExercise(env.DB, userId, { template_exercise_id: slot.id }, { cues: 'new' }),
     ]);
-    expect((await getPlanTree(env.DB, userId))!.days[0]!.exercises[0]).toMatchObject({ target_weight: 110, cues: 'new' });
+    expect((await getPlanTree(env.DB, userId))!.workouts[0]!.exercises[0]).toMatchObject({ target_weight: 110, cues: 'new' });
   });
 
   it('never makes an intensity or volume reduction harder and reports no-ops', async () => {
     const userId = await user('monotonic-adjustment');
     await updatePlanTree(env.DB, userId, {
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'bench', target_sets: 1, target_reps: 5, target_weight: 4 },
         { exercise: 'dumbbell curl', target_sets: 3, target_reps: 8, target_weight: 7.5 },
         { exercise: 'pull-up', target_sets: 3, target_reps: 5, target_weight: -30 },
@@ -207,14 +207,14 @@ describe('prescription integrity', () => {
     const before = (await getActivePlan(env.DB, userId))!.version;
     const intensity = await adjustToday(env.DB, userId, 'reduce_intensity', 'moderate', 'A');
     expect(intensity).toMatchObject({ recurring: true, affected_workouts: ['A'], no_op: false });
-    const weights = intensity.plan!.days[0]!.exercises.map((slot) => slot.target_weight);
+    const weights = intensity.plan!.workouts[0]!.exercises.map((slot) => slot.target_weight);
     expect(weights).toEqual([4, 5, -35, -1, 0]);
     expect(intensity.changes).toHaveLength(2);
     expect(intensity.plan!.version).toBe(before + 1);
 
     const oneSetOnly = await updatePlanTree(env.DB, userId, {
       expected_version: intensity.plan!.version,
-      days: [{ name: 'A', day_label: 'A', exercises: [
+      workouts: [{ name: 'A', day_label: 'A', exercises: [
         { exercise: 'bench', target_sets: 1, target_reps: 5, target_weight: 4 },
       ] }],
     });

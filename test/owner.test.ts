@@ -76,7 +76,7 @@ describe('open sign-in does not capture owner state (Codex PR#38 P1)', () => {
       env.DB.prepare('DELETE FROM sessions'),
       // Plan tree references users.
       env.DB.prepare('DELETE FROM template_exercises'),
-      env.DB.prepare('DELETE FROM day_templates'),
+      env.DB.prepare('DELETE FROM workouts'),
       env.DB.prepare('DELETE FROM plans'),
       // Groups subtree references users.
       env.DB.prepare('DELETE FROM group_invites'),

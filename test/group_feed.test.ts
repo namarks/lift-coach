@@ -98,7 +98,7 @@ async function seedSession(
     // [exerciseId, weight, reps, isWarmup, durationSeconds?, isTimed?][]
     sets: Array<[string, number, number, boolean, number?, boolean?]>;
   },
-): Promise<{ sessionId: string; dayTemplateId: string }> {
+): Promise<{ sessionId: string; workoutId: string }> {
   const planId = crypto.randomUUID();
   const dayId = crypto.randomUUID();
   const sessionId = crypto.randomUUID();
@@ -111,13 +111,13 @@ async function seedSession(
     .run();
   await env.DB
     .prepare(
-      'INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,0,NULL,?5,?5)',
+      'INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,0,NULL,?5,?5)',
     )
     .bind(dayId, planId, opts.dayName ?? 'Lower A', opts.dayLabel ?? 'A', ts)
     .run();
   await env.DB
     .prepare(
-      'INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)',
+      'INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?11)',
     )
     .bind(
       sessionId,
@@ -156,7 +156,7 @@ async function seedSession(
       )
       .run();
   }
-  return { sessionId, dayTemplateId: dayId };
+  return { sessionId, workoutId: dayId };
 }
 
 async function seedRide(
@@ -411,12 +411,12 @@ describe('group feed: privacy contract', () => {
       .bind(planId, a.id, ts)
       .run();
     await env.DB.prepare(
-      "INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Lower A','A',0,NULL,?3,?3)",
+      "INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Lower A','A',0,NULL,?3,?3)",
     )
       .bind(dayId, planId, ts)
       .run();
     await env.DB.prepare(
-      "INSERT INTO sessions (id,user_id,plan_id,day_template_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,'planned',NULL,NULL,NULL,NULL,?6,?6)",
+      "INSERT INTO sessions (id,user_id,plan_id,workout_id,date,status,started_at,completed_at,perceived_fatigue,notes,created_at,updated_at) VALUES (?1,?2,?3,?4,?5,'planned',NULL,NULL,NULL,NULL,?6,?6)",
     )
       .bind(sessionId, a.id, planId, dayId, '2026-05-26', ts)
       .run();

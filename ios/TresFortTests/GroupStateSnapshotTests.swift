@@ -32,7 +32,7 @@ final class GroupStateSnapshotTests: XCTestCase {
                 group_transition_seconds: grouped ? 0 : nil)
         }
         return PlanTree(id: "plan-a", name: "Plan", version: version,
-            days: [DayTemplate(id: "day-a", name: "Warm-up", day_label: "A",
+            workouts: [Workout(id: "day-a", name: "Warm-up", day_label: "A",
                 order_index: 0, exercises: slots)], meta: meta)
     }
 
@@ -63,7 +63,7 @@ final class GroupStateSnapshotTests: XCTestCase {
         _ defaults: UserDefaults, wireProof: Int? = nil
     ) throws -> StateSyncWatermarks {
         let session = SessionRow(id: "session-a", date: "2033-05-18",
-            status: "in_progress", day_template_id: "day-a", updated_at: 1_000)
+            status: "in_progress", workout_id: "day-a", updated_at: 1_000)
         let legacy = response(plan: plan(grouped: false), proof: wireProof,
             sessions: [session], serverTime: 2_000_000_000_000)
         let watermarks = StateSyncWatermarks.next(after: legacy)
@@ -78,7 +78,7 @@ final class GroupStateSnapshotTests: XCTestCase {
     }
 
     func testGroupFieldsDecodeAbsentNullAndPresentWithoutChangingOrdinaryRest() throws {
-        var slot = try object(plan().days[0].exercises[0])
+        var slot = try object(plan().workouts[0].exercises[0])
         let keys = ["group_id", "group_rest_seconds", "group_transition_seconds"]
         for mode in ["absent", "null", "present"] {
             if mode == "absent" { keys.forEach { slot.removeValue(forKey: $0) } }
@@ -104,7 +104,7 @@ final class GroupStateSnapshotTests: XCTestCase {
             try withDefaults { defaults, _ in
                 let previous = try installLegacyEnvelope(defaults, wireProof: cachedProof)
                 XCTAssertEqual(StateSnapshotStore.load(userID: userID, defaults: defaults)?
-                    .state.plan?.days[0].exercises[0].rest_seconds, 30)
+                    .state.plan?.workouts[0].exercises[0].rest_seconds, 30)
                 let ticket = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
                     userID: userID, defaults: defaults))
                 XCTAssertEqual(ticket.watermarks.planVersion, 0)
@@ -212,7 +212,7 @@ final class GroupStateSnapshotTests: XCTestCase {
             XCTAssertNotNil(StateSnapshotStore.commitStateResponse(
                 response(plan: nil, proof: nil), ticket: delta, defaults: defaults))
             let acknowledged = SessionRow(id: "session-a", date: "2033-05-18",
-                status: "complete", day_template_id: "day-a", updated_at: 2_000_000_100_010)
+                status: "complete", workout_id: "day-a", updated_at: 2_000_000_100_010)
             XCTAssertNotNil(StateSnapshotStore.mergeAcknowledgement(
                 userID: userID, fallback: response(plan: plan(grouped: false)), defaults: defaults
             ) { current in
@@ -308,7 +308,7 @@ final class GroupStateSnapshotTests: XCTestCase {
             XCTAssertNotNil(StateSnapshotStore.mergeAcknowledgement(
                 userID: userID, fallback: response(plan: plan(grouped: false)), defaults: defaults, transform: { $0 }))
             XCTAssertEqual(StateSnapshotStore.load(userID: userID, defaults: defaults)?
-                .state.plan?.days[0].exercises[0].group_id, groupID)
+                .state.plan?.workouts[0].exercises[0].group_id, groupID)
             let marker = try persistedEnvelope(defaults)
             XCTAssertNil(marker["state"])
             XCTAssertNil(marker["planGroupsVersion"])

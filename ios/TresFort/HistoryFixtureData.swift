@@ -6,7 +6,7 @@ enum HistoryFixtureData {
     static func progressDataset() -> StateResponse {
         let dates = ["2026-05-26", "2026-06-14", "2026-07-01"]
         let sessions = dates.enumerated().map { index, date in
-            SessionRow(id: "session-\(index)", date: date, status: "completed", day_template_id: nil,
+            SessionRow(id: "session-\(index)", date: date, status: "completed", workout_id: nil,
                 updated_at: 1_000 + index, attempt: 1)
         }
         let sets = sessions.enumerated().map { index, session in
@@ -25,7 +25,7 @@ enum HistoryFixtureData {
             SessionRow(id: "session-\(index)",
                 date: CalendarProjection.dateString(CalendarProjection.calendar.date(byAdding: .day,
                     value: -((sessionCount - index - 1) * 7 / 4), to: end)!),
-                status: "completed", day_template_id: nil, updated_at: 1_000 + index, attempt: 1)
+                status: "completed", workout_id: nil, updated_at: 1_000 + index, attempt: 1)
         }
         var sets: [SetLog] = []
         for (index, session) in sessions.enumerated() {

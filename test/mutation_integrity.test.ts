@@ -76,7 +76,7 @@ describe('POST /api/days/:id/exercises scopes the day to the active plan', () =>
       .bind(foreignPlanId, foreignUserId, now)
       .run();
     await env.DB.prepare(
-      "INSERT INTO day_templates (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Foreign day','F',0,NULL,?3,?3)",
+      "INSERT INTO workouts (id,plan_id,name,day_label,order_index,notes,created_at,updated_at) VALUES (?1,?2,'Foreign day','F',0,NULL,?3,?3)",
     )
       .bind(foreignDayId, foreignPlanId, now)
       .run();
@@ -86,7 +86,7 @@ describe('POST /api/days/:id/exercises scopes the day to the active plan', () =>
     expect(await response.json()).toEqual({ error: 'not_found' });
 
     const foreignSlots = await env.DB
-      .prepare('SELECT COUNT(*) AS count FROM template_exercises WHERE day_template_id = ?1')
+      .prepare('SELECT COUNT(*) AS count FROM template_exercises WHERE workout_id = ?1')
       .bind(foreignDayId)
       .first<{ count: number }>();
     expect(foreignSlots?.count).toBe(0);
@@ -114,7 +114,7 @@ describe('POST /api/days/:id/exercises scopes the day to the active plan', () =>
     expect(await response.json()).toEqual({ error: 'not_found' });
 
     const archivedSlots = await env.DB
-      .prepare('SELECT COUNT(*) AS count FROM template_exercises WHERE day_template_id = ?1')
+      .prepare('SELECT COUNT(*) AS count FROM template_exercises WHERE workout_id = ?1')
       .bind(archived.dayId)
       .first<{ count: number }>();
     expect(archivedSlots?.count).toBe(0);

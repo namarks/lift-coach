@@ -71,7 +71,7 @@ final class HistoryPerformanceTests: XCTestCase {
                 let body = SetRequestBody(id: "synthetic-intent", exercise_id: "exercise-0", template_exercise_id: "slot-0",
                     set_index: 1, weight: 45, reps: 5, is_warmup: false, logged_at: 200_001,
                     duration_s: nil, is_timed: false, expected_attempt: 1)
-                SetOutboxStore.enqueue(PendingSetIntent(body: body, date: "2026-09-08", dayTemplateID: nil,
+                SetOutboxStore.enqueue(PendingSetIntent(body: body, date: "2026-09-08", workoutID: nil,
                     resolvedSessionID: state.sessions.last!.id, deliveryState: .queued, failedHTTPStatus: nil,
                     expectedAttempt: 1), userID: "synthetic-perf", defaults: defaults)
                 XCTAssertEqual(SetOutboxStore.load(userID: "synthetic-perf", defaults: defaults).count, 1)

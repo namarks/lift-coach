@@ -20,7 +20,7 @@ export interface PlanSnapshotExercise {
   is_warmup: number;
 }
 
-export interface PlanSnapshotDay {
+export interface PlanSnapshotWorkout {
   id: string;
   name: string;
   day_label: string | null;
@@ -30,9 +30,9 @@ export interface PlanSnapshotDay {
 }
 
 export interface PlanSnapshotDocument {
-  schema_version: 1;
+  schema_version: 2;
   plan: { name: string; meta: string | null };
-  days: PlanSnapshotDay[];
+  workouts: PlanSnapshotWorkout[];
 }
 
 export interface PlanSnapshotChange {
@@ -55,9 +55,9 @@ export interface PlanSnapshotSummary {
 
 export function serializePlanSnapshot(tree: PlanTree): PlanSnapshotDocument {
   return {
-    schema_version: 1,
+    schema_version: 2,
     plan: { name: tree.name, meta: tree.meta },
-    days: tree.days.map((day) => ({
+    workouts: tree.workouts.map((day) => ({
       id: day.id,
       name: day.name,
       day_label: day.day_label,
@@ -88,12 +88,15 @@ export function serializePlanSnapshot(tree: PlanTree): PlanSnapshotDocument {
 export function parsePlanSnapshot(raw: string): PlanSnapshotDocument {
   const value: unknown = JSON.parse(raw);
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid_plan_snapshot');
-  const doc = value as Partial<PlanSnapshotDocument>;
-  if (doc.schema_version !== 1 || !doc.plan || !Array.isArray(doc.days)) {
+  const stored = value as { schema_version?: unknown; plan?: PlanSnapshotDocument['plan']; days?: PlanSnapshotWorkout[]; workouts?: PlanSnapshotWorkout[] };
+  const workouts = stored.schema_version === 1 ? stored.days : stored.workouts;
+  if ((stored.schema_version !== 1 && stored.schema_version !== 2) || !stored.plan || !Array.isArray(workouts)) {
     throw new Error('unsupported_plan_snapshot');
   }
+  // Read old immutable documents without rewriting their stored bytes.
+  const doc: PlanSnapshotDocument = { schema_version: 2, plan: stored.plan, workouts };
   // Pre-group snapshots remain writable and compare as explicitly ungrouped.
-  for (const day of doc.days) for (const slot of day.exercises) {
+  for (const day of doc.workouts) for (const slot of day.exercises) {
     slot.group_id ??= null;
     slot.group_rest_seconds ??= null;
     slot.group_transition_seconds ??= null;
@@ -117,7 +120,7 @@ function exerciseName(id: string, options: PlanSnapshotComparisonOptions): strin
   return (names as Readonly<Record<string, string>>)[id] ?? null;
 }
 
-function dayIdentity(day: PlanSnapshotDay) {
+function dayIdentity(day: PlanSnapshotWorkout) {
   return { day_id: day.id, day_name: day.name, day_label: day.day_label };
 }
 
@@ -125,7 +128,7 @@ function readableSlot(slot: PlanSnapshotExercise, options: PlanSnapshotCompariso
   return { ...slot, exercise_name: exerciseName(slot.exercise_id, options) };
 }
 
-function readableDay(day: PlanSnapshotDay, options: PlanSnapshotComparisonOptions) {
+function readableDay(day: PlanSnapshotWorkout, options: PlanSnapshotComparisonOptions) {
   return { ...dayIdentity(day), order_index: day.order_index, notes: day.notes,
     exercises: day.exercises.map((slot) => readableSlot(slot, options)) };
 }
@@ -151,11 +154,11 @@ function uniqueMatches<T>(
   return matches;
 }
 
-function matchDays(before: PlanSnapshotDay[], after: PlanSnapshotDay[]) {
-  const pairs: Array<[PlanSnapshotDay, PlanSnapshotDay]> = [];
-  const usedBefore = new Set<PlanSnapshotDay>();
-  const usedAfter = new Set<PlanSnapshotDay>();
-  const take = (candidates: Array<[PlanSnapshotDay, PlanSnapshotDay]>) => {
+function matchDays(before: PlanSnapshotWorkout[], after: PlanSnapshotWorkout[]) {
+  const pairs: Array<[PlanSnapshotWorkout, PlanSnapshotWorkout]> = [];
+  const usedBefore = new Set<PlanSnapshotWorkout>();
+  const usedAfter = new Set<PlanSnapshotWorkout>();
+  const take = (candidates: Array<[PlanSnapshotWorkout, PlanSnapshotWorkout]>) => {
     for (const [oldDay, newDay] of candidates) if (!usedBefore.has(oldDay) && !usedAfter.has(newDay)) {
       pairs.push([oldDay, newDay]); usedBefore.add(oldDay); usedAfter.add(newDay);
     }
@@ -202,7 +205,7 @@ function matchSlots(before: PlanSnapshotExercise[], after: PlanSnapshotExercise[
 }
 
 function slotPath(
-  day: PlanSnapshotDay,
+  day: PlanSnapshotWorkout,
   slot: PlanSnapshotExercise,
   options: PlanSnapshotComparisonOptions,
 ): string {
@@ -229,7 +232,7 @@ export function comparePlanSnapshots(
   }
   const parsedBeforeMeta = parsePlanMeta(before.plan.meta);
   const parsedAfterMeta = parsePlanMeta(after.plan.meta);
-  const matchedDays = matchDays(before.days, after.days);
+  const matchedDays = matchDays(before.workouts, after.workouts);
   const replacementIds = new Map(matchedDays.pairs.map(([oldDay, newDay]) => [oldDay.id, newDay.id]));
   const beforeMeta = { ...parsedBeforeMeta, schedule: undefined };
   const afterMeta = { ...parsedAfterMeta, schedule: undefined };
@@ -241,8 +244,8 @@ export function comparePlanSnapshots(
     const a = parsedBeforeMeta.schedule.week[weekday];
     const b = parsedAfterMeta.schedule.week[weekday];
     if (a !== b && (a == null || replacementIds.get(a) !== b)) {
-      const oldDay = before.days.find((day) => day.id === a);
-      const newDay = after.days.find((day) => day.id === b);
+      const oldDay = before.workouts.find((day) => day.id === a);
+      const newDay = after.workouts.find((day) => day.id === b);
       changes.push({ kind: 'schedule', path: `Weekly schedule · ${weekday}`, before: oldDay ? dayIdentity(oldDay) : null, after: newDay ? dayIdentity(newDay) : null });
       summary.schedule_days++;
     }

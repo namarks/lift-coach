@@ -65,7 +65,7 @@ describe('laterality (unilateral exercises)', () => {
     // Plan with the Bulgarian split squat slot so log_set has a session to log into.
     const built = await call('update_plan', {
       name: 'Uni',
-      days: [
+      workouts: [
         {
           day_label: 'L',
           name: 'Legs',
@@ -110,7 +110,7 @@ describe('laterality (unilateral exercises)', () => {
     // bucket math is unambiguous.
     const built = await call('update_plan', {
       name: 'Volume',
-      days: [
+      workouts: [
         {
           day_label: 'L',
           name: 'Legs',

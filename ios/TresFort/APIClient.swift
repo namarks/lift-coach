@@ -45,8 +45,17 @@ struct AccountExportFile: Equatable {
     let filename: String
 }
 
+enum WorkoutWireFormat {
+    case legacy, canonical
+    var idKey: String { self == .legacy ? "day_template_id" : "workout_id" }
+    var collectionPath: String { self == .legacy ? "api/days" : "api/workouts" }
+}
+
 struct APIClient {
     var baseURL = Config.apiBaseURL
+    // First compatibility build stays legacy. Switch the default only in the
+    // later build after the dual-key Worker has been verified in production.
+    var workoutWireFormat: WorkoutWireFormat = .legacy
 
     private static var session: URLSession {
 #if DEBUG && targetEnvironment(simulator)
@@ -170,14 +179,14 @@ struct APIClient {
         try await get("api/exercises", jwt: jwt)
     }
 
-    /// `day_template_id` is an OPTIONAL field of the existing
+    /// `workout_id` is an OPTIONAL field of the existing
     /// `POST /api/sessions` contract (not a new endpoint) — passing it lets
     /// the calendar/agenda resolve the one-off session as the right workout.
-    func createSession(date: String, dayTemplateID: String? = nil,
+    func createSession(date: String, workoutID: String? = nil,
                        jwt: String) async throws -> SessionRow {
         try await createSession(
             date: date,
-            dayTemplateID: dayTemplateID,
+            workoutID: workoutID,
             expectedAttempt: nil,
             restartDiscardedAttempt: nil,
             jwt: jwt)
@@ -189,13 +198,13 @@ struct APIClient {
     /// delayed request can never revive a later discard.
     func createSession(
         date: String,
-        dayTemplateID: String? = nil,
+        workoutID: String? = nil,
         expectedAttempt: Int?,
         restartDiscardedAttempt: Int?,
         jwt: String
     ) async throws -> SessionRow {
         var body: [String: Any] = ["date": date]
-        if let dayTemplateID { body["day_template_id"] = dayTemplateID }
+        if let workoutID { body[workoutWireFormat.idKey] = workoutID }
         if let restartDiscardedAttempt {
             body["restart_discarded"] = true
             body["expected_attempt"] = restartDiscardedAttempt
@@ -259,12 +268,12 @@ struct APIClient {
     /// generation cannot join this newly started workout.
     func reopenSkippedSession(
         sessionId: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         expectedAttempt: Int?,
         jwt: String
     ) async throws -> SessionRow {
         var body: [String: Any] = ["status": "planned"]
-        if let dayTemplateID { body["day_template_id"] = dayTemplateID }
+        if let workoutID { body[workoutWireFormat.idKey] = workoutID }
         return try await patch(
             attemptScopedPath(
                 "api/sessions/\(sessionId)", expectedAttempt: expectedAttempt),
@@ -354,8 +363,8 @@ struct APIClient {
         let plan: PlanSummaryRow
         let created: Bool
     }
-    struct DayIDRow: Decodable { let id: String }
-    struct DeleteDayResult: Decodable {
+    struct WorkoutIDRow: Decodable { let id: String }
+    struct DeleteWorkoutResult: Decodable {
         let ok: Bool
         let version: Int
     }
@@ -403,13 +412,13 @@ struct APIClient {
             "transition_rest": transitionRest, "target_sets": targetSets,
         ]
         if let orderIndex { body["order_index"] = orderIndex }
-        return try await put("api/days/\(dayID)/groups", body: body, jwt: jwt)
+        return try await put("\(workoutWireFormat.collectionPath)/\(dayID)/groups", body: body, jwt: jwt)
     }
 
     func clearExerciseGroup(
         dayID: String, groupID: String, expectedVersion: Int, jwt: String
     ) async throws -> ExerciseGroupAcknowledgement {
-        try await put("api/days/\(dayID)/groups", body: [
+        try await put("\(workoutWireFormat.collectionPath)/\(dayID)/groups", body: [
             "group_id": groupID, "exercises": [String](),
             "expected_version": expectedVersion,
         ], jwt: jwt)
@@ -449,16 +458,16 @@ struct APIClient {
     }
 
     @discardableResult
-    func addDay(
+    func addWorkout(
         name: String,
         expectedPlanID: String,
         expectedVersion: Int,
         jwt: String
     ) async throws
-        -> DayIDRow
+        -> WorkoutIDRow
     {
         try await post(
-            "api/days",
+            "\(workoutWireFormat.collectionPath)",
             body: [
                 "name": name,
                 "expected_plan_id": expectedPlanID,
@@ -468,22 +477,22 @@ struct APIClient {
     }
 
     @discardableResult
-    func updateDay(
+    func updateWorkout(
         dayID: String,
         fields: [String: Any],
         expectedVersion: Int,
         jwt: String
-    ) async throws -> DayIDRow {
+    ) async throws -> WorkoutIDRow {
         var body = fields
         body["expected_version"] = expectedVersion
-        return try await patch("api/days/\(dayID)", body: body, jwt: jwt)
+        return try await patch("\(workoutWireFormat.collectionPath)/\(dayID)", body: body, jwt: jwt)
     }
 
-    func deleteDay(dayID: String, expectedVersion: Int, jwt: String) async throws
-        -> DeleteDayResult
+    func deleteWorkout(dayID: String, expectedVersion: Int, jwt: String) async throws
+        -> DeleteWorkoutResult
     {
         try await delete(
-            "api/days/\(dayID)?expected_version=\(expectedVersion)", jwt: jwt)
+            "\(workoutWireFormat.collectionPath)/\(dayID)?expected_version=\(expectedVersion)", jwt: jwt)
     }
 
     func setSchedule(
@@ -519,9 +528,9 @@ struct APIClient {
     ) async throws -> CalendarWriteResult {
         var body: [String: Any] = [:]
         if let dayID {
-            body["day_template_id"] = dayID
+            body[workoutWireFormat.idKey] = dayID
         } else {
-            body["day_template_id"] = NSNull()
+            body[workoutWireFormat.idKey] = NSNull()
         }
         if let expectedAttempt { body["expected_attempt"] = expectedAttempt }
         return try await put("api/calendar/\(date)", body: body, jwt: jwt)
@@ -541,22 +550,22 @@ struct APIClient {
         ]
         if let targetRepsMax { body["target_reps_max"] = targetRepsMax }
         if let targetDurationS { body["target_duration_s"] = targetDurationS }
-        return try await post("api/days/\(dayID)/exercises", body: body, jwt: jwt)
+        return try await post("\(workoutWireFormat.collectionPath)/\(dayID)/exercises", body: body, jwt: jwt)
     }
 
     @discardableResult
     func updateExerciseSlot(dayID: String, teID: String,
                             fields: [String: Any], jwt: String) async throws -> SlotIDRow {
-        try await patch("api/days/\(dayID)/exercises/\(teID)", body: fields, jwt: jwt)
+        try await patch("\(workoutWireFormat.collectionPath)/\(dayID)/exercises/\(teID)", body: fields, jwt: jwt)
     }
 
     func deleteExerciseSlot(dayID: String, teID: String, jwt: String) async throws {
-        let _: SlotIDRow = try await delete("api/days/\(dayID)/exercises/\(teID)", jwt: jwt)
+        let _: SlotIDRow = try await delete("\(workoutWireFormat.collectionPath)/\(dayID)/exercises/\(teID)", jwt: jwt)
     }
 
     func replaceExerciseSlot(dayID: String, teID: String, exercise: String,
                              expectedVersion: Int, jwt: String) async throws -> SlotIDRow {
-        try await post("api/days/\(dayID)/exercises/\(teID)/swap", body: [
+        try await post("\(workoutWireFormat.collectionPath)/\(dayID)/exercises/\(teID)/swap", body: [
             "to_exercise": exercise, "expected_version": expectedVersion,
         ], jwt: jwt)
     }
@@ -726,12 +735,12 @@ extension APIClient: AuthAPI {}
 protocol SetWriteAPI {
     func createSession(
         date: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         jwt: String
     ) async throws -> SessionRow
     func createSession(
         date: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         expectedAttempt: Int?,
         restartDiscardedAttempt: Int?,
         jwt: String
@@ -743,7 +752,7 @@ protocol SetWriteAPI {
     ) async throws -> APIClient.SetLogResult
     func reopenSkippedSession(
         sessionId: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         expectedAttempt: Int?,
         jwt: String
     ) async throws -> SessionRow
@@ -785,13 +794,13 @@ extension SetWriteAPI {
 
     func createSession(
         date: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         expectedAttempt: Int?,
         restartDiscardedAttempt: Int?,
         jwt: String
     ) async throws -> SessionRow {
         try await createSession(
-            date: date, dayTemplateID: dayTemplateID, jwt: jwt)
+            date: date, workoutID: workoutID, jwt: jwt)
     }
 
     func logSet(
@@ -808,7 +817,7 @@ extension SetWriteAPI {
 
     func reopenSkippedSession(
         sessionId: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         expectedAttempt: Int?,
         jwt: String
     ) async throws -> SessionRow {
@@ -880,21 +889,21 @@ protocol RoutineEditingAPI {
     ) async throws -> APIClient.RestorePlanResult
     func ensureActivePlan(name: String, jwt: String) async throws
         -> APIClient.EnsureActivePlanResult
-    func addDay(
+    func addWorkout(
         name: String,
         expectedPlanID: String,
         expectedVersion: Int,
         jwt: String
     ) async throws
-        -> APIClient.DayIDRow
-    func updateDay(
+        -> APIClient.WorkoutIDRow
+    func updateWorkout(
         dayID: String,
         fields: [String: Any],
         expectedVersion: Int,
         jwt: String
-    ) async throws -> APIClient.DayIDRow
-    func deleteDay(dayID: String, expectedVersion: Int, jwt: String) async throws
-        -> APIClient.DeleteDayResult
+    ) async throws -> APIClient.WorkoutIDRow
+    func deleteWorkout(dayID: String, expectedVersion: Int, jwt: String) async throws
+        -> APIClient.DeleteWorkoutResult
     func setSchedule(
         _ week: [String: String],
         expectedPlanID: String,

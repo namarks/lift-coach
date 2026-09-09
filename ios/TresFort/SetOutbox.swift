@@ -87,9 +87,20 @@ enum SetIntentDeliveryState: String, Codable, Equatable {
 /// is itself networked, so an unresolved intent carries enough information to
 /// create/recover that day's canonical session after relaunch.
 struct PendingSetIntent: Codable, Identifiable, Equatable {
+    // Version-one durable envelope: retain the released persistence key.
+    private enum CodingKeys: String, CodingKey {
+        case body
+        case date
+        case workoutID = "dayTemplateID"
+        case resolvedSessionID
+        case expectedAttempt
+        case restartDiscardedAttempt
+        case deliveryState
+        case failedHTTPStatus
+    }
     let body: SetRequestBody
     let date: String
-    var dayTemplateID: String?
+    var workoutID: String?
     var resolvedSessionID: String?
     /// Bound once the target session is known. Optional only for decoding
     /// queues written by older app builds / rolling old Worker responses.
@@ -103,7 +114,7 @@ struct PendingSetIntent: Codable, Identifiable, Equatable {
     init(
         body: SetRequestBody,
         date: String,
-        dayTemplateID: String?,
+        workoutID: String?,
         resolvedSessionID: String?,
         deliveryState: SetIntentDeliveryState,
         failedHTTPStatus: Int?,
@@ -112,7 +123,7 @@ struct PendingSetIntent: Codable, Identifiable, Equatable {
     ) {
         self.body = body
         self.date = date
-        self.dayTemplateID = dayTemplateID
+        self.workoutID = workoutID
         self.resolvedSessionID = resolvedSessionID
         self.expectedAttempt = expectedAttempt
         self.restartDiscardedAttempt = restartDiscardedAttempt

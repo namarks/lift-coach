@@ -1,6 +1,6 @@
 # Workouts and Multi-Session Days
 
-Slug: workouts-and-multi-session · Status: planned · Updated: 2026-09-07 · Theme: gym-floor
+Slug: workouts-and-multi-session · Status: active · Updated: 2026-09-09 · Theme: gym-floor
 
 ## Goal
 
@@ -21,58 +21,70 @@ Two model corrections that the workout library exposed:
 ## Phases
 
 - [ ] **P0 — Rename `day_templates` to `workouts` end to end**
-  - Migration: `ALTER TABLE day_templates RENAME TO workouts`; rename
-    `template_exercises.day_template_id` and `sessions.day_template_id` to
-    `workout_id`; recreate `ix_te_day` under the new column. SQLite rewrites
-    foreign-key references on `RENAME TABLE`; add a test that
-    `PRAGMA foreign_key_check` is clean and that `session_aliases`,
-    `set_logs.template_exercise_id`, and the `0032` attempt trigger still
-    behave after the rename. `template_exercises` keeps its name: it is the
-    slot table and "template" is accurate there.
-  - Service layer: rename `DayTemplateRow`, `getDayTemplateInPlan`,
-    `addDayTemplate*`, `patchDayTemplate*`, `deleteDayTemplate`, and the
-    `days` key of `PlanTree` to workout terms. This is a mechanical rename
-    across `src/db.ts` (about 160 references), `src/types.ts`, and
-    `src/routes/api.ts`; `test/` follows.
-  - Wire compatibility for the released iOS app, one release cycle: REST
-    responses emit both `workout_id` and `day_template_id`, and the plan tree
-    carries both `workouts` and `days`; requests accept either key.
-    `/api/workouts...` routes are added and `/api/days...` stay mounted as
-    aliases to the same handlers. Record the removal in this plan and remove
-    both after the next TestFlight build has been the minimum for one cycle.
-  - MCP: add `add_workout`, `update_workout`, `delete_workout`; keep
-    `add_day` and `update_day` registered with a deprecation sentence in their
-    descriptions for the same cycle so existing Claude conversations keep
-    working. `audit_log.tool` keeps historical names; do not rewrite history.
-    Update `coach://state/current`, `AGENTS.md`, and `docs/DESIGN.md` §3–§5.
-  - The `plans.meta.schedule` contract is unchanged: weekday → workout id,
-    `null` = rest. Only the prose describing the value changes.
-  - iOS: rename `DayTemplate`, `dayTemplateID`, `RoutineDayTarget`, and the
-    `days` decoding path. Decoding tolerates either key, but that protects
-    reads only: the current Worker exposes `/api/days` and validates
-    `day_template_id`, so a build that sends the new shapes fails every
-    authoring, assignment, and session write. Rollout is therefore
-    server-first: the first iOS build after this plan decodes both keys and
-    keeps sending the old request shapes; only a later build, cut after the
-    dual-key Worker is confirmed live in production, switches its outbound
-    paths and fields. No iOS build ever sends a shape the deployed Worker
-    does not accept.
-  - Release: expand-contract, because `npm run release` runs the migration
-    before the deploy and the deployed Worker hard-codes the old
-    identifiers, so a single release would fail every plan-tree request
-    from migration completion until the new deployment propagates. SQLite
-    cannot carry both table names for writes, so the compatibility layer is
-    in the Worker: release A deploys a schema-adaptive Worker that probes
-    `PRAGMA table_info(sessions)` for `workout_id` and templates the
-    affected SQL on the detected identifiers. The probe result is cached
-    per isolate for at most 60 seconds and is dropped immediately on a
-    "no such table" or "no such column" error, after which the statement
-    is retried once with a fresh probe, so an isolate that probed before
-    release B cannot keep issuing old-identifier SQL after the rename.
-    Release B runs the rename migration while that Worker keeps serving;
-    release C removes the dual-schema code. Keep the down-migration beside the forward one and
-    verify the sequence locally (`db:migrate:local` → `dev` → smoke) with
-    the release A Worker against both schemas before running it remotely.
+  - [x] **(a) Repository implementation and rollout verification**
+    - Migration: `ALTER TABLE day_templates RENAME TO workouts`; rename
+      `template_exercises.day_template_id` and `sessions.day_template_id` to
+      `workout_id`; recreate `ix_te_day` under the new column. SQLite rewrites
+      foreign-key references on `RENAME TABLE`; add a test that
+      `PRAGMA foreign_key_check` is clean and that `session_aliases`,
+      `set_logs.template_exercise_id`, and the `0032` attempt trigger still
+      behave after the rename. `template_exercises` keeps its name: it is the
+      slot table and "template" is accurate there.
+    - Service layer: rename `DayTemplateRow`, `getDayTemplateInPlan`,
+      `addDayTemplate*`, `patchDayTemplate*`, `deleteDayTemplate`, and the
+      `days` key of `PlanTree` to workout terms. This is a mechanical rename
+      across `src/db.ts` (about 160 references), `src/types.ts`, and
+      `src/routes/api.ts`; `test/` follows.
+    - Wire compatibility for the released iOS app, one release cycle: REST
+      responses emit both `workout_id` and `day_template_id`, and the plan tree
+      carries both `workouts` and `days`; requests accept either key.
+      `/api/workouts...` routes are added and `/api/days...` stay mounted as
+      aliases to the same handlers. Schedule their removal in P0(c), after the next TestFlight build has
+      been the minimum for one cycle; P0(a) retains both.
+    - MCP: add `add_workout`, `update_workout`, `delete_workout`; keep
+      `add_day` and `update_day` registered with a deprecation sentence in their
+      descriptions for the same cycle so existing Claude conversations keep
+      working. `audit_log.tool` keeps historical names; do not rewrite history.
+      Update `coach://state/current`, `AGENTS.md`, and `docs/DESIGN.md` §3–§5.
+    - The `plans.meta.schedule` contract is unchanged: weekday → workout id,
+      `null` = rest. Only the prose describing the value changes.
+    - iOS: rename `DayTemplate`, `dayTemplateID`, `RoutineDayTarget`, and the
+      `days` decoding path. Decoding tolerates either key, but that protects
+      reads only: the current Worker exposes `/api/days` and validates
+      `day_template_id`, so a build that sends the new shapes fails every
+      authoring, assignment, and session write. Rollout is therefore
+      server-first: the first iOS build after this plan decodes both keys and
+      keeps sending the old request shapes; only a later build, cut after the
+      dual-key Worker is confirmed live in production, switches its outbound
+      paths and fields. No iOS build ever sends a shape the deployed Worker
+      does not accept.
+    - Release: expand-contract, because `npm run release` runs the migration
+      before the deploy and the deployed Worker hard-codes the old
+      identifiers, so a single release would fail every plan-tree request
+      from migration completion until the new deployment propagates. SQLite
+      cannot carry both table names for writes, so the compatibility layer is
+      in the Worker: release A deploys a schema-adaptive Worker that probes
+      `PRAGMA table_info(sessions)` for `workout_id` and templates the
+      affected SQL on the detected identifiers. The probe result is cached
+      per isolate for at most 60 seconds and is dropped immediately on a
+      "no such table" or "no such column" error, after which the statement
+      is retried once with a fresh probe, so an isolate that probed before
+      release B cannot keep issuing old-identifier SQL after the rename.
+      Release B runs the rename migration while that Worker keeps serving;
+      release C removes the dual-schema code. Keep the down-migration beside the forward one and
+      verify the sequence locally (`db:migrate:local` → `dev` → smoke) with
+      the release A Worker against both schemas before running it remotely.
+  - [ ] **(b) Authorized server-first and client rollout**
+    - After separate release authorization, deploy release A, verify both-schema
+      support, apply release B's rename, and verify the current clients against
+      production before switching the iOS outbound vocabulary.
+    - Retain the old routes, request keys and MCP names for one TestFlight
+      compatibility cycle. Record exact release sources and evidence here.
+  - [ ] **(c) Compatibility cleanup after the observed cycle**
+    - After the minimum supported client has completed the compatibility cycle,
+      remove temporary physical-schema adaptation and deprecated wire aliases.
+      Preserve historical audit names and legacy snapshot/cache decoding.
+
 - [ ] **P1 — Ordered sessions per date**
   - Migration: add `sessions.slot INTEGER NOT NULL DEFAULT 0`; drop
     `ux_session_user_date`; create `UNIQUE (user_id, date, slot)`. Every
@@ -185,7 +197,7 @@ Two model corrections that the workout library exposed:
 
 ## Execution frontier
 
-- P0
+- P0(b)
 
 ## Dependencies
 
@@ -197,15 +209,28 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | gated_by | external:owner-workout-rename-rollout | The existing Next step requires acceptance of the compatibility window and three-release rename rollout; encode it rather than leave it only in prose. |
+| P0(b) | gated_by | external:owner-workout-production-release | Repository implementation and the three-stage design are authorized; production migrations, deployment and TestFlight distribution are not. |
+| P0(c) | gated_by | external:workout-client-compatibility-cycle | Cleanup requires P0(b) release evidence and the observed released-client compatibility cycle. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step
 
-**Now (@owner):** Confirm the wire-compatibility window for P0 (one
-TestFlight cycle with dual keys) and accept the three-release
-expand-contract rollout for the rename. P1 waits on P0 and on a member who actually needs two strength
-sessions in a day; keep it planned until then.
+**Now (@owner):** After PR #161 passes current-head review/CI and merges,
+authorize the concrete release-A deployment in [the rollout runbook](rollout.md)
+when ready. P0(a) delivers the adaptive Worker, migration 0045 plus rollback,
+canonical service/wire vocabulary, compatible iOS decoding and Library P0.
+Production migration/deployment and TestFlight distribution have not run in
+this workstream. P0(b) remains open; P0(c) requires a later canonical-writing
+app and the observed compatibility cycle. P1 remains outside this goal.
+
+Repository verification (2026-09-09, [PR #161](https://github.com/namarks/tres-fort/pull/161)):
+`npm run typecheck`, `npm test` (896 tests / 61 files, plus upload and query-plan
+checks), `npm run plans:check`, and Wrangler deploy dry-run passed. The local
+same-Worker migration/rename/rollback rehearsal passed. iOS unit coverage passed
+397 tests; all 20 relevant creation, group and library UI journeys passed across
+the final runs. The independent review approved the implementation; the final
+head and CI remain merge gates. No production changes or app distribution are
+claimed by this repository milestone.
 
 ## Notes / open questions
 

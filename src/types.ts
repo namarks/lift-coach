@@ -147,7 +147,7 @@ export interface PlanRow {
   updated_at: number;
 }
 
-export interface DayTemplateRow {
+export interface WorkoutRow {
   id: string;
   plan_id: string;
   name: string;
@@ -163,7 +163,7 @@ export interface TemplateExerciseRow {
   group_rest_seconds?: number | null;
   group_transition_seconds?: number | null;
   id: string;
-  day_template_id: string;
+  workout_id: string;
   exercise_id: string;
   order_index: number;
   target_sets: number;
@@ -192,7 +192,7 @@ export interface SessionRow {
   id: string;
   user_id: string;
   plan_id: string;
-  day_template_id: string | null;
+  workout_id: string | null;
   date: string;
   status: string;
   started_at: number | null;
@@ -249,7 +249,7 @@ export interface EnrichedTemplateExercise extends TemplateExerciseRow {
 }
 
 export interface PlanTree extends PlanRow {
-  days: (DayTemplateRow & { exercises: EnrichedTemplateExercise[] })[];
+  workouts: (WorkoutRow & { exercises: EnrichedTemplateExercise[] })[];
 }
 
 // ---- external events (frozen contract — see migrations/0006) -------------
@@ -446,7 +446,7 @@ export interface DayConflict {
 
 export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
 
-/** Weekday-keyed recurring pattern. Value = day_template_id, or null = rest. */
+/** Weekday-keyed recurring pattern. Value = workout_id, or null = rest. */
 export type ScheduleWeek = Record<Weekday, string | null>;
 
 export interface WeeklySchedule {

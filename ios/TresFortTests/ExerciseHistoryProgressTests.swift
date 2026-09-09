@@ -7,7 +7,7 @@ final class ExerciseHistoryProgressTests: XCTestCase {
         let catalog = [ExerciseCatalog(id: "exercise", name: "Exercise", primary_muscle: "core",
             modality: modality, unit: "lb", laterality: nil, load_mode: nil, demo_slug: nil)]
         let sessions = samples.enumerated().map { index, sample in
-            SessionRow(id: "session-\(index)", date: sample.date, status: "completed", day_template_id: nil)
+            SessionRow(id: "session-\(index)", date: sample.date, status: "completed", workout_id: nil)
         }
         let sets = samples.enumerated().map { index, sample in
             SetLog(id: "set-\(index)", session_id: sessions[index].id, exercise_id: "exercise",

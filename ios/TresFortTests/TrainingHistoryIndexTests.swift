@@ -26,7 +26,7 @@ final class TrainingHistoryIndexTests: XCTestCase {
         model.sets.removeAll { $0.id == row.id }
         XCTAssertEqual(model.history(for: exercise).reduce(0) { $0 + $1.setCount }, oldCount - 1)
         let date = dataset.sessions[0].date
-        model.sessions.append(SessionRow(id: "skipped", date: date, status: "skipped", day_template_id: nil))
+        model.sessions.append(SessionRow(id: "skipped", date: date, status: "skipped", workout_id: nil))
         XCTAssertEqual(model.sessionsByDate[date]?.id, dataset.sessions[0].id)
         model.sessions.removeAll { $0.id == dataset.sessions[0].id }
         XCTAssertEqual(model.sessionsByDate[date]?.id, "skipped")
