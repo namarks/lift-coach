@@ -1,5 +1,5 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
-import { beforeAll, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import fixtures from '../ios/TresFortTests/Fixtures/BodyweightProgress.json';
 import { metricCohorts, estimatedOneRepMax } from '../src/metrics';
 
@@ -18,13 +18,16 @@ async function rpc(name: string, args: unknown) {
 }
 
 for (const fixture of fixtures) {
-  it(`shares ${fixture.name} expectations across history, volume, MCP and group feed without changing raw sets`, async () => {
+  describe(`shared ${fixture.name} expectations`, () => {
+    let headers: Record<string, string>;
+    let raw: unknown[];
+    const ex = fixture.catalog[0]!;
+    beforeAll(async () => {
     const auth = await SELF.fetch(`${base}/auth/dev`, {
       method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ secret: 'test-dev' }),
     });
     const { jwt, user } = await auth.json<any>();
-    const headers = { 'content-type': 'application/json', Authorization: `Bearer ${jwt}` };
-    const ex = fixture.catalog[0]!;
+    headers = { 'content-type': 'application/json', Authorization: `Bearer ${jwt}` };
     await env.DB.prepare(`INSERT INTO exercises
       (id,name,primary_muscle,secondary_muscles,modality,unit,aliases,created_at,laterality,load_mode)
       VALUES (?1,?2,?3,'[]',?4,?5,'[]',0,?6,?7)`)
@@ -41,7 +44,13 @@ for (const fixture of fixtures) {
         .bind(set.id, set.session_id, user.id, set.exercise_id, set.set_index, set.weight,
           set.reps, set.is_warmup, set.logged_at, set.duration_s, set.is_timed, set.deleted_at).run();
     }
-    const raw = await env.DB.prepare('SELECT * FROM set_logs WHERE session_id = ?').bind(fixture.name).all();
+    raw = (await env.DB.prepare('SELECT * FROM set_logs WHERE session_id = ?').bind(fixture.name).all()).results;
+    });
+    afterEach(async () => {
+      expect((await env.DB.prepare('SELECT * FROM set_logs WHERE session_id = ?').bind(fixture.name).all()).results).toEqual(raw);
+    });
+
+    it('keeps REST and MCP history on the shared numerical contract', async () => {
     const history = await (await SELF.fetch(`${base}/api/history?exercise_id=${ex.id}&from=0`, { headers })).json<any>();
     const coach = await rpc('get_history', { exercise: ex.id, range: 'all' });
     expect(coach.by_session).toEqual(history.by_session);
@@ -59,11 +68,17 @@ for (const fixture of fixtures) {
       expect(summary.est_1rm).toBeNull();
       if (summary.cohorts.length > 1) expect(summary.top).toBeNull();
     }
+    });
+
+    it('keeps REST and MCP volume on the shared numerical contract', async () => {
     const volume = await (await SELF.fetch(`${base}/api/volume?muscle=${ex.primary_muscle}&from=0`, { headers })).json<any>();
     expect(await rpc('get_volume_trend', { muscle_group: ex.primary_muscle, range: 'all' })).toEqual(volume);
     expect(volume).toMatchObject({ tonnage_basis: 'external_load', buckets: [{
-      hard_sets: history.sets.length, tonnage: fixture.expected_tonnage,
+      hard_sets: fixture.sets.filter((set) => set.is_warmup === 0 && set.deleted_at == null).length, tonnage: fixture.expected_tonnage,
     }] });
+    });
+
+    it('keeps group-feed cohorts on the shared numerical contract', async () => {
     const group = await (await SELF.fetch(`${base}/api/groups`, {
       method: 'POST', headers, body: JSON.stringify({ name: fixture.name }),
     })).json<any>();
@@ -83,7 +98,7 @@ for (const fixture of fixtures) {
       expect(top).not.toHaveProperty('notes');
       expect(top).not.toHaveProperty('rpe');
     }
-    expect((await env.DB.prepare('SELECT * FROM set_logs WHERE session_id = ?').bind(fixture.name).all()).results).toEqual(raw.results);
+    });
   });
 }
 

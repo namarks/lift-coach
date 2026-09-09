@@ -53,6 +53,8 @@ import {
   runWorkoutWriteBatch,
   runWorkoutWriteStatement,
 } from './workout-write-fence';
+import { emptyExerciseGroup, isGroupId, normalizeRemovedGroupMember, validateExerciseGroups, validatePlanExerciseGroups, type ExerciseGroupFields, type GroupConflict } from './exerciseGroups';
+export type { GroupConflict } from './exerciseGroups';
 const now = () => Date.now();
 const uuid = () => crypto.randomUUID();
 
@@ -2843,7 +2845,9 @@ export function preparePlanSnapshotInsert(
                      'target_reps',te.target_reps,'target_reps_max',te.target_reps_max,
                      'target_rpe',te.target_rpe,'rest_seconds',te.rest_seconds,
                      'target_weight',te.target_weight,'target_duration_s',te.target_duration_s,
-                     'progression',te.progression,'cues',te.cues,'is_warmup',te.is_warmup
+                     'progression',te.progression,'cues',te.cues,'is_warmup',te.is_warmup,
+                     'group_id',te.group_id,'group_rest_seconds',te.group_rest_seconds,
+                     'group_transition_seconds',te.group_transition_seconds
                    ) AS slot_document
                    FROM template_exercises te
                    WHERE te.day_template_id=d.id
@@ -3107,7 +3111,7 @@ export async function restorePlanSnapshot(
   | { ok: true; acknowledged: true; refresh_required: true; plan_id: string; restored_from_version: number; version: number }
   | { conflict: true; current_plan_id: string; current_version: number }
   | { error: 'snapshot_not_found' | 'active_workout' | 'no_active_plan' }
-  | PrescriptionValidationError
+  | PrescriptionValidationError | GroupConflict
 > {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'no_active_plan' };
@@ -3132,6 +3136,8 @@ export async function restorePlanSnapshot(
   if (invalidFields.size > 0) {
     return { error: 'invalid_fields', fields: [...invalidFields].sort() };
   }
+  const groupInvalid = validatePlanExerciseGroups(snapshot.parsed.days);
+  if (groupInvalid) return groupInvalid;
   const active = await db.prepare(
     `SELECT 1 FROM sessions
       WHERE user_id=?1 AND plan_id=?2 AND status='in_progress' LIMIT 1`,
@@ -3174,22 +3180,25 @@ export async function restorePlanSnapshot(
       `INSERT OR IGNORE INTO template_exercises
        (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,
         target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,
-        created_at,updated_at)
-       SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18
+        created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
+       SELECT ?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?18,?19,?20,?21
        WHERE ${guarded}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.day_template_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
-      slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts));
+      slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
+      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
     statements.push(db.prepare(
       `UPDATE template_exercises SET day_template_id=?5,exercise_id=?6,order_index=?7,
        target_sets=?8,target_reps=?9,target_reps_max=?10,target_rpe=?11,
        rest_seconds=?12,target_weight=?13,target_duration_s=?14,progression=?15,
-       cues=?16,is_warmup=?17,updated_at=?18 WHERE id=?4 AND ${guarded}`,
+       cues=?16,is_warmup=?17,updated_at=?18,group_id=?19,group_rest_seconds=?20,
+       group_transition_seconds=?21 WHERE id=?4 AND ${guarded}`,
     ).bind(plan.id, userId, -plan.version, slot.id, slot.day_template_id,
       slot.exercise_id, slot.order_index, slot.target_sets, slot.target_reps,
       slot.target_reps_max, slot.target_rpe, slot.rest_seconds, slot.target_weight,
-      slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts));
+      slot.target_duration_s, slot.progression, slot.cues, slot.is_warmup, ts,
+      slot.group_id ?? null, slot.group_rest_seconds ?? null, slot.group_transition_seconds ?? null));
   }
   for (const day of current.days) {
     for (const slot of day.exercises) if (!targetSlotIds.has(slot.id)) {
@@ -3452,7 +3461,7 @@ export async function patchDayTemplate(
   return { ...existing, ...merged, updated_at: now() };
 }
 
-type PlanVersionConflict = { conflict: true; current_version: number };
+export type PlanVersionConflict = { conflict: true; current_version: number };
 
 const orderDayRows = <T extends { id: string; order_index: number }>(
   rows: T[],
@@ -3679,6 +3688,13 @@ export async function nextExerciseOrderIndex(
   return (row?.m ?? -1) + 1;
 }
 
+async function exerciseGroupDayRows(db: D1Database, dayId: string): Promise<TemplateExerciseRow[]> {
+  return (await db.prepare(
+    'SELECT * FROM template_exercises WHERE day_template_id=?1 ORDER BY order_index,created_at,id',
+  ).bind(dayId).all<TemplateExerciseRow>()).results;
+}
+
+
 /**
  * Collapse duplicate `order_index` values within one day to a dense,
  * deterministic 0..n-1 sequence. No-op when indices are already unique, so
@@ -3694,42 +3710,33 @@ export async function nextExerciseOrderIndex(
  * dense pass.
  */
 export async function dedupeDayOrderIndexes(
-  db: D1Database,
-  dayTemplateId: string,
-  preferId?: string,
-): Promise<boolean> {
-  const rows = await db
-    .prepare(
-      'SELECT id, order_index FROM template_exercises WHERE day_template_id = ?1 ORDER BY order_index, created_at, id',
-    )
-    .bind(dayTemplateId)
-    .all<{ id: string; order_index: number }>();
-  const list = rows.results;
-  const hasDup = new Set(list.map((r) => r.order_index)).size !== list.length;
+  db: D1Database, dayTemplateId: string, preferId?: string,
+): Promise<boolean | GroupConflict> {
+  const plan = await db.prepare(
+    `SELECT p.* FROM plans p JOIN day_templates d ON d.plan_id=p.id
+     WHERE d.id=?1 AND p.status='active'`,
+  ).bind(dayTemplateId).first<PlanRow>();
+  if (!plan) return false;
+  const list = await exerciseGroupDayRows(db, dayTemplateId);
+  if (preferId && list.find((row) => row.id === preferId)?.group_id != null) {
+    return { error: 'group_conflict', fields: ['order_index'] };
+  }
+  const hasDup = new Set(list.map((row) => row.order_index)).size !== list.length;
+  const ordered = (hasDup && preferId ? orderDayRows(list, preferId) : list)
+    .map((row, index) => hasDup ? { ...row, order_index: index } : row);
+  const invalid = validateExerciseGroups(ordered);
+  if (invalid) return invalid;
   if (!hasDup) return false;
-
-  let ordered: { id: string; order_index: number }[];
-  const moved = preferId ? list.find((r) => r.id === preferId) : undefined;
-  if (moved) {
-    // Requested destination = the index the caller just set on this slot.
-    // Drop it, then splice it back at that position so siblings shift around
-    // it — landing the moved slot exactly there for up- and down-moves alike.
-    const others = list.filter((r) => r.id !== moved.id);
-    const target = Math.max(0, Math.min(moved.order_index, others.length));
-    ordered = [...others.slice(0, target), moved, ...others.slice(target)];
-  } else {
-    ordered = list;
-  }
-
-  const ts = now();
-  for (let i = 0; i < ordered.length; i++) {
-    if (ordered[i]!.order_index !== i) {
-      await db
-        .prepare('UPDATE template_exercises SET order_index = ?2, updated_at = ?3 WHERE id = ?1')
-        .bind(ordered[i]!.id, i, ts)
-        .run();
-    }
-  }
+  const ts = now(); const nonce = uuid();
+  const attribution: PlanWriteAttribution = { actor: 'system', operation: 'normalize_exercise_order' };
+  const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
+  for (const row of ordered) statements.push(db.prepare(
+    `UPDATE template_exercises SET order_index=?2,updated_at=?3 WHERE id=?1
+     AND EXISTS (SELECT 1 FROM plans WHERE id=?4 AND user_id=?5 AND version=-?6 AND plan_write_nonce=?7)`,
+  ).bind(row.id, row.order_index, ts, plan.id, plan.user_id, plan.version, nonce));
+  statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
+  const results = await runWorkoutWriteBatch(db, statements);
+  if ((results[0]?.meta.changes ?? 0) !== 1) throw new Error('plan_write_conflict');
   return true;
 }
 
@@ -3753,7 +3760,7 @@ export async function addTemplateExercise(
     is_warmup: number | boolean;
   },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'add_exercise' },
-): Promise<TemplateExerciseRow | PrescriptionValidationError> {
+): Promise<TemplateExerciseRow | PrescriptionValidationError | GroupConflict> {
   const plan = await db.prepare("SELECT * FROM plans WHERE id=?1 AND status='active'")
     .bind(planId).first<PlanRow>();
   if (!plan) throw new Error('no_active_plan');
@@ -3767,6 +3774,9 @@ export async function addTemplateExercise(
   };
   const invalid = validateExercisePrescription(validationInput, { modality: exercise?.modality });
   if (invalid) return invalid;
+  const groupFields = ['group_id', 'group_rest_seconds', 'group_transition_seconds'] as const;
+  const suppliedGroupFields = groupFields.filter((field) => input[field] != null);
+  if (suppliedGroupFields.length) return { error: 'group_conflict', fields: suppliedGroupFields };
   const ts = now();
   const row: TemplateExerciseRow = {
     ...input,
@@ -3775,11 +3785,11 @@ export async function addTemplateExercise(
     created_at: ts,
     updated_at: ts,
   };
-  const siblings = await db.prepare(
-    'SELECT id,order_index FROM template_exercises WHERE day_template_id=?1 ORDER BY order_index,created_at,id',
-  ).bind(row.day_template_id).all<{ id: string; order_index: number }>();
-  const collides = siblings.results.some((slot) => slot.order_index === row.order_index);
-  const ordered = collides ? orderDayRows([...siblings.results, row], row.id) : [...siblings.results, row];
+  const siblings = await exerciseGroupDayRows(db, row.day_template_id);
+  const collides = siblings.some((slot) => slot.order_index === row.order_index);
+  const ordered = collides ? orderDayRows([...siblings, row], row.id) : [...siblings, row];
+  const groupInvalid = validateExerciseGroups(ordered.map((slot, index) => collides ? { ...slot, order_index: index } : slot));
+  if (groupInvalid) return groupInvalid;
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
     ...preparePlanWriteStart(db, plan, attribution, ts, nonce),
@@ -5780,7 +5790,7 @@ export async function listActivitiesForUser(
 
 // ---- plan-tree mutations (MCP write tools) -------------------------------
 
-export interface ExerciseInput {
+export interface ExerciseInput extends ExerciseGroupFields {
   exercise: string;
   order_index?: number;
   target_sets: number;
@@ -5836,6 +5846,11 @@ export function validateExercisePrescription(
   if (has('order_index') && (!Number.isSafeInteger(value.order_index) || (value.order_index as number) < 0)) bad.add('order_index');
   if (has('cues') && value.cues !== null && typeof value.cues !== 'string') bad.add('cues');
   if (has('progression') && value.progression !== null && !isPlainRecord(value.progression)) bad.add('progression');
+  if (has('group_id') && value.group_id !== undefined && value.group_id !== null && !isGroupId(value.group_id)) bad.add('group_id');
+  for (const field of ['group_rest_seconds', 'group_transition_seconds']) {
+    if (has(field) && value[field] !== undefined && value[field] !== null &&
+        (!Number.isSafeInteger(value[field]) || (value[field] as number) < 0)) bad.add(field);
+  }
   if (has('is_warmup') && typeof value.is_warmup !== 'boolean' && value.is_warmup !== 0 && value.is_warmup !== 1) bad.add('is_warmup');
   if (typeof value.target_reps === 'number' && typeof value.target_reps_max === 'number' && value.target_reps_max < value.target_reps) bad.add('target_reps_max');
   return bad.size === 0 ? null : { error: 'invalid_fields', fields: [...bad].sort() };
@@ -5874,7 +5889,7 @@ export async function updatePlanTree(
   | { conflict: false; plan: PlanTree }
   | { conflict: false; acknowledged: true; refresh_required: true; plan_id: string; version: number }
   | { error: 'unknown_exercise'; queries: string[]; query: string }
-  | PrescriptionValidationError
+  | PrescriptionValidationError | GroupConflict
 > {
   if (!input || !Array.isArray(input.days)) {
     return { error: 'invalid_fields', fields: ['days'] };
@@ -5900,6 +5915,9 @@ export async function updatePlanTree(
     });
   });
   if (malformedDays.length > 0) return { error: 'invalid_fields', fields: malformedDays.sort() };
+  const explicitlyGroups = input.days.some((day) => (day.exercises ?? []).some((slot) =>
+    slot.group_id !== undefined || slot.group_rest_seconds !== undefined || slot.group_transition_seconds !== undefined));
+  if (explicitlyGroups && input.expected_version == null) return { error: 'invalid_fields', fields: ['expected_version'] };
   let plan = await getActivePlan(db, userId);
   let createsPlan = false;
   if (
@@ -6025,14 +6043,19 @@ export async function updatePlanTree(
   }
   const oldTeRows = await db
     .prepare(
-      `SELECT te.id, te.day_template_id, te.exercise_id, te.is_warmup
+      `SELECT te.*
          FROM template_exercises te
          JOIN day_templates d ON d.id = te.day_template_id
         WHERE d.plan_id = ?1
         ORDER BY te.day_template_id, te.order_index, te.created_at, te.id`,
     )
     .bind(plan.id)
-    .all<{ id: string; day_template_id: string; exercise_id: string; is_warmup: number }>();
+    .all<TemplateExerciseRow>();
+  // Even an older payload can move or remove grouped members during rebuild.
+  // Keep the legacy optional version contract only for an ungrouped document.
+  if (input.expected_version == null && oldTeRows.results.some((slot) => slot.group_id != null)) {
+    return { error: 'invalid_fields', fields: ['expected_version'] };
+  }
 
   // is_warmup INHERITANCE map — positional by (newDayId, exercise_id) occurrence.
   // Recovers the existing warm-up flag for a slot a caller leaves unspecified so
@@ -6116,6 +6139,43 @@ export async function updatePlanTree(
     }
   }
 
+  // Group attributes follow the exact slot remap, including duplicate exercise
+  // occurrences and warm-up roles. Older clients can omit these additive fields.
+  const oldByNewSlot = new Map<string, TemplateExerciseRow>();
+  for (const old of oldTeRows.results) {
+    const newId = oldToNewTe.get(old.id);
+    if (newId) oldByNewSlot.set(newId, old);
+  }
+  const groupCandidates = input.days.map((day, di) => ({
+    exercises: (day.exercises ?? []).map((exercise, ei) => {
+      const id = teIdPerExerciseOccurrence[di]![ei]!;
+      const old = oldByNewSlot.get(id);
+      const groupId = exercise.group_id === undefined ? old?.group_id ?? null : exercise.group_id;
+      return {
+        id, order_index: exercise.order_index ?? ei, target_sets: exercise.target_sets,
+        group_id: groupId,
+        group_rest_seconds: groupId == null ? exercise.group_rest_seconds ?? null
+          : exercise.group_rest_seconds === undefined ? old?.group_rest_seconds ?? null : exercise.group_rest_seconds,
+        group_transition_seconds: groupId == null ? exercise.group_transition_seconds ?? null
+          : exercise.group_transition_seconds === undefined ? old?.group_transition_seconds ?? 0 : exercise.group_transition_seconds,
+      };
+    }),
+  }));
+  // Removing a member in a rebuild has the same singleton normalization as
+  // deleting it directly. An explicitly authored singleton is still invalid.
+  for (const day of groupCandidates) {
+    for (const slot of day.exercises) if (slot.group_id != null) {
+      const groupId = slot.group_id;
+      const oldMembers = oldTeRows.results.filter((old) => old.group_id === groupId);
+      const survivors = day.exercises.filter((member) => member.group_id === groupId);
+      if (survivors.length === 1 && oldMembers.length >= 2 && oldMembers.some((old) => !oldToNewTe.get(old.id))) {
+        Object.assign(slot, emptyExerciseGroup);
+      }
+    }
+  }
+  const groupInvalid = validatePlanExerciseGroups(groupCandidates);
+  if (groupInvalid) return groupInvalid;
+
   // FK-safe order: INSERT new rows FIRST (so the remap can point at real
   // parents), then UPDATE refs old→new (or NULL for removed), then DELETE
   // the now-orphaned old rows by EXPLICIT id (not by plan_id sweep —
@@ -6173,12 +6233,13 @@ export async function updatePlanTree(
     (d.exercises ?? []).forEach((e, ei) => {
       const exId = resolved.get(e.exercise)!;
       const isWarmup = isWarmupPerOccurrence[di]![ei]!;
+      const group = groupCandidates[di]!.exercises[ei]!;
       stmts.push(
         db
           .prepare(
             `INSERT INTO template_exercises
-             (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at)
-             SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
+             (id,day_template_id,exercise_id,order_index,target_sets,target_reps,target_reps_max,target_rpe,rest_seconds,target_weight,target_duration_s,progression,cues,is_warmup,created_at,updated_at,group_id,group_rest_seconds,group_transition_seconds)
+             SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?20,?21,?22
               WHERE EXISTS (
                 SELECT 1 FROM plans
                  WHERE id = ?17 AND user_id = ?18 AND status = 'active' AND version = ?19
@@ -6190,6 +6251,7 @@ export async function updatePlanTree(
             e.target_weight ?? null, e.target_duration_s ?? null,
             e.progression == null ? null : JSON.stringify(e.progression),
             e.cues ?? null, isWarmup, ts, ts, plan!.id, userId, -plan!.version,
+            group.group_id, group.group_rest_seconds, group.group_transition_seconds,
           ),
       );
     });
@@ -6469,7 +6531,7 @@ export async function updateExercise(
   > & { progression?: unknown },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'update_exercise' },
   retryLegacyConflict = true,
-): Promise<TemplateExerciseRow | PlanVersionConflict | { error: 'unknown_fields'; fields: string[] } | PrescriptionValidationError | null> {
+): Promise<TemplateExerciseRow | PlanVersionConflict | { error: 'unknown_fields'; fields: string[] } | PrescriptionValidationError | GroupConflict | null> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   // Slot lookup first so a wrong ref returns the more actionable
@@ -6479,6 +6541,10 @@ export async function updateExercise(
   if (!slot) return null;
   const unknown = Object.keys(patch).filter((k) => !TEMPLATE_EXERCISE_PATCH_KEYS.has(k));
   if (unknown.length > 0) return { error: 'unknown_fields', fields: unknown };
+  if (slot.group_id != null) {
+    const owned = ['order_index', 'target_sets'].filter((key) => Object.prototype.hasOwnProperty.call(patch, key));
+    if (owned.length) return { error: 'group_conflict', fields: owned };
+  }
   const modality = await db.prepare('SELECT modality FROM exercises WHERE id=?1')
     .bind(slot.exercise_id).first<{ modality: string }>();
   const merged = {
@@ -6498,6 +6564,13 @@ export async function updateExercise(
   };
   const invalid = validateExercisePrescription(merged as Record<string, unknown>, { modality: modality?.modality });
   if (invalid) return invalid;
+  const groupSiblings = await exerciseGroupDayRows(db, slot.day_template_id);
+  const groupMoved = groupSiblings.map((row) => row.id === slot.id ? { ...row, ...merged } : row);
+  const groupHasDuplicate = new Set(groupMoved.map((row) => row.order_index)).size !== groupMoved.length;
+  const groupOrdered = patch.order_index !== undefined && groupHasDuplicate
+    ? orderDayRows(groupMoved, slot.id).map((row, index) => ({ ...row, order_index: index })) : groupMoved;
+  const groupInvalid = validateExerciseGroups(groupOrdered);
+  if (groupInvalid) return groupInvalid;
   if (Object.keys(patch).length === 0) return slot;
 
   // Update only fields supplied by the caller. This bounded legacy policy lets
@@ -6604,11 +6677,16 @@ export async function deleteTemplateExercise(
   ref: { template_exercise_id?: string; day_template_id?: string; day?: string; exercise?: string },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'delete_exercise' },
   retryLegacyConflict = true,
-): Promise<TemplateExerciseRow | null> {
+): Promise<TemplateExerciseRow | GroupConflict | null> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const slot = await findSlot(db, userId, ref);
   if (!slot) return null;
+  const siblings = await exerciseGroupDayRows(db, slot.day_template_id);
+  const remaining = normalizeRemovedGroupMember(siblings.filter((row) => row.id !== slot.id), slot.group_id);
+  const groupInvalid = validateExerciseGroups(remaining);
+  if (groupInvalid) return groupInvalid;
+  const normalized = remaining.filter((row) => row.group_id == null && siblings.find((old) => old.id === row.id)?.group_id != null);
   const ts = now();
   const nonce = uuid();
   const statements: D1PreparedStatement[] = [
@@ -6627,6 +6705,11 @@ export async function deleteTemplateExercise(
          (SELECT 1 FROM plans WHERE id=?2 AND user_id=?3 AND version=-?4 AND plan_write_nonce=?5)`,
       ).bind(slot.id, plan.id, userId, plan.version, nonce),
   ];
+  for (const row of normalized) statements.push(db.prepare(
+    `UPDATE template_exercises SET group_id=NULL,group_rest_seconds=NULL,group_transition_seconds=NULL,
+       updated_at=?2 WHERE id=?1 AND EXISTS
+       (SELECT 1 FROM plans WHERE id=?3 AND user_id=?4 AND version=-?5 AND plan_write_nonce=?6)`,
+  ).bind(row.id, ts, plan.id, userId, plan.version, nonce));
   const versionResultIndex = statements.length;
   statements.push(...preparePlanWriteFinish(db, plan, attribution, ts, nonce));
   const results = await runWorkoutWriteBatch<{ version: number }>(db, statements);
@@ -6649,7 +6732,7 @@ export async function swapExercise(
   },
   attribution: PlanWriteAttribution = { actor: 'system', operation: 'swap_exercise' },
   retryLegacyConflict = true,
-): Promise<TemplateExerciseRow | PlanVersionConflict | PrescriptionValidationError | null> {
+): Promise<TemplateExerciseRow | PlanVersionConflict | PrescriptionValidationError | GroupConflict | null> {
   const plan = await getActivePlan(db, userId);
   if (!plan) return null;
   const slot = await findSlot(db, userId, { ...ref, exercise: ref.from_exercise });
@@ -6670,6 +6753,8 @@ export async function swapExercise(
   const progression = slot.progression === null ? null : JSON.parse(slot.progression) as unknown;
   const invalid = validateExercisePrescription({ ...slot, progression }, { modality: destination.modality });
   if (invalid) return invalid;
+  const groupInvalid = validateExerciseGroups(await exerciseGroupDayRows(db, slot.day_template_id));
+  if (groupInvalid) return groupInvalid;
   // A replacement always preserves the saved prescription and slot identity.
   // Historical logs retain their original exercise_id and values.
   const ts = now();
@@ -6763,7 +6848,7 @@ export async function adjustToday(
   version?: number;
   conflict?: true;
   current_version?: number;
-  error?: 'invalid_fields';
+  error?: 'invalid_fields' | 'group_conflict';
   fields?: string[];
 }> {
   if (!['deload', 'reduce_volume', 'reduce_intensity'].includes(intent)
@@ -6796,6 +6881,11 @@ export async function adjustToday(
       affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: true,
     };
   }
+  const groupInvalid = validatePlanExerciseGroups(days.map((day) => ({ exercises: day.exercises.map((slot) => ({
+    ...slot, target_sets: intent === 'reduce_intensity' ? slot.target_sets : Math.max(1, Math.round(slot.target_sets * setF)),
+  })) })));
+  if (groupInvalid) return { ...groupInvalid, plan: tree, changes: [], recurring: true,
+    affected_workouts: days.map((day) => day.day_label ?? day.name), no_op: true };
   const changes: string[] = [];
   const computedInvalid = new Set<string>();
   const ts = now();
@@ -7416,6 +7506,7 @@ export async function deleteDayTemplate(
   | { error: 'day_not_found' }
   | { error: 'day_in_progress' }
   | PlanVersionConflict
+  | GroupConflict
 > {
   const plan = await getActivePlan(db, userId);
   if (!plan) return { error: 'day_not_found' };
@@ -7428,6 +7519,9 @@ export async function deleteDayTemplate(
     .bind(dayId, plan.id)
     .first<{ id: string }>();
   if (!day) return { error: 'day_not_found' };
+  const groupTree = await getPlanTree(db, userId);
+  const groupInvalid = validatePlanExerciseGroups(groupTree?.days.filter((candidate) => candidate.id !== dayId) ?? []);
+  if (groupInvalid) return groupInvalid;
   const meta = parsePlanMeta(plan.meta);
   const remaining = await db
     .prepare(
@@ -11823,4 +11917,237 @@ export async function revokeAllOAuthGrants(
     ).bind(userId, isOwner ? 1 : 0),
   ]);
   return revoked?.meta.changes ?? 0;
+}
+
+// ---- prescribed exercise groups ------------------------------------------
+
+export interface ExerciseGroupAcknowledgement {
+  ok: true;
+  plan_id: string;
+  version: number;
+  group_id: string;
+  day_id: string | null;
+  members: string[];
+  round_rest: number | null;
+  transition_rest: number | null;
+  target_sets: number | null;
+  cleared: boolean;
+  unchanged?: true;
+  replayed?: true;
+}
+export type ExerciseGroupResult = ExerciseGroupAcknowledgement | PlanVersionConflict
+  | PrescriptionValidationError | GroupConflict | { error: 'no_active_plan' | 'day_not_found' };
+export interface SetExerciseGroupOptions {
+  expected_version: number;
+  round_rest: number;
+  transition_rest?: number;
+  target_sets?: number;
+  /** Destination for the complete member block in the resulting day. */
+  order_index?: number;
+}
+
+/** Preserve JSON value semantics while ignoring object-property insertion order.
+ * Arrays remain ordered because member order is part of group authoring. */
+function canonicalExerciseGroupArgs(value: unknown): string {
+  const normalized = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(normalized);
+    if (isPlainRecord(item)) return Object.fromEntries(
+      Object.keys(item).sort().map((key) => [key, normalized(item[key])]),
+    );
+    return item;
+  };
+  return JSON.stringify(normalized(value));
+}
+
+/** A name-based MCP retry must recognize the original accepted request before
+ * resolving names against a renamed, rebuilt or removed day. Original args and
+ * the canonical acknowledgement already share the writer's atomic audit row.
+ * The MCP wrapper validates allowed fields and their types before this lookup. */
+export async function findMcpExerciseGroupAcknowledgement(
+  db: D1Database,
+  userId: string,
+  operation: 'group_exercises' | 'ungroup_exercises',
+  args: Record<string, unknown>,
+): Promise<ExerciseGroupAcknowledgement | null> {
+  if (!isGroupId(args.group_id) || !Number.isSafeInteger(args.expected_version)
+      || (args.expected_version as number) < 1) return null;
+  const rows = await db.prepare(
+    `SELECT args,result FROM audit_log
+      WHERE user_id=?1 AND actor='mcp' AND tool=?2
+        AND json_extract(CASE WHEN json_valid(args) THEN args ELSE '{}' END,'$.group_id')=?3
+        AND json_extract(CASE WHEN json_valid(args) THEN args ELSE '{}' END,'$.expected_version')=?4
+        AND json_type(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.exercise_group_receipt')='text'
+        AND json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.ok')=1
+        AND json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.group_id')=?3
+      ORDER BY created_at,id`,
+  ).bind(userId, operation, args.group_id, args.expected_version).all<{ args: string; result: string }>();
+  const request = canonicalExerciseGroupArgs(args);
+  for (const row of rows.results) {
+    if (canonicalExerciseGroupArgs(JSON.parse(row.args)) !== request) continue;
+    const { exercise_group_receipt: _, ...acknowledgement } = JSON.parse(row.result) as
+      ExerciseGroupAcknowledgement & { exercise_group_receipt: string };
+    return { ...acknowledgement, replayed: true };
+  }
+  return null;
+}
+
+async function findExerciseGroupReceipt(db: D1Database, userId: string, actor: string, key: string): Promise<ExerciseGroupAcknowledgement | null> {
+  const row = await db.prepare(
+    `SELECT result FROM audit_log WHERE user_id=?1 AND actor=?2 AND json_valid(result)
+      AND json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.exercise_group_receipt')=?3 LIMIT 1`,
+  ).bind(userId, actor, key).first<{ result: string }>();
+  if (!row) return null;
+  const { exercise_group_receipt: _, ...result } = JSON.parse(row.result) as ExerciseGroupAcknowledgement & { exercise_group_receipt: string };
+  return { ...result, replayed: true };
+}
+
+async function commitExerciseGroup(
+  db: D1Database, plan: PlanRow, changed: readonly TemplateExerciseRow[],
+  result: ExerciseGroupAcknowledgement, key: string, attribution: PlanWriteAttribution,
+): Promise<ExerciseGroupResult> {
+  const nonce = crypto.randomUUID();
+  const ts = Date.now();
+  const statements = preparePlanWriteStart(db, plan, attribution, ts, nonce);
+  for (const slot of changed) statements.push(db.prepare(
+    `UPDATE template_exercises SET group_id=?2,group_rest_seconds=?3,group_transition_seconds=?4,
+       target_sets=?5,order_index=?6,updated_at=?7 WHERE id=?1
+       AND EXISTS (SELECT 1 FROM plans p JOIN day_templates d ON d.plan_id=p.id
+         WHERE d.id=template_exercises.day_template_id AND p.id=?8 AND p.user_id=?9
+           AND p.version=-?10 AND p.plan_write_nonce=?11)`,
+  ).bind(slot.id, slot.group_id ?? null, slot.group_rest_seconds ?? null,
+    slot.group_transition_seconds ?? null, slot.target_sets, slot.order_index, ts,
+    plan.id, plan.user_id, plan.version, nonce));
+  const versionIndex = statements.length;
+  statements.push(...preparePlanWriteFinish(db, plan, {
+    ...attribution,
+    note: attribution.note ?? (result.cleared ? 'Ungrouped exercises.' : `Grouped ${result.members.length} exercises for ${result.target_sets} rounds.`),
+    result: { ...result, exercise_group_receipt: key },
+  }, ts, nonce));
+  const rows = await runWorkoutWriteBatch(db, statements);
+  if ((rows[0]?.meta.changes ?? 0) !== 1 || !rows[versionIndex]?.results[0]) {
+    // A concurrent copy may have committed the same request while we read.
+    const replay = await findExerciseGroupReceipt(db, plan.user_id, attribution.actor, key);
+    if (replay) return replay;
+    const latest = await getActivePlan(db, plan.user_id);
+    return { conflict: true, current_version: latest?.version ?? plan.version };
+  }
+  return result;
+}
+
+export async function setGroup(
+  db: D1Database, userId: string, dayId: string, groupId: string, memberIds: string[],
+  options: SetExerciseGroupOptions,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'group_exercises' },
+): Promise<ExerciseGroupResult> {
+  const invalid = new Set<string>();
+  if (!isGroupId(groupId)) invalid.add('group_id');
+  if (!Number.isSafeInteger(options.expected_version) || options.expected_version < 1) invalid.add('expected_version');
+  if (!Number.isSafeInteger(options.round_rest) || options.round_rest < 0) invalid.add('round_rest');
+  const transition = options.transition_rest === undefined ? 0 : options.transition_rest;
+  if (!Number.isSafeInteger(transition) || transition < 0) invalid.add('transition_rest');
+  if (options.order_index !== undefined && (!Number.isSafeInteger(options.order_index) || options.order_index < 0)) invalid.add('order_index');
+  if (options.target_sets !== undefined && (!Number.isSafeInteger(options.target_sets) || options.target_sets < 1)) invalid.add('target_sets');
+  if (!Array.isArray(memberIds) || memberIds.some((id) => typeof id !== 'string') || new Set(memberIds).size !== memberIds.length || memberIds.length < 2) invalid.add('members');
+  if (invalid.size) return { error: 'invalid_fields', fields: [...invalid].sort() };
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' };
+  const key = JSON.stringify({ kind: 'set', plan_id: plan.id, day_id: dayId, group_id: groupId,
+    members: memberIds, expected_version: options.expected_version,
+    round_rest: options.round_rest, transition_rest: transition, target_sets: options.target_sets ?? null, order_index: options.order_index ?? null });
+  const replay = await findExerciseGroupReceipt(db, userId, attribution.actor, key);
+  if (replay) return replay;
+  if (plan.version !== options.expected_version) return { conflict: true, current_version: plan.version };
+  const tree = await getPlanTree(db, userId);
+  if (!tree || tree.id !== plan.id || tree.version !== plan.version) {
+    return { conflict: true, current_version: tree?.version ?? plan.version };
+  }
+  const day = tree.days.find((day) => day.id === dayId);
+  if (!day) return { error: 'day_not_found' };
+  if (tree.days.some((day) => day.id !== dayId && day.exercises.some((slot) => slot.group_id === groupId))) {
+    return { error: 'group_conflict', fields: ['group_id'] };
+  }
+  const selected = memberIds.map((id) => day.exercises.find((slot) => slot.id === id));
+  if (selected.some((slot) => !slot)) return { error: 'group_conflict', fields: ['members'] };
+  if (selected.some((slot) => slot!.group_id != null && slot!.group_id !== groupId)) {
+    return { error: 'group_conflict', fields: ['group_id'] };
+  }
+  const memberSet = new Set(memberIds);
+  const positions = day.exercises.filter((slot) => memberSet.has(slot.id)).map((slot) => slot.order_index).sort((a, b) => a - b);
+  let proposed = day.exercises.map((slot) => {
+    const index = memberIds.indexOf(slot.id);
+    if (index !== -1) return { ...slot, group_id: groupId, group_rest_seconds: options.round_rest,
+      group_transition_seconds: transition, target_sets: options.target_sets ?? slot.target_sets,
+      order_index: positions[index]! };
+    return slot.group_id === groupId ? { ...slot, ...emptyExerciseGroup } : slot;
+  });
+  if (options.order_index !== undefined) {
+    const others = proposed.filter((slot) => !memberSet.has(slot.id));
+    const members = memberIds.map((id) => proposed.find((slot) => slot.id === id)!);
+    const target = Math.min(options.order_index, others.length);
+    proposed = [...others.slice(0, target), ...members, ...others.slice(target)]
+      .map((slot, index) => ({ ...slot, order_index: index }));
+  }
+  const groupInvalid = validateExerciseGroups(proposed);
+  if (groupInvalid) return groupInvalid;
+  for (const slot of proposed.filter((slot) => memberSet.has(slot.id) || day.exercises.find((old) => old.id === slot.id)?.group_id === groupId)) {
+    let progression: unknown;
+    try { progression = slot.progression == null ? null : JSON.parse(slot.progression); }
+    catch { return { error: 'invalid_fields', fields: ['progression'] }; }
+    const invalid = validateExercisePrescription({ ...slot, progression }, { modality: slot.exercise_modality });
+    if (invalid) return invalid;
+  }
+  const changed = proposed.filter((slot) => {
+    const old = day.exercises.find((old) => old.id === slot.id)!;
+    return slot.group_id !== old.group_id || slot.group_rest_seconds !== old.group_rest_seconds
+      || slot.group_transition_seconds !== old.group_transition_seconds || slot.target_sets !== old.target_sets
+      || slot.order_index !== old.order_index;
+  });
+  const result: ExerciseGroupAcknowledgement = { ok: true, plan_id: plan.id,
+    version: plan.version + (changed.length ? 1 : 0), group_id: groupId, day_id: dayId,
+    members: memberIds, round_rest: options.round_rest, transition_rest: transition,
+    target_sets: proposed.find((slot) => slot.id === memberIds[0])!.target_sets, cleared: false };
+  if (!changed.length) return { ...result, unchanged: true };
+  return commitExerciseGroup(db, plan, changed, result, key, attribution);
+}
+
+export async function clearGroup(
+  db: D1Database, userId: string, groupId: string, expectedVersion: number,
+  attribution: PlanWriteAttribution = { actor: 'system', operation: 'ungroup_exercises' },
+  scopeDayId?: string,
+): Promise<ExerciseGroupResult> {
+  const fields: string[] = [];
+  if (!isGroupId(groupId)) fields.push('group_id');
+  if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) fields.push('expected_version');
+  if (fields.length) return { error: 'invalid_fields', fields };
+  const plan = await getActivePlan(db, userId);
+  if (!plan) return { error: 'no_active_plan' };
+  const key = JSON.stringify({ kind: 'clear', plan_id: plan.id, group_id: groupId, expected_version: expectedVersion });
+  const replay = await findExerciseGroupReceipt(db, userId, attribution.actor, key);
+  if (replay) return scopeDayId !== undefined && replay.day_id !== scopeDayId
+    ? { error: 'group_conflict', fields: ['group_id'] } : replay;
+  if (plan.version !== expectedVersion) return { conflict: true, current_version: plan.version };
+  const tree = await getPlanTree(db, userId);
+  if (!tree || tree.id !== plan.id || tree.version !== plan.version) return { conflict: true, current_version: tree?.version ?? plan.version };
+  if (scopeDayId !== undefined && !tree.days.some((day) => day.id === scopeDayId)) return { error: 'day_not_found' };
+  const members = tree.days.flatMap((day) => day.exercises.filter((slot) => slot.group_id === groupId));
+  if (scopeDayId !== undefined && members.some((slot) => slot.day_template_id !== scopeDayId)) {
+    return { error: 'group_conflict', fields: ['group_id'] };
+  }
+  const changed = members.map((slot) => ({ ...slot, ...emptyExerciseGroup }));
+  for (const slot of changed) {
+    let progression: unknown;
+    try { progression = slot.progression == null ? null : JSON.parse(slot.progression); }
+    catch { return { error: 'invalid_fields', fields: ['progression'] }; }
+    const invalid = validateExercisePrescription({ ...slot, progression }, { modality: slot.exercise_modality });
+    if (invalid) return invalid;
+  }
+  const candidate = tree.days.map((day) => ({ ...day, exercises: day.exercises.map((slot) => slot.group_id === groupId ? { ...slot, ...emptyExerciseGroup } : slot) }));
+  const groupInvalid = validatePlanExerciseGroups(candidate);
+  if (groupInvalid) return groupInvalid;
+  const result: ExerciseGroupAcknowledgement = { ok: true, plan_id: plan.id,
+    version: plan.version + (changed.length ? 1 : 0), group_id: groupId,
+    day_id: members[0]?.day_template_id ?? scopeDayId ?? null, members: [], round_rest: null,
+    transition_rest: null, target_sets: null, cleared: true };
+  if (!changed.length) return { ...result, unchanged: true };
+  return commitExerciseGroup(db, plan, changed, result, key, attribution);
 }
