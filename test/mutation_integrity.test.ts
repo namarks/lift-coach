@@ -196,6 +196,7 @@ describe('REST session and set bodies are runtime-validated before writes', () =
       .prepare("SELECT COUNT(*) AS count FROM sessions WHERE date = '123'")
       .first<{ count: number }>();
     expect(numericDateRows?.count).toBe(0);
+    await expectDecodableSets();
   });
 
   it('rejects malformed session changes without updating the row', async () => {
@@ -214,6 +215,7 @@ describe('REST session and set bodies are runtime-validated before writes', () =
       .bind(session.id)
       .first<{ perceived_fatigue: number | null; notes: string | null }>();
     expect(unchangedSession).toEqual({ perceived_fatigue: null, notes: null });
+    await expectDecodableSets();
   });
 
   it('rejects malformed and oversized sets and keeps /api/state rows decodable', async () => {
