@@ -13,13 +13,14 @@ slot, and an ungrouped workout behaves exactly as it does today.
 
 ## Why this is a model change
 
-A slot (`template_exercises`) carries its own `order_index`, `target_sets`,
-and `rest_seconds`, and nothing ties two slots together. The runner keeps one
+Before this work, a slot (`template_exercises`) carried its own `order_index`,
+`target_sets`, and `rest_seconds`, and nothing tied two slots together. The
+runner keeps one
 `exerciseIndex`, performs every set of that slot, and calls `startRest` after
 each one (`SyncModel.swift`). There is no superset, circuit, or grouping
-concept in the schema, the service layer, the MCP tools, or either iOS
-editor. A warm-up of alternating push-ups and squats therefore cannot be
-expressed by anyone, and the closest workaround (two slots with
+concept in either iOS editor yet. P0 supplies the shared group model and coach
+authoring; the remaining runner/editor work makes an alternating warm-up
+executable in the app. The former workaround (two slots with
 `rest_seconds = 0`) still performs all push-up sets before the first squat.
 
 This plan is separate from the workout library and the multi-session work:
@@ -28,7 +29,7 @@ workout is sequenced inside the runner.
 
 ## Phases
 
-- [ ] **P0 — Group model, serialization, and coach authoring**
+- [x] **P0 — Group model, serialization, and coach authoring**
   - Use prescription-integrity's runtime validation and atomic version/audit
     boundary. Group create/rewrite/clear take the current expected plan version;
     concurrent membership or reorder edits conflict explicitly. Creation-key
@@ -135,7 +136,7 @@ workout is sequenced inside the runner.
 
 ## Execution frontier
 
-- P0
+- P1
 
 ## Dependencies
 
@@ -156,23 +157,34 @@ integrated main before P1/P2 edits to SyncModel, the runner or editors.
 
 ## Next step
 
-**Now (@agent):** Complete P0 in parallel with app-quality-and-maintainability,
-then rebase onto its completed iOS foundation and continue P1/P2.
+**Now (@agent):** Implement P1/P2 on the completed P0 and app-quality foundation.
+The shared refactor landed in [PR #156](https://github.com/namarks/tres-fort/pull/156)
+at `5420bcd0c87ed17029af993a8dfbcb6c4cb054ce`; its reviewed tree and P0 ancestry
+were verified before this branch's rebase. Keep runner, API/cache, and
+editor/presentation ownership explicit through implementation and verification.
 The September 8 owner instruction authorizes execution through required review
 and verification until human input is necessary.
-P0 is backend and MCP only, so Claude can author supersets before the runner
-change ships; until P1 lands, iOS receives the compatibility view (group
-columns omitted, round rest on every member), which is safe but not useful on
-the gym floor.
+P0 supplies backend and MCP support. A separately authorized backend release
+must apply migration 0044 before deployment. Clients without the `groups`
+capability receive the sequential compatibility view: group columns omitted
+and round rest on every member. P1/P2 add app execution and authoring.
 
 ## Notes / open questions
 
+- P0 landed in [PR #155](https://github.com/namarks/tres-fort/pull/155) at
+  `d39214a656532c8f9014f720745c45471adce9a5`. The fetched integration tree exactly
+  matches reviewed head `c3458cbb42456ca1f848293fd9f3ad3b8ed9bec9`; independent
+  local/GitHub reviews, all resolved threads and
+  [required CI](https://github.com/namarks/tres-fort/actions/runs/34314662478)
+  passed. The final retry repair also passed 80 focused group/API/snapshot/MCP/
+  OAuth tests. This is repository delivery; migration, deployment, iOS release
+  and real training-plan changes remain outside the authorized scope.
 - P0 implementation and compatibility choices are described in the
-  [grouping contract](decisions.md). The isolated backend slice owns the group
-  service, serializer, migration, REST/MCP wrappers and focused tests.
-  App-quality-and-maintainability retains iOS runner/editor/persistence ownership
-  until its overlapping refactors merge. P0 remains current until required
-  review, CI and repository delivery are verified.
+  [grouping contract](decisions.md).
+  The overlapping app-quality refactors are merged. The runner slice owns
+  SyncModel and runner recovery; the client slice owns Models, APIClient and
+  StateSnapshotStore; the lead owns editor/presentation, synthetic journeys and
+  canonical documentation. Tests are assigned with their owning slice.
 
 - [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
   supplies variation replacement and comparable metrics. Reuse the shared
