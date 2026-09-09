@@ -112,5 +112,5 @@ The backend migration is additive and must be applied before deploying code
 that selects its columns. The current repository work does not authorize a
 production migration, deployment, TestFlight upload, or mutation of a real
 training plan. Use synthetic integration and simulator evidence for repository
-verification. The canonical plan retains execution status and cross-task
-ownership; this document describes the stable contract only.
+verification. The completed plan retains delivery evidence and the cross-task
+ownership boundary; this document describes the stable contract only.

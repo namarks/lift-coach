@@ -230,13 +230,16 @@ struct EditWorkoutSheet: View {
                     .accessibilityIdentifier("editor.group.\(block.letter ?? "")")
                 if block.isWarmup { WarmupTag() }
                 if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 8) }
-                Button("Edit group") {
+                Button {
                     guard let version = sync.plan?.version, let groupID = block.groupID else { return }
                     editingGroup = ExerciseGroupEditTarget(id: groupID, members: block.members,
                         version: version, isExisting: true)
+                } label: {
+                    Text("Edit group")
+                        .font(Theme.mono(12, .bold)).foregroundStyle(Theme.accent)
+                        .frame(minHeight: 44)
+                        .contentShape(Rectangle())
                 }
-                .font(Theme.mono(12, .bold)).foregroundStyle(Theme.accent)
-                .frame(minHeight: 44)
                 .buttonStyle(.plain)
                 .accessibilityLabel("Edit \(block.title)")
                 .disabled(selectingGroup)
@@ -284,6 +287,8 @@ struct EditWorkoutSheet: View {
                     if ex.isWarmup { WarmupTag() }
                     Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)).foregroundStyle(Theme.dim)
                 }
+                .frame(minHeight: 44)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .disabled(selectingGroup)

@@ -284,7 +284,7 @@ cache even when the plan version has not changed. Without the request capability
 state/active-plan reads and the embedded restore plan omit
 group fields and project round rest onto every member's ordinary rest. MCP
 receives canonical values with A1/A2 annotations and both rests in coach reads.
-See the [grouping contract](plans/supersets-and-circuits/decisions.md) for the
+See the [grouping contract](plans/completed/supersets-and-circuits/decisions.md) for the
 versioned write and retry details.
 
 Migration `0040` adds `plan_snapshots`. A legacy plan's first accepted edit
