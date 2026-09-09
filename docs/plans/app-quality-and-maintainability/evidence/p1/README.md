@@ -25,7 +25,7 @@ The required suite uses the current iPhone 17, normal text sizes, Xcode 26.3
 (17C529), XcodeGen 2.45.3 and iOS 26.2 (23C52), through the
 [verification command](../../../../IOS-VERIFICATION.md). It covers the P0
 fixtures plus onboarding, decimal keyboard entry, rest completion and correction
-recovery. Native audits check hit regions, descriptions and clipped text in four
+recovery. Native audits check hit regions and descriptions in four
 visible entry/runner viewports. Contrast has the separate policy checks below.
 
 Earlier SE/extreme-text investigation informed the retained usability fixes.
@@ -33,7 +33,7 @@ Per the September 8 owner steering, it is not part of the delivery matrix and
 no further exhaustive older-device/extreme-font testing is required. Captures
 and results retained here prioritize the normal-size current-device journey.
 
-The complete run passed **322 unit tests and 16 UI tests**. The retained
+The captured baseline at `2a6fbd9` passed **322 unit tests and 16 UI tests**. The retained
 [sources.json](sources.json) identifies the exact copied iOS sources. Screenshots
 are synthetic observations, not pixel baselines.
 
@@ -66,9 +66,15 @@ It also checks black primary-action text on amber. These tests check resolved
 opaque colors, not the composition of every possible view or an opacity change.
 The native contrast heuristic is excluded from CI assertions, with no per-label
 exception list. Its observed warnings remain diagnostic evidence and require
-visual review; target-size, description and clipping audits still fail normally.
+visual review; target-size and description audits still fail normally.
 Future toolchain
 updates should re-evaluate whether the native contrast check is reliable here.
+
+The native clipping audit also probes larger Dynamic Type settings even when
+the launched viewport is normal-sized. It is excluded from the required suite
+under the owner's normal-text priority; normal-size screenshots and behavioral
+reachability checks remain. Fixture views inherit the system text setting unless
+a manual fixture override is explicitly requested.
 
 ## Limits and optional observations
 

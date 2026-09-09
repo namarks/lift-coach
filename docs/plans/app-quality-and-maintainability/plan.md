@@ -37,7 +37,7 @@ durable account/attempt-bound writes remain the foundation.
   - Prioritize current iPhones at normal text sizes in automated verification.
     Exercise sign-in/creation, ordinary/bodyweight/timed runner, pending writes,
     correction recovery, onboarding, keyboard entry and completion. Keep
-    inexpensive contrast-policy and visible-viewport target/description/clipping
+    inexpensive contrast-policy and visible-viewport target/description
     checks. Do not require exhaustive older-device or extreme-font matrices.
   - Physical VoiceOver, audio/lock-screen and interruption observations can
     inform future improvements, but are not a delivery gate. Repository

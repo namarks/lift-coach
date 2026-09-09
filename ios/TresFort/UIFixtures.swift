@@ -45,6 +45,7 @@ enum UIFixtureModel {
 }
 
 struct UIFixtureView: View {
+    @Environment(\.dynamicTypeSize) private var systemDynamicTypeSize
     @ObservedObject var auth: AuthModel
     let scenario: UIFixtureScenario
     @StateObject private var sync: SyncModel
@@ -75,7 +76,7 @@ struct UIFixtureView: View {
         .tint(Theme.accent)
         .environment(\.openURL, OpenURLAction { _ in .discarded })
         .environment(\.dynamicTypeSize,
-            ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : .large)
+            ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : systemDynamicTypeSize)
         .task {
             guard scenario != .signIn else { return }
             await sync.load()

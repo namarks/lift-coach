@@ -60,7 +60,8 @@ The Debug simulator build accepts `TRESFORT_UI_FIXTURE` through its launch
 environment. Available cases are `sign-in`, `empty`, `load-failure`, `ordinary`,
 `bodyweight`, `timed`, `pending`, `correction-failure`, `ready-to-finish`, and
 `onboarding`. Add `TRESFORT_UI_LARGE_TEXT=1` for the largest accessibility text
-size; ordinary fixture launches use `.large`. The synthetic banner stays at its
+size; otherwise fixture launches inherit the simulator system setting (normally
+`.large`). The synthetic banner stays at its
 ordinary size so it does not take space from the product under test. This
 root-view override alone does not prove presented-sheet scaling; use the
 optional system setting for a specific investigation when needed.
@@ -93,7 +94,7 @@ fallback when `/api/me` is unavailable. Open-URL actions are discarded in every
 fixture; provider connection routes fail closed. UI tests additionally cover
 onboarding, exact decimal entry with the keyboard, rest completion,
 correction recovery, and reachability of the remaining fixtures. XCTest audits
-check hit regions, descriptions, and text clipping in the visible
+check hit regions and descriptions in the visible
 entry/runner viewports. Resolved palette colors have deterministic AA contrast
 checks. The native iOS 26.2 contrast heuristic produced false positives over the
 dark gradient; [measured evidence](plans/app-quality-and-maintainability/evidence/p1/README.md#contrast-verification)
