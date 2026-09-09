@@ -165,6 +165,13 @@ REST/MCP structure parity, physical-set logging and summary assertions. Runner
 tests additionally cover three-member circuits, timed holds, offline/reversed
 acknowledgements, skip, cold recovery, retries and deletion boundaries.
 
+The required UI scope is current iPhones at normal text size, following the
+completed app-quality plan. An additional maximum Dynamic Type probe did not
+complete: the enlarged selection footer obscured a test target, and a gesture
+confined to the visible list then stopped at the enlarged group-rest form.
+That extreme-size journey remains unverified; this closeout makes no claim
+of physical-device VoiceOver or lock-screen/audio verification.
+
 The completion PR records exact-head independent review and terminal success
 for all three required CI jobs. P1/P2's checked phases and this archive land
 atomically with that implementation.
