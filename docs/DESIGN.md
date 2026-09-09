@@ -330,7 +330,7 @@ Claude context-aware with zero tool calls.
   to today, creates a session, or substitutes completion. A stale attempt is
   rejected, and an identical retry adds no second discard audit.
 - `add_note({scope, ref_id?, body})`
-- `update_plan({plan:<full tree>, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies). The version is required when the current tree contains groups or the request explicitly supplies group fields, including nulls.
+- `update_plan({name?, meta?, days, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies). The version is required when the current tree contains groups or the request explicitly supplies group fields, including nulls.
 - `update_exercise({target, patch})` → one slot (`target` = template_exercise_id or {day, exercise}).
 - `group_exercises({day, group_id, expected_version, exercises, round_rest, transition_rest?, target_sets?, order_index?})` → create/rewrite or move a group atomically. Use a caller-generated UUID and slot IDs for durable retries; unambiguous exercise names/aliases are also accepted.
 - `ungroup_exercises({group_id, expected_version})` → clear every member's group fields while preserving ordinary rests, through the same version and exact-retry boundary.
