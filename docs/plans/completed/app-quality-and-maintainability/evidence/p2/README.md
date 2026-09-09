@@ -100,8 +100,8 @@ follow-up limits categorical date-axis labels to three representative dates
 while retaining every plotted point. Both history journeys passed again; the
 linked detail captures come from that follow-up, whose [source manifest](sources-ui.json)
 and [raw wall samples](ui-chart-labels.json) are retained separately. Only
-`HistoryView.swift` differs between these two iOS source manifests. The final
-commit also removes a trailing blank line from `StateSnapshotStore.swift`.
+`HistoryView.swift` differs between these two iOS source manifests. Later
+persistence/recovery changes are covered by the reviewed-fix manifest below.
 
 ## Bounded changes and remaining costs
 
@@ -178,10 +178,18 @@ an unusable browse cache and retains the existing full-reload ordering guard.
 Regression coverage exercises a real incompressible oversized fallback,
 replacement-model behavior, stale request/ACK rejection and explicit full
 reload. A saturated revision separately proves the outbox survives when neither
-the snapshot nor its marker can advance. All **328 unit tests** passed after
-this fix; [the copied-source manifest](sources-review-fix.json) records that run.
+the snapshot nor its marker can advance. All **329 unit tests** passed after
+the review fixes; [the copied-source manifest](sources-review-fix.json) records that run.
 The earlier full-suite run retains the 18 UI journeys and measurements above;
 the PR reruns the complete suite for the exact reviewed final head.
+
+A successful live response that cannot be packed now commits a small
+invalidation marker at the same request revision and returns the merged rows
+for current presentation. This preserves catalog follow-up and request ordering;
+the next pull uses zero cursors. Cold/offline browsing is unavailable for that
+oversized envelope, but repeated successful online refreshes remain usable.
+Older request tickets and delayed ACK fallbacks cannot recreate stale cache
+rows. This does not trim the server history or bypass account/attempt guards.
 
 ## Investigation budgets
 

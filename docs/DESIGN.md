@@ -562,7 +562,11 @@ does not cache write authority or skip revision/attempt/tombstone checks.
 Large snapshot envelopes use a versioned lossless LZFSE wrapper so their
 UserDefaults Data values stay below the observed 4 MiB platform boundary. Small
 and legacy plain JSON still decode; codec or size failures retain existing
-failed-save behavior. No rows are trimmed.
+failed-save behavior. A live response that cannot be packed still renders after
+a small durable invalidation marker commits at its request revision; future
+requests reload fully and offline browsing waits for a cacheable response.
+Corrections retire only after a snapshot or durable invalidation marker is
+stored. No server rows are trimmed.
 Serialization remains synchronous on the main actor and proportional to retained
 history; incremental network pulls do not make it constant-cost. See the
 [measured client evidence](plans/completed/app-quality-and-maintainability/evidence/p2/README.md)

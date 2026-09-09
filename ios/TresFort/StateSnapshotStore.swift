@@ -246,8 +246,21 @@ enum StateSnapshotStore {
             mutationGeneration: ticket.mutationGeneration,
             watermarks: nextWatermarks,
             setsCommittedThrough: response.server_time)
-        guard write(stored, userID: ticket.userID, defaults: defaults) else {
-            return nil
+        if !write(stored, userID: ticket.userID, defaults: defaults) {
+            // Cache encodability must not hide an authoritative live response.
+            // Commit a small browse-cache invalidation at this request's own
+            // revision, then return the merged rows for current presentation.
+            // The next request is full; stale requests/ACK fallbacks remain
+            // fenced out, and no cursor claims these rows survived relaunch.
+            let marker = StoredStateSnapshot(
+                revision: ticket.revision, state: nil, invalidated: true,
+                latestFullRequestRevision: ticket.revision,
+                mutationGeneration: ticket.mutationGeneration,
+                watermarks: nil, setsCommittedThrough: nil)
+            guard write(marker, userID: ticket.userID, defaults: defaults) else { return nil }
+            return StateSnapshotValue(
+                revision: ticket.revision, state: state,
+                watermarks: nil, setsCommittedThrough: nil)
         }
         return StateSnapshotValue(
             revision: ticket.revision,

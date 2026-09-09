@@ -10001,16 +10001,7 @@ extension SetOutboxTests {
         XCTAssertEqual(StateSnapshotStore.load(userID: "user-a", defaults: defaults)?.state.sets.first?.weight, 135)
     }
 
-    func testCorrectionPackingFailurePersistsInvalidationBeforeRetiringIntent() async throws {
-        let defaults = defaults(), ex = exercise()
-        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
-        let api = SetWriteAPIStub()
-        api.correctionHandler = { [self] intent, _ in corrected(original, intent: intent, session: active) }
-        let sharedAuth = retainedAuth(defaults: defaults)
-        let model = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
-        model.replaceState(with: state(session: active, sets: [original], exercise: ex))
-        // Exercise the real codec's size failure without asking UserDefaults
-        // to store an invalid value. The mounted model supplies the fallback.
+    private func incompressiblePlan(_ ex: TemplateExercise) -> PlanTree {
         var generator: UInt64 = 0x123456789abcdef
         var noise = Data(count: 5 * 1_024 * 1_024)
         noise.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
@@ -10021,8 +10012,21 @@ extension SetOutboxTests {
                 bytes[index] = UInt8(truncatingIfNeeded: generator)
             }
         }
-        let hugePlan = PlanTree(id: "plan-a", name: "Plan A", version: 1,
+        return PlanTree(id: "plan-a", name: "Plan A", version: 1,
             days: [day(with: [ex])], meta: noise.base64EncodedString())
+    }
+
+    func testCorrectionPackingFailurePersistsInvalidationBeforeRetiringIntent() async throws {
+        let defaults = defaults(), ex = exercise()
+        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
+        let api = SetWriteAPIStub()
+        api.correctionHandler = { [self] intent, _ in corrected(original, intent: intent, session: active) }
+        let sharedAuth = retainedAuth(defaults: defaults)
+        let model = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [original], exercise: ex))
+        // Exercise the real codec's size failure without asking UserDefaults
+        // to store an invalid value. The mounted model supplies the fallback.
+        let hugePlan = incompressiblePlan(ex)
         XCTAssertNil(StateSnapshotStore.encodedEnvelope(try JSONEncoder().encode(hugePlan)))
         model.plan = hugePlan
         StateSnapshotStore.clear(userID: "user-a", defaults: defaults)
@@ -10049,6 +10053,47 @@ extension SetOutboxTests {
             fallback: state(session: active, sets: [original], exercise: ex), defaults: defaults) { $0 })
         let next = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "user-a", defaults: defaults))
         XCTAssertEqual(next.watermarks, .fullReload)
+    }
+
+    func testOversizedLiveStateRendersAndRefreshesWithoutPersistedBrowseRows() async throws {
+        let defaults = defaults(), ex = exercise()
+        let active = session(updatedAt: 100, attempt: 0)
+        let hugePlan = incompressiblePlan(ex)
+        let api = SetWriteAPIStub(), catalog = SetCatalogAPIStub()
+        api.stateHandler = { [self] _ in
+            state(session: active,
+                sets: [correctionFixture(ex, weight: api.stateCalls == 1 ? 135 : 95)],
+                days: hugePlan.days, planMeta: hugePlan.meta)
+        }
+        let sharedAuth = retainedAuth(defaults: defaults)
+        let model = SyncModel(auth: sharedAuth, setWriteAPI: api, catalogAPI: catalog,
+            defaults: defaults, now: { self.fixedDate })
+        let oldTicket = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "user-a", defaults: defaults))
+        await model.load()
+        XCTAssertEqual(model.sets.first?.weight, 135)
+        XCTAssertEqual(model.plan?.meta, hugePlan.meta)
+        XCTAssertNil(model.loadError)
+        XCTAssertFalse(model.isUsingCachedState)
+        XCTAssertNil(StateSnapshotStore.load(userID: "user-a", defaults: defaults))
+        XCTAssertFalse(StateSnapshotStore.isCurrent(oldTicket, defaults: defaults))
+        await model.loadAfterMutation()
+        XCTAssertEqual(model.sets.first?.weight, 95)
+        XCTAssertNil(model.loadError)
+        XCTAssertEqual(catalog.jwtCalls.count, 2)
+        XCTAssertEqual(api.stateWatermarkCalls, [.fullReload, .fullReload])
+        // A cold model must fetch again, then show the successful response
+        // even though its optional browse snapshot still cannot be packed.
+        let cold = SyncModel(auth: sharedAuth, setWriteAPI: api, catalogAPI: catalog,
+            defaults: defaults, now: { self.fixedDate })
+        XCTAssertTrue(cold.sets.isEmpty)
+        await cold.load()
+        XCTAssertEqual(cold.sets.first?.weight, 95)
+        XCTAssertNil(cold.loadError)
+        XCTAssertEqual(api.stateWatermarkCalls, [.fullReload, .fullReload, .fullReload])
+        let stale = state(session: active, sets: [], exercise: ex)
+        XCTAssertNil(StateSnapshotStore.commitStateResponse(stale, ticket: oldTicket, defaults: defaults))
+        XCTAssertNil(StateSnapshotStore.mergeAcknowledgement(userID: "user-a", fallback: stale,
+            defaults: defaults) { $0 })
     }
 
     func testCorrectionRetainsIntentWhenSnapshotAndInvalidationCannotAdvance() async throws {
