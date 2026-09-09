@@ -247,7 +247,7 @@ final class SyncModel: ObservableObject {
     }
     private var observedGroupProgress: [String: GroupRunnerProgress] = [:]
     private var deferredGroupRepairID: String?
-    private var lastRunnerGroupCommit: (setID: String, groupID: String, dayID: String?, date: String)?
+    private var lastRunnerGroupCommit: (groupID: String, dayID: String?, date: String)?
     private var timedSetAttempt: TimedSetAttempt?
     private var timedSetCompletionTask: Task<Void, Never>?
     private var persistedRunnerCheckpoint: WorkoutRunnerCheckpoint?
@@ -2657,7 +2657,7 @@ final class SyncModel: ObservableObject {
         guard let intent = enqueueSetIntent(
             ex, weight: weight, reps: reps, durationOverride: durationOverride, rpe: rpe
         ) else { return false }
-        lastRunnerGroupCommit = ex.group_id.map { (intent.id, $0, selectedDayID, intent.date) }
+        lastRunnerGroupCommit = ex.group_id.map { ($0, selectedDayID, intent.date) }
 
         if running {
             if let group = groupBeforeCommit {
@@ -3990,9 +3990,7 @@ final class SyncModel: ObservableObject {
         }
         if isRunnerComplete(current) {
             if let next = nextRunnerIncompleteIndex {
-                let deferredRepair = deferredGroupRepairID
-                jump(to: next)
-                deferredGroupRepairID = deferredRepair
+                selectRunnerExercise(at: next)
             } else {
                 finished = true
                 persistRunnerCheckpoint()
@@ -4013,8 +4011,7 @@ final class SyncModel: ObservableObject {
               observedGroupID == id || observedGroupProgress[id]?.members.contains(where: { $0.completedIDs.contains(intent.setID) }) == true,
               groupProgress(for: slot)?.members.contains(where: { $0.completedIDs.contains(intent.setID) }) == false,
               currentExercise?.group_id == id
-                || (lastRunnerGroupCommit?.setID == intent.setID
-                    && lastRunnerGroupCommit?.groupID == id
+                || (lastRunnerGroupCommit?.groupID == id
                     && lastRunnerGroupCommit?.dayID == selectedDayID
                     && lastRunnerGroupCommit?.date == intent.date)
         else { return }
@@ -4537,8 +4534,16 @@ final class SyncModel: ObservableObject {
 
     func jump(to index: Int) {
         guard exercises.indices.contains(index) else { return }
-        // Explicit focus supersedes a repair deferred by the cancelled hold.
+        // Explicit focus supersedes both an acknowledged deferred repair and
+        // a completed group's eligibility for a still-pending deletion ACK.
         deferredGroupRepairID = nil
+        lastRunnerGroupCommit = nil
+        selectRunnerExercise(at: index)
+    }
+
+    /// Automatic advancement retains the completed group's recovery scope.
+    private func selectRunnerExercise(at index: Int) {
+        guard exercises.indices.contains(index) else { return }
         exerciseIndex = index
         seedInputs()
         rememberGroupProgress()
@@ -4579,13 +4584,11 @@ final class SyncModel: ObservableObject {
         // Skip is a terminal decision for the rendered hold even when there is
         // no next slot and `jump` therefore never calls `seedInputs`.
         clearTimedSet()
-        let deferredRepair = deferredGroupRepairID
         let wasGrouped = currentExercise?.group_id != nil
         if let ex = currentExercise { skipped.insert(ex.id) }
         if wasGrouped {
             normalizeMountedRunnerProgress(for: todaySession?.date ?? todayString, forceGroupSelection: true)
-        } else if let next = nextIncompleteIndex { jump(to: next) } else { finished = true }
-        deferredGroupRepairID = deferredRepair
+        } else if let next = nextIncompleteIndex { selectRunnerExercise(at: next) } else { finished = true }
         repairDeferredGroupSelection()
         rememberGroupProgress()
         persistRunnerCheckpoint()
@@ -4593,12 +4596,7 @@ final class SyncModel: ObservableObject {
 
     func previous() {
         guard exerciseIndex > 0 else { return }
-        // Explicit focus supersedes a repair deferred by the cancelled hold.
-        deferredGroupRepairID = nil
-        exerciseIndex -= 1
-        seedInputs()
-        rememberGroupProgress()
-        persistRunnerCheckpoint()
+        jump(to: exerciseIndex - 1)
     }
 
     /// Non-destructive forward navigation — move to the next exercise in order
@@ -4608,12 +4606,7 @@ final class SyncModel: ObservableObject {
     /// `previous()`; the jump strip still allows arbitrary jumps.
     func next() {
         guard exerciseIndex < exercises.count - 1 else { return }
-        // Explicit focus supersedes a repair deferred by the cancelled hold.
-        deferredGroupRepairID = nil
-        exerciseIndex += 1
-        seedInputs()
-        rememberGroupProgress()
-        persistRunnerCheckpoint()
+        jump(to: exerciseIndex + 1)
     }
 
     func finishWorkout() async {
