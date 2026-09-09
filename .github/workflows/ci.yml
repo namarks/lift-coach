@@ -25,12 +25,16 @@ jobs:
           node-version: 20
       - run: npm run plans:check
 
-  ios:
-    name: iOS build + tests
+  ios-tests:
+    name: iOS tests (${{ matrix.shard }}/2)
     # Standard public-repository capacity only; never opt into a paid runner.
     if: github.event.repository.private == false
     runs-on: macos-15
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2]
     env:
       DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
       IOS_KEEP_RESULTS: '1'
@@ -53,12 +57,12 @@ jobs:
           cp -R "$generator_dir/xcodegen" "$RUNNER_TEMP/tres-fort-tools/"
           echo "$RUNNER_TEMP/tres-fort-tools/xcodegen/bin" >> "$GITHUB_PATH"
       - name: Unsigned simulator build and tests
-        run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17
+        run: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17 --ci-shard ${{ matrix.shard }}
       - name: Retain synthetic screenshots and test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ios-verification
+          name: ios-verification-${{ matrix.shard }}
           path: .artifacts/ios
           include-hidden-files: true
           retention-days: 7
@@ -66,9 +70,24 @@ jobs:
         if: always()
         run: rm -rf "$RUNNER_TEMP/tres-fort-tools"
 
-  backend:
-    name: typecheck + tests
+  ios:
+    name: iOS build + tests
+    needs: ios-tests
+    if: always() && github.event.repository.private == false
     runs-on: ubuntu-latest
+    steps:
+      - name: Require every iOS shard
+        env:
+          RESULT: ${{ needs.ios-tests.result }}
+        run: test "$RESULT" = success
+
+  backend-tests:
+    name: backend tests (${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
 
@@ -90,4 +109,15 @@ jobs:
       # D1 in the workerd runtime — no deployed Worker, no real secrets
       # (vitest.config.ts injects test values). Pure Linux runner.
       - name: Test
-        run: npm test
+        run: npm test -- --shard=${{ matrix.shard }}/3
+
+  backend:
+    name: typecheck + tests
+    needs: backend-tests
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every backend shard
+        env:
+          RESULT: ${{ needs.backend-tests.result }}
+        run: test "$RESULT" = success

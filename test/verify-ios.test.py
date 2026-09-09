@@ -33,14 +33,17 @@ if name == 'xcrun':
     elif args[:3] == ['simctl', 'list', 'devicetypes']:
         print(json.dumps({'devicetypes': [{'identifier': 'device'}]}))
     elif args[:2] == ['simctl', 'create']: print('disposable-simulator')
+    elif args[:2] == ['simctl', 'boot']: sys.exit(int(os.environ.get('MOCK_BOOT_EXIT', '0')))
+    elif args[:2] == ['simctl', 'bootstatus']: sys.exit(int(os.environ.get('MOCK_BOOTSTATUS_EXIT', '0')))
     elif args[:2] == ['simctl', 'ui']: sys.exit(int(os.environ.get('MOCK_UI_EXIT', '0')))
     elif args[:2] == ['simctl', 'delete']: sys.exit(int(os.environ.get('MOCK_DELETE_EXIT', '0')))
-elif name == 'xcodebuild' and args[0] == 'test':
+elif name == 'xcodebuild' and args[0] in ['build-for-testing', 'test-without-building']:
     result = pathlib.Path(args[args.index('-resultBundlePath') + 1])
     result.mkdir()
     (result / 'result.txt').write_text('synthetic evidence')
     print('build/test diagnostic')
-    sys.exit(int(os.environ.get('MOCK_BUILD_EXIT', '0')))
+    failure = 'MOCK_BUILD_EXIT' if args[0] == 'build-for-testing' else 'MOCK_TEST_EXIT'
+    sys.exit(int(os.environ.get(failure, '0')))
 else: print('synthetic-tool-version')
 '''
         for name in ['xcrun', 'xcodegen', 'xcodebuild', 'git']:
@@ -78,12 +81,53 @@ else: print('synthetic-tool-version')
         self.assertFalse((self.root/'.artifacts').exists())
 
     def test_test_failure_remains_failure_with_retained_evidence_and_cleanup(self):
-        self.env['MOCK_BUILD_EXIT']='65'
+        self.env['MOCK_TEST_EXIT']='65'
         result=self.run_script(['--runtime','runtime','--device','device','--only-testing','TresFortTests'])
         self.assertNotEqual(result.returncode,0)
         self.assertIn(['xcrun',['simctl','delete','disposable-simulator']],self.calls())
-        self.assertEqual(len(list((self.root/'.artifacts').rglob('result.txt'))),1)
-        self.assertIn('-only-testing:TresFortTests',next(args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test'))
+        self.assertEqual(len(list((self.root/'.artifacts').rglob('result.txt'))),2)
+        self.assertIn('-only-testing:TresFortTests',next(args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'))
+
+    def test_build_failure_retains_diagnostics_and_never_runs_tests(self):
+        self.env['MOCK_BUILD_EXIT']='65'
+        self.assertNotEqual(self.run_script().returncode,0)
+        self.assertIn(['xcrun',['simctl','delete','disposable-simulator']],self.calls())
+        self.assertFalse(any(name=='xcodebuild' and args[0]=='test-without-building' for name,args in self.calls()))
+        self.assertEqual(len(list((self.root/'.artifacts').rglob('build.log'))),1)
+
+    def test_boot_failures_remain_failures_and_clean_owned_device(self):
+        for failure in ['MOCK_BOOT_EXIT', 'MOCK_BOOTSTATUS_EXIT']:
+            with self.subTest(failure=failure):
+                self.env[failure]='1'
+                self.assertNotEqual(self.run_script().returncode,0)
+                self.assertIn(['xcrun',['simctl','delete','disposable-simulator']],self.calls())
+                self.assertFalse(any(name=='xcodebuild' and args[0]=='test-without-building' for name,args in self.calls()))
+                self.env.pop(failure)
+
+    def test_boot_overlaps_build_and_tests_reuse_same_build_and_device(self):
+        self.assertEqual(self.run_script().returncode,0)
+        calls=self.calls()
+        build=next(args for name,args in calls if name=='xcodebuild' and args[0]=='build-for-testing')
+        test=next(args for name,args in calls if name=='xcodebuild' and args[0]=='test-without-building')
+        self.assertLess(calls.index(['xcrun',['simctl','boot','disposable-simulator']]),calls.index(['xcodebuild',build]))
+        self.assertLess(calls.index(['xcodebuild',build]),calls.index(['xcrun',['simctl','bootstatus','disposable-simulator','-b']]))
+        self.assertLess(calls.index(['xcrun',['simctl','bootstatus','disposable-simulator','-b']]),calls.index(['xcodebuild',test]))
+        for option in ['-project','-scheme','-destination','-derivedDataPath']:
+            self.assertEqual(build[build.index(option)+1],test[test.index(option)+1])
+        self.assertEqual(test[test.index('-parallel-testing-enabled')+1],'NO')
+
+    def test_ci_shards_are_complementary_and_reject_extra_filters(self):
+        for shard, prefix in [('1','-skip-testing:'),('2','-only-testing:')]:
+            with self.subTest(shard=shard):
+                result=self.run_script(['--runtime','runtime','--device','device','--ci-shard',shard])
+                self.assertEqual(result.returncode,0,result.stderr)
+                args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
+                selection=[arg for arg in args if arg.startswith(('-only-testing:', '-skip-testing:'))]
+                self.assertEqual(selection,[prefix+'TresFortUITests/HistoryJourneyTests',prefix+'TresFortUITests/ExerciseGroupJourneyTests'])
+        for extra in [['--ci-shard','3'],['--ci-shard','1','--only-testing','TresFortTests']]:
+            calls_before=self.calls()
+            self.assertEqual(self.run_script(['--runtime','runtime','--device','device',*extra]).returncode,2)
+            self.assertEqual(self.calls(),calls_before)
 
     def test_system_text_setting_failure_cleans_device_without_running_tests(self):
         self.env['MOCK_UI_EXIT']='1'
@@ -91,7 +135,7 @@ else: print('synthetic-tool-version')
                                 '--content-size','accessibility-extra-extra-extra-large'])
         self.assertNotEqual(result.returncode,0)
         self.assertIn(['xcrun',['simctl','delete','disposable-simulator']],self.calls())
-        self.assertFalse(any(name=='xcodebuild' and args[0]=='test' for name,args in self.calls()))
+        self.assertFalse(any(name=='xcodebuild' and args[0]=='test-without-building' for name,args in self.calls()))
         self.assertEqual(len(list((self.root/'.artifacts').rglob('ui-settings.log'))),1)
 
     def test_cleanup_failure_is_not_a_green_run(self):

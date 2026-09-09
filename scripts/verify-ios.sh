@@ -3,20 +3,22 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
-  echo 'Usage: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17 [--only-testing Target[/Class[/method]]] [--content-size accessibility-extra-extra-extra-large]'
+  echo 'Usage: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17 [--only-testing Target[/Class[/method]] | --ci-shard 1|2] [--content-size accessibility-extra-extra-extra-large]'
 }
 runtime=''
 device=''
 content_size=''
+ci_shard=''
 test_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --runtime|--device|--only-testing|--content-size)
+    --runtime|--device|--only-testing|--content-size|--ci-shard)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { usage >&2; exit 2; }
       case "$1" in
         --runtime) runtime="$2" ;;
         --device) device="$2" ;;
         --content-size) content_size="$2" ;;
+        --ci-shard) ci_shard="$2" ;;
         --only-testing) test_args+=("-only-testing:$2") ;;
       esac
       shift 2 ;;
@@ -25,6 +27,18 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$runtime" && -n "$device" ]] || { usage >&2; exit 2; }
+if [[ -n "$ci_shard" ]]; then
+  [[ "$ci_shard" == 1 || "$ci_shard" == 2 ]] || { usage >&2; exit 2; }
+  [[ ${#test_args[@]} -eq 0 ]] || { echo '--ci-shard cannot be combined with --only-testing' >&2; exit 2; }
+  # Shard 1 runs the complement, so new tests automatically remain covered.
+  for suite in HistoryJourneyTests ExerciseGroupJourneyTests; do
+    if [[ "$ci_shard" == 1 ]]; then
+      test_args+=("-skip-testing:TresFortUITests/$suite")
+    else
+      test_args+=("-only-testing:TresFortUITests/$suite")
+    fi
+  done
+fi
 for tool in xcodegen xcodebuild xcrun python3; do
   command -v "$tool" >/dev/null || { echo "Required tool missing: $tool" >&2; exit 1; }
 done
@@ -90,26 +104,38 @@ PY
   xcodegen --version
   echo "Runtime: $runtime"
   echo "Device type: $device"
+  echo "CI shard: ${ci_shard:-full or focused}"
+  printf 'Test selection: %s\n' ${test_args[@]+"${test_args[@]}"}
   git -C "$repo_root" rev-parse HEAD
   git -C "$repo_root" status --short
 } >"$scratch/environment.log"
 xcodegen generate --spec "$scratch/ios/project.yml" >"$scratch/xcodegen.log" 2>&1
 simulator="$(xcrun simctl create "TresFort verification $(basename "$scratch")" "$device" "$runtime")"
 echo "Verifying TresFort on $runtime / $device ($simulator)"
+xcrun simctl boot "$simulator" >"$scratch/boot.log" 2>&1
+# Let the fresh simulator finish its first boot while Xcode compiles. The
+# build and test actions share this invocation's sources and DerivedData.
+build_args=(-project "$scratch/ios/TresFort.xcodeproj" -scheme TresFort -configuration Debug
+  -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath "$scratch/DerivedData"
+  -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO)
+if ! xcodebuild build-for-testing "${build_args[@]}" \
+    -resultBundlePath "$scratch/Build.xcresult" >"$scratch/build.log" 2>&1; then
+  tail -n 100 "$scratch/build.log" >&2
+  exit 1
+fi
+if ! xcrun simctl bootstatus "$simulator" -b >>"$scratch/boot.log" 2>&1; then
+  tail -n 100 "$scratch/boot.log" >&2
+  exit 1
+fi
 if [[ -n "$content_size" ]]; then
   # Set the actual simulator preference: a root SwiftUI environment override
   # alone may not reach system controls or separately presented sheets.
-  xcrun simctl boot "$simulator" >"$scratch/ui-settings.log" 2>&1
-  xcrun simctl bootstatus "$simulator" -b >>"$scratch/ui-settings.log" 2>&1
-  xcrun simctl ui "$simulator" content_size "$content_size" >>"$scratch/ui-settings.log" 2>&1
+  xcrun simctl ui "$simulator" content_size "$content_size" >"$scratch/ui-settings.log" 2>&1
   xcrun simctl ui "$simulator" content_size >>"$scratch/ui-settings.log" 2>&1
 fi
 # Disable test cloning so every simulator this command creates has one owner.
-if ! xcodebuild test -project "$scratch/ios/TresFort.xcodeproj" \
-    -scheme TresFort -configuration Debug \
-    -destination "platform=iOS Simulator,id=$simulator" \
-    -derivedDataPath "$scratch/DerivedData" -resultBundlePath "$scratch/Tests.xcresult" \
-    -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO \
+if ! xcodebuild test-without-building "${build_args[@]}" \
+    -resultBundlePath "$scratch/Tests.xcresult" \
     ${test_args[@]+"${test_args[@]}"} >"$scratch/xcodebuild.log" 2>&1; then
   tail -n 100 "$scratch/xcodebuild.log" >&2
   exit 1

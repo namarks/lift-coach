@@ -8,10 +8,13 @@ npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --de
 ```
 
 The command copies iOS sources to a disposable directory, generates the project
-there, creates a new simulator, and runs unsigned `xcodebuild test` using the
+there, creates a new simulator, and runs unsigned `xcodebuild build-for-testing`
+followed by `xcodebuild test-without-building` using the
 **TresFort** scheme. It includes the widget build, existing unit tests, shared
-numerical/calendar contracts, and `TrainingJourneyTests`. It neither needs nor
-uses signing credentials. It does not migrate D1, deploy a Worker, or upload an
+numerical/calendar contracts, and all UI journeys. Simulator boot overlaps the
+build; boot readiness is required before tests start. Both actions use the same
+copied sources, project, destination, and disposable DerivedData. It neither
+needs nor uses signing credentials. It does not migrate D1, deploy a Worker, or upload an
 app. Existing simulator data, generated projects, and build directories are not
 reused. Parallel test cloning is disabled so the command owns every simulator
 it creates. Its exit status fails if building/testing or simulator deletion fails.
@@ -26,6 +29,13 @@ For a focused check, append `--only-testing TresFortTests/CalendarProjectionTest
 or `--only-testing TresFortUITests/TrainingJourneyTests`. A focused result does
 not substitute for the full suite before merging an iOS change.
 
+CI uses `--ci-shard 1` and `--ci-shard 2` on separate standard runners. Shard 2
+runs `HistoryJourneyTests` and `ExerciseGroupJourneyTests`; shard 1 runs everything
+else, including all unit tests and `TrainingJourneyTests`. The selectors are
+complements, so newly added tests join shard 1 automatically. Sharding cannot be
+combined with `--only-testing`. Without either argument the command still runs
+the full suite locally.
+
 CI prioritizes the current iPhone 17 layout and normal text sizes. The optional
 `--content-size` argument can set a simulator system preference for a focused
 investigation; it is not a required older-device or extreme-text matrix.
@@ -35,9 +45,9 @@ A rejected setting fails the command and still cleans up.
 ## Evidence and cleanup
 
 Build copies, DerivedData, and the created simulator are deleted on success,
-failure, and interrupt. Failure retains `xcodebuild.log`, environment/toolchain
-identity, copied-source SHA-256 manifest, runtime inventories, cleanup diagnostics,
-and `Tests.xcresult` under
+failure, and interrupt. Failure retains `build.log`, `boot.log`, `xcodebuild.log`,
+environment/toolchain identity, copied-source SHA-256 manifest, runtime inventories, cleanup diagnostics,
+and any available `Build.xcresult` / `Tests.xcresult` under
 `.artifacts/ios/<unique-run>/`. Set `IOS_KEEP_RESULTS=1` to retain successful results
 and their synthetic screenshot attachments too. `IOS_EVIDENCE_DIR` may select a
 different durable output directory. These artifacts are ignored by Git. The
@@ -107,22 +117,35 @@ expectations for reps, timed holds, assistance, unilateral, and loaded metrics.
 
 ## CI and merge evidence
 
-CI runs `plan graph`, `iOS build + tests`, and `typecheck + tests`. The iOS job
-uses the public repository's standard `macos-15` runner, Xcode 26.3, iOS 26.2,
-and checksum-pinned XcodeGen 2.45.3. It does not use paid large runners. The job
-is disabled for a private repository; enabling private capacity requires an
+CI retains the `plan graph`, `iOS build + tests`, and `typecheck + tests` check
+names. The latter two aggregate every shard and fail for failed, cancelled, or
+unexpectedly skipped shard jobs. Both matrices use `fail-fast: false` so a
+failure in one shard does not cancel coverage in another. The iOS jobs
+use the public repository's standard `macos-15` runner, Xcode 26.3, iOS 26.2,
+and checksum-pinned XcodeGen 2.45.3. They do not use paid large runners. The jobs
+are disabled for a private repository; enabling private capacity requires an
 explicit capacity decision. Toolchain changes should update this document and
 the workflow together. A missing pinned toolchain must fail, not silently select
 another runtime. The source image can evolve, so the environment log records
 what actually ran.
 
-CI uploads synthetic results with a seven-day artifact retention. No production
-credentials or account data are supplied to these jobs. Dependency installation
+CI uploads `ios-verification-1` and `ios-verification-2` synthetic results with a
+seven-day artifact retention. No production credentials or account data are
+supplied to these jobs. Dependency installation
 and GitHub action permissions follow the existing repository workflow.
+
+Backend CI runs three Vitest file shards with `npm test -- --shard=N/3`.
+Every shard also runs typechecking, verification-command regressions, upload
+script checks, and query-plan checks. `singleWorker: true` and
+`isolatedStorage: true` remain in force within each shard: suite seeds and
+per-test rollback retain the same semantics. Plain `npm test` still runs all
+backend tests locally. CI sharding increases concurrent standard runner use
+and duplicates iOS compilation; it reduces elapsed wait rather than total
+build work. No test timeout, assertion, or production behavior changes.
 
 As verified September 8, 2026, GitHub branch protection requires only
 `typecheck + tests`. This change does not modify branch protection. For work
-changing iOS, all three jobs and the current-head independent review must pass
+changing iOS, every shard, aggregate check, the plan graph, and the current-head independent review must pass
 before merge; backend green alone is insufficient. Making the additional check
 names enforced repository settings requires separate repository authority.
 
