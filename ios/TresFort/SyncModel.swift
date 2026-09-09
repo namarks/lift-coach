@@ -10,13 +10,13 @@ private struct SessionWriteConflictPayload: Decodable {
 /// The durable checkpoint is value-based, so a replacement model can resume
 /// to an identical value; this token closes that in-process ABA gap.
 @MainActor
-private enum RunnerArtifactOwnership {
+enum RunnerArtifactOwnership {
     private struct Key: Hashable {
         let defaults: ObjectIdentifier
         let userID: String
     }
 
-    private final class Owner {
+    final class Owner {
         weak var defaults: UserDefaults?
         let id: UUID
         let featureSessionEpoch: UInt64
@@ -25,6 +25,14 @@ private enum RunnerArtifactOwnership {
             self.defaults = defaults
             self.id = id
             self.featureSessionEpoch = featureSessionEpoch
+        }
+
+        func permitsClaim(featureSessionEpoch: UInt64, defaults: UserDefaults) -> Bool {
+            // ObjectIdentifier can be reused after the old namespace dies.
+            // Its epoch fences only that live namespace, never a new object
+            // that happens to occupy the same address.
+            guard let currentDefaults = self.defaults else { return true }
+            return currentDefaults === defaults && self.featureSessionEpoch <= featureSessionEpoch
         }
     }
 
@@ -38,11 +46,8 @@ private enum RunnerArtifactOwnership {
     ) {
         guard let userID else { return }
         let key = Key(defaults: ObjectIdentifier(defaults), userID: userID)
-        let current = owners[key]
-        guard current?.defaults === defaults || current?.defaults == nil else {
-            return
-        }
-        guard current?.featureSessionEpoch ?? 0 <= featureSessionEpoch else {
+        guard owners[key]?.permitsClaim(
+            featureSessionEpoch: featureSessionEpoch, defaults: defaults) != false else {
             return
         }
         owners[key] = Owner(
