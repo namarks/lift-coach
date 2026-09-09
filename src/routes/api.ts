@@ -2,12 +2,16 @@ import { Hono } from 'hono';
 import type { Context } from 'hono';
 import type { HonoEnv } from '../types';
 import { requireAppJwt } from '../auth';
+import { planForCapabilities, readCapabilities } from '../exerciseGroupViews';
+import { isGroupId } from '../exerciseGroups';
 import { appleProviderConfig } from '../apple';
 import {
   accountDeletionContinuationMatches,
   addDayTemplateAtVersion,
   addTemplateExercise,
   createGroup,
+  setGroup,
+  clearGroup,
   createInvite,
   createPlan,
   deleteDayTemplate,
@@ -212,15 +216,17 @@ apiRoutes.get('/state', async (c) => {
   // `activities_since` is already taken by the intervals.icu external
   // actuals cache, see migration 0015 / getState).
   const logSince = Number(c.req.query('log_since') ?? 0);
-  return c.json(
-    await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince),
-  );
+  const state = await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince);
+  return c.json({ ...state, plan: state.plan
+    ? planForCapabilities(state.plan, readCapabilities(c.req.header('X-TresFort-Capabilities')))
+    : state.plan });
 });
 
 // ---- plan tree -----------------------------------------------------------
 apiRoutes.get('/plan/active', async (c) => {
   const tree = await getPlanTree(c.env.DB, c.get('userId'));
-  return tree ? c.json(tree) : c.json({ error: 'no_active_plan' }, 404);
+  return tree ? c.json(planForCapabilities(tree, readCapabilities(c.req.header('X-TresFort-Capabilities'))))
+    : c.json({ error: 'no_active_plan' }, 404);
 });
 
 apiRoutes.get('/plan/history', async (c) => {
@@ -485,6 +491,46 @@ apiRoutes.put('/calendar/:date', async (c) => {
   return c.json(result);
 });
 
+// Group authoring always carries an observed plan version. Empty membership
+// explicitly clears a group; the service owns retry recognition and attribution.
+apiRoutes.put('/days/:id/groups', async (c) => {
+  const parsed = await readMutationBody(c);
+  if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+  const b = parsed.body;
+  const unknown = Object.keys(b).filter((key) =>
+    !['group_id', 'exercises', 'expected_version', 'round_rest', 'transition_rest', 'target_sets', 'order_index'].includes(key));
+  if (unknown.length) return c.json({ error: 'unknown_fields', fields: unknown }, 400);
+  const invalid = invalidMutationFields(b, {
+    group_id: isGroupId,
+    exercises: (value) => Array.isArray(value) && value.every(isNonEmptyString),
+    expected_version: isPositiveInteger,
+  }, { round_rest: isNonNegativeInteger, transition_rest: isNonNegativeInteger, target_sets: isPositiveInteger, order_index: isNonNegativeInteger });
+  if (invalid.length) return c.json({ error: 'invalid_fields', fields: invalid }, 400);
+  const members = b.exercises as string[];
+  const userId = c.get('userId');
+  const dayId = c.req.param('id');
+  const attribution = { actor: 'ios' as const, operation: members.length ? 'group_exercises' : 'ungroup_exercises',
+    args: b, note: members.length ? 'Grouped exercise slots.' : 'Ungrouped exercise slots.' };
+  if (members.length === 0) {
+    if (['round_rest', 'transition_rest', 'target_sets', 'order_index'].some((field) => hasOwn(b, field))) {
+      return c.json({ error: 'invalid_fields', fields: ['exercises'] }, 400);
+    }
+  } else if (!hasOwn(b, 'round_rest')) {
+    return c.json({ error: 'invalid_fields', fields: ['round_rest'] }, 400);
+  }
+  const result = members.length === 0
+    ? await clearGroup(c.env.DB, userId, b.group_id as string, b.expected_version as number, attribution, dayId)
+    : await setGroup(c.env.DB, userId, dayId, b.group_id as string, members, {
+        expected_version: b.expected_version as number, round_rest: b.round_rest as number,
+        ...(hasOwn(b, 'transition_rest') ? { transition_rest: b.transition_rest as number } : {}),
+        ...(hasOwn(b, 'target_sets') ? { target_sets: b.target_sets as number } : {}),
+        ...(hasOwn(b, 'order_index') ? { order_index: b.order_index as number } : {}),
+      }, attribution);
+  if ('conflict' in result || ('error' in result && result.error === 'group_conflict')) return c.json(result, 409);
+  if ('error' in result) return c.json(result, result.error === 'day_not_found' ? 404 : 400);
+  return c.json(result);
+});
+
 apiRoutes.post('/days/:id/exercises', async (c) => {
   const userId = c.get('userId');
   const plan = await getActivePlan(c.env.DB, userId);
@@ -510,6 +556,8 @@ apiRoutes.post('/days/:id/exercises', async (c) => {
     cues?: string | null;
     is_warmup?: boolean;
   }>();
+  const groupFields = Object.keys(b).filter((key) => ['group_id', 'group_rest_seconds', 'group_transition_seconds'].includes(key));
+  if (groupFields.length) return c.json({ error: 'unknown_fields', fields: groupFields }, 400);
   const ex = await resolveExercise(c.env.DB, b.exercise);
   if (!ex) return c.json({ error: 'unknown_exercise', query: b.exercise }, 400);
   const orderIndex =

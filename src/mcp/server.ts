@@ -3,10 +3,14 @@
 // for read tools). Stateless: no Mcp-Session-Id required. All data access
 // goes through src/db.ts, identical to REST.
 import type { Env } from '../types';
+import { coachGroupSlots, coachGroupSummary } from '../exerciseGroupViews';
+import { isGroupId } from '../exerciseGroups';
 import {
   addDayTemplateAtVersion,
   addTemplateExercise,
   addTrip,
+  setGroup,
+  clearGroup,
   adjustToday,
   deleteTemplateExercise,
   discardSession,
@@ -217,6 +221,7 @@ const TOOLS: Record<string, Tool> = {
       const meta = parsePlanMeta(tree.meta);
       return {
         ...tree,
+        days: tree.days.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })),
         schedule,
         ride_conflicts,
         race: meta.race ?? null,
@@ -313,7 +318,7 @@ const TOOLS: Record<string, Tool> = {
         date,
         session,
         sets: session ? await getSetsForSession(env.DB, session.id) : [],
-        plan_days: tree?.days ?? [],
+        plan_days: tree?.days.map((day) => ({ ...day, exercises: coachGroupSlots(day.exercises) })) ?? [],
         schedule,
         last_session: last,
         last_session_sets: last ? await getSetsForSession(env.DB, last.id) : [],
@@ -868,7 +873,7 @@ const TOOLS: Record<string, Tool> = {
   },
   update_plan: {
     description:
-      'Replace the plan tree (days + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; a mismatch returns a conflict — refetch get_current_plan and reapply. Days are matched by day_label/name across the rebuild, so the weekly schedule follows surviving days; schedule entries for removed days are cleared.',
+      'Replace the plan tree (days + exercises) transactionally. Exercise names must match the closed catalog — call list_exercises first to discover valid names (a single unknown name surfaces ALL unknowns at once in `queries: string[]`, not just the first). Pass expected_version for optimistic concurrency; it is required whenever the existing or supplied tree has group fields. A mismatch returns a conflict — refetch get_current_plan and reapply. Days are matched by day_label/name across the rebuild, so the weekly schedule follows surviving days; schedule entries for removed days are cleared.',
     inputSchema: obj(
       {
         name: { type: 'string' },
@@ -905,9 +910,77 @@ const TOOLS: Record<string, Tool> = {
         ? null
         : `Rebuilt plan: ${r.plan.days.length} day(s), v${r.plan.version}.`,
   },
+  group_exercises: {
+    description: 'Group adjacent exercise slots into a superset or circuit. Use a caller-generated group_id UUID and current expected_version. Exercises are template slot IDs (recommended, especially for repeated exercises) or unambiguous names/aliases in the selected day. Every member performs the same number of rounds. round_rest follows the last member; transition_rest defaults to zero between members. Ordinary per-slot rest is preserved. Retry the same ID, version and payload after an uncertain response; refetch on conflict.',
+    inputSchema: obj({
+      day: { type: 'string', description: 'Workout day ID, label or exact name' },
+      group_id: { type: 'string', format: 'uuid' },
+      expected_version: { type: 'integer', minimum: 1 },
+      exercises: { type: 'array', minItems: 2, items: { type: 'string' } },
+      round_rest: { type: 'integer', minimum: 0 },
+      transition_rest: { type: 'integer', minimum: 0 },
+      target_sets: { type: 'integer', minimum: 1 },
+      order_index: { type: 'integer', minimum: 0, description: 'Optional destination index for moving the entire group as a block' },
+    }, ['day', 'group_id', 'expected_version', 'exercises', 'round_rest']),
+    write: true,
+    atomicWrite: true,
+    handler: async (a, env, userId) => {
+      const unknown = Object.keys(a).filter((key) => !['day', 'group_id', 'expected_version', 'exercises',
+        'round_rest', 'transition_rest', 'target_sets', 'order_index'].includes(key));
+      if (unknown.length) return { error: 'unknown_fields', fields: unknown };
+      const fields = invalidToolFields(a, {
+        day: nonEmptyToolString, group_id: isGroupId, expected_version: positiveSafeInteger,
+        exercises: (value) => Array.isArray(value) && value.length >= 2 && value.every(nonEmptyToolString),
+        round_rest: nonNegativeSafeInteger,
+      }, { transition_rest: nonNegativeSafeInteger, target_sets: positiveSafeInteger, order_index: nonNegativeSafeInteger });
+      if (fields.length) return { error: 'invalid_fields', fields };
+      const tree = await getPlanTree(env.DB, userId);
+      if (!tree) return { error: 'no_active_plan' };
+      const matchingDays = tree.days.filter((day) => day.id === a.day || day.day_label === a.day || day.name === a.day);
+      if (matchingDays.length > 1) return { error: 'ambiguous_day' };
+      if (!matchingDays.length && !isGroupId(a.day)) return { error: 'day_not_found' };
+      const day = matchingDays[0];
+      const members: string[] = [];
+      for (const ref of a.exercises as string[]) {
+        const exact = day?.exercises.find((slot) => slot.id === ref);
+        if (exact) { members.push(exact.id); continue; }
+        // Preserve caller slot IDs through a retry even if a later rebuild
+        // removed them: receipt recognition belongs to the atomic service.
+        if (isGroupId(ref)) {
+          members.push(ref); continue;
+        }
+        const exercise = await resolveExercise(env.DB, ref);
+        if (!exercise) return { error: 'unknown_exercise', query: ref };
+        const matching = day?.exercises.filter((slot) => slot.exercise_id === exercise.id) ?? [];
+        if (matching.length !== 1) return { error: matching.length ? 'ambiguous_exercise' : 'slot_not_found', query: ref };
+        members.push(matching[0]!.id);
+      }
+      return setGroup(env.DB, userId, day?.id ?? a.day as string, a.group_id as string, members, {
+        expected_version: a.expected_version as number, round_rest: a.round_rest as number,
+        ...(hasToolField(a, 'transition_rest') ? { transition_rest: a.transition_rest as number } : {}),
+        ...(hasToolField(a, 'target_sets') ? { target_sets: a.target_sets as number } : {}),
+        ...(hasToolField(a, 'order_index') ? { order_index: a.order_index as number } : {}),
+      }, { actor: 'mcp', operation: 'group_exercises', args: a, note: 'Grouped exercise slots.' });
+    },
+  },
+  ungroup_exercises: {
+    description: 'Clear a superset or circuit by group_id and the current expected_version. All members regain their unchanged ordinary per-slot rests. An exact acknowledged retry creates no extra version or history.',
+    inputSchema: obj({ group_id: { type: 'string', format: 'uuid' },
+      expected_version: { type: 'integer', minimum: 1 } }, ['group_id', 'expected_version']),
+    write: true,
+    atomicWrite: true,
+    handler: async (a, env, userId) => {
+      const unknown = Object.keys(a).filter((key) => !['group_id', 'expected_version'].includes(key));
+      if (unknown.length) return { error: 'unknown_fields', fields: unknown };
+      const fields = invalidToolFields(a, { group_id: isGroupId, expected_version: positiveSafeInteger });
+      if (fields.length) return { error: 'invalid_fields', fields };
+      return clearGroup(env.DB, userId, a.group_id as string, a.expected_version as number,
+        { actor: 'mcp', operation: 'ungroup_exercises', args: a, note: 'Ungrouped exercise slots.' });
+    },
+  },
   update_exercise: {
     description:
-      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, target_duration_s, cues, progression, order_index, is_warmup. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
+      'Patch one plan slot. Identify it by template_exercise_id, or by day (label/name) + exercise. Patchable keys: target_sets, target_reps, target_reps_max, target_rpe, rest_seconds, target_weight, target_duration_s, cues, progression, order_index, is_warmup. Group columns are changed only through group_exercises/ungroup_exercises; grouped order and target_sets are group-owned. Unknown keys are rejected with {error:"unknown_fields", fields:[...]} — no silent drop.',
     inputSchema: obj(
       {
         template_exercise_id: { type: 'string' },
@@ -988,6 +1061,8 @@ const TOOLS: Record<string, Tool> = {
     write: true,
     atomicWrite: true,
     handler: async (a, env, userId) => {
+      const groupFields = Object.keys(a).filter((key) => ['group_id', 'group_rest_seconds', 'group_transition_seconds'].includes(key));
+      if (groupFields.length) return { error: 'unknown_fields', fields: groupFields };
       const plan = await getActivePlan(env.DB, userId);
       if (!plan) return { error: 'no_active_plan' };
       const day = await env.DB.prepare(
@@ -1623,6 +1698,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
             label: d.day_label,
             name: d.name,
             exercises: d.exercises.length,
+            groups: coachGroupSummary(d.exercises),
           })),
         }
       : null,

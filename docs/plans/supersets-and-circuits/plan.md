@@ -1,6 +1,6 @@
 # Supersets and Circuits
 
-Slug: supersets-and-circuits · Status: planned · Updated: 2026-09-07 · Theme: gym-floor
+Slug: supersets-and-circuits · Status: active · Updated: 2026-09-08 · Theme: gym-floor
 
 ## Goal
 
@@ -70,12 +70,13 @@ workout is sequenced inside the runner.
     members in one call.
   - All group writes are atomic and go through one service operation:
     `setGroup(dayId, groupId, memberIds, { expected_version, round_rest,
-    transition_rest, target_sets? })` creates or rewrites a group under a caller-generated
+    transition_rest, target_sets?, order_index? })` creates or rewrites a group under a caller-generated
     `groupId` (the shared creation-idempotency rule), and
     `clearGroup(groupId, expected_version)` nulls the three columns on every member. An exact
     retry of `setGroup` whose members and values already match returns the
     existing group without a version bump or audit row; a different member
-    list under the same id rewrites it. Both validate, bump `plans.version`
+    list under the same id rewrites it. Optional `order_index` moves all members
+    as a block to that destination in the resulting day. Both validate, bump `plans.version`
     once when something changes, audit, and write a note. The
     single-slot routes and `update_exercise` reject the three group fields
     with `unknown_fields`, so no path can change one member in isolation.
@@ -147,17 +148,29 @@ P0 uses the completed [validated atomic writer](../completed/prescription-integr
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | coordinates_with | plan:workouts-and-multi-session#P0 | Both add or rename columns on the same plan-tree tables; whichever lands second rebases onto the other's migration and serializer. |
+| P1 | coordinates_with | plan:app-quality-and-maintainability#P2 | Shared SyncModel and runner ownership; wait for overlapping refactors to merge and rebase before editing. |
+| P2 | coordinates_with | plan:app-quality-and-maintainability#P2 | Shared editor and persistence ownership; hand off after refactors land. |
 | P2 | coordinates_with | plan:workout-library#P0 | Both edit the routine and slot editors; do not run concurrently on the same iOS files. |
 
 ## Next step
 
-**Now (@owner):** Decide whether to activate P0 after the completed runner foundation.
+**Now (@agent):** Complete P0 in parallel with app-quality-and-maintainability,
+then wait for its overlapping iOS refactors to land, rebase, and continue P1/P2.
+The September 8 owner instruction authorizes execution through required review
+and verification until human input is necessary.
 P0 is backend and MCP only, so Claude can author supersets before the runner
 change ships; until P1 lands, iOS receives the compatibility view (group
 columns omitted, round rest on every member), which is safe but not useful on
 the gym floor.
 
 ## Notes / open questions
+
+- P0 implementation and compatibility choices are described in the
+  [grouping contract](decisions.md). The isolated backend slice owns the group
+  service, serializer, migration, REST/MCP wrappers and focused tests.
+  App-quality-and-maintainability retains iOS runner/editor/persistence ownership
+  until its overlapping refactors merge. P0 remains current until required
+  review, CI and repository delivery are verified.
 
 - [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
   supplies variation replacement and comparable metrics. Reuse the shared

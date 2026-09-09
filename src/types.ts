@@ -159,6 +159,9 @@ export interface DayTemplateRow {
 }
 
 export interface TemplateExerciseRow {
+  group_id?: string | null;
+  group_rest_seconds?: number | null;
+  group_transition_seconds?: number | null;
   id: string;
   day_template_id: string;
   exercise_id: string;

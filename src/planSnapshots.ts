@@ -2,6 +2,9 @@ import type { PlanTree } from './types';
 import { parsePlanMeta } from './types';
 
 export interface PlanSnapshotExercise {
+  group_id?: string | null;
+  group_rest_seconds?: number | null;
+  group_transition_seconds?: number | null;
   id: string;
   exercise_id: string;
   order_index: number;
@@ -74,6 +77,9 @@ export function serializePlanSnapshot(tree: PlanTree): PlanSnapshotDocument {
         progression: slot.progression,
         cues: slot.cues,
         is_warmup: slot.is_warmup,
+        group_id: slot.group_id ?? null,
+        group_rest_seconds: slot.group_rest_seconds ?? null,
+        group_transition_seconds: slot.group_transition_seconds ?? null,
       })),
     })),
   };
@@ -85,6 +91,12 @@ export function parsePlanSnapshot(raw: string): PlanSnapshotDocument {
   const doc = value as Partial<PlanSnapshotDocument>;
   if (doc.schema_version !== 1 || !doc.plan || !Array.isArray(doc.days)) {
     throw new Error('unsupported_plan_snapshot');
+  }
+  // Pre-group snapshots remain writable and compare as explicitly ungrouped.
+  for (const day of doc.days) for (const slot of day.exercises) {
+    slot.group_id ??= null;
+    slot.group_rest_seconds ??= null;
+    slot.group_transition_seconds ??= null;
   }
   return doc as PlanSnapshotDocument;
 }
@@ -262,8 +274,13 @@ export function comparePlanSnapshots(
       summary.exercises_added++;
     }
     for (const [old, slot] of slots.pairs) {
-      const oldComparable = { ...old, id: undefined };
-      const newComparable = { ...slot, id: undefined };
+      const comparable = (value: PlanSnapshotExercise) => {
+        const { group_id, group_rest_seconds, group_transition_seconds, ...fields } = value;
+        return { ...fields, id: undefined, group_id: group_id ?? null,
+          group_rest_seconds: group_rest_seconds ?? null, group_transition_seconds: group_transition_seconds ?? null };
+      };
+      const oldComparable = comparable(old);
+      const newComparable = comparable(slot);
       if (stable(oldComparable) !== stable(newComparable)) {
         changes.push({ kind: 'exercise', path: slotPath(day, slot, options), before: readableSlot(old, options), after: readableSlot(slot, options) });
         summary.exercises_changed++;
