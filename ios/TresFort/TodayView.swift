@@ -127,9 +127,25 @@ struct CachedStateBanner: View {
 
 private struct PendingTerminalBanner: View {
     @ObservedObject var sync: SyncModel
+    @State private var reviewingFeedback: WorkoutTerminalIntent?
 
     var body: some View {
         if let intent = sync.visibleTerminalIntent {
+            if intent.feedbackConflict != nil {
+                HStack(spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Feedback changed elsewhere").font(.headline)
+                        Text("Your version is saved on this device.").font(.caption)
+                    }
+                    Spacer()
+                    Button("Review feedback") { reviewingFeedback = intent }
+                        .frame(minHeight: 44)
+                }
+                .padding(14).background(Theme.surface).foregroundStyle(Theme.text)
+                .sheet(item: $reviewingFeedback) { item in
+                    WorkoutFeedbackConflictSheet(sync: sync, intent: item)
+                }
+            } else {
             HStack(spacing: 10) {
                 Image(systemName: intent.deliveryState == .failed
                     ? "exclamationmark.triangle.fill"
@@ -161,11 +177,13 @@ private struct PendingTerminalBanner: View {
             .padding(.horizontal, 14).padding(.vertical, 10)
             .background(Theme.surface)
             .overlay(alignment: .bottom) { Divider().overlay(Theme.surface2) }
+            }
         }
     }
 }
 
 struct TodayView: View {
+    @State private var feedbackPresentation: WorkoutFeedbackPresentation?
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
     /// Opens the shared ManualActivitySheet hosted by MainTabView so a user
@@ -279,7 +297,7 @@ struct TodayView: View {
                                 guard let target = sync.terminalActionTarget else {
                                     return
                                 }
-                                Task { await sync.finishWorkout(expected: target) }
+                                feedbackPresentation = WorkoutFeedbackPresentation(target: target)
                             }
                             .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
                             Button("Discard workout", role: .destructive) {
@@ -336,6 +354,9 @@ struct TodayView: View {
                 Button("Keep workout", role: .cancel) {}
             } message: {
                 Text("The sets you logged will be deleted and this session won't count. The day goes back to its normal schedule. This can't be undone.")
+            }
+            .sheet(item: $feedbackPresentation) { item in
+                WorkoutFeedbackSheet(sync: sync, target: item.target, finishAfterSave: true)
             }
             .sheet(item: $editTarget) { t in
                 EditWorkoutSheet(sync: sync, dayID: t.id)
@@ -611,6 +632,8 @@ private struct WorkoutDoneView: View {
                         .foregroundStyle(Theme.accent)
                     if let session = sync.sessionsByDate[sync.todayString] {
                         WorkoutSummaryView(sync: sync, sessionID: session.id)
+                        let feedback = WorkoutFeedback(notes: session.notes, perceivedFatigue: session.perceived_fatigue)
+                        if !feedback.isEmpty { SavedWorkoutFeedbackView(feedback: feedback) }
                     }
                 }
                 .padding(20)
@@ -1610,6 +1633,7 @@ private struct FinishedView: View {
                 SetReviewList(sync: sync, sets: sync.sets.filter {
                     $0.session_id == sync.todaySession?.id && $0.deleted_at == nil
                 }, pending: sync.setOutbox.pending.filter { $0.date == sync.todayString })
+                WorkoutFeedbackEntry(sync: sync)
                 Button { sync.jump(to: sync.exerciseIndex) } label: {
                     Text("Return to exercises").frame(minHeight: 44).contentShape(Rectangle())
                 }

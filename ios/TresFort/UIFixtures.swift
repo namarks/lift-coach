@@ -34,7 +34,8 @@ enum UIFixtureModel {
     static let defaults: UserDefaults = {
         let name = "com.nmarkspdx.tresfort.synthetic-ui"
         let value = UserDefaults(suiteName: name)!
-        if !(UIFixtureScenario.selected?.isHistory == true && ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_HISTORY"] == "1") {
+        if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] != "1"
+            && !(UIFixtureScenario.selected?.isHistory == true && ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_HISTORY"] == "1") {
             value.removePersistentDomain(forName: name)
         }
         return value
@@ -104,6 +105,7 @@ struct UIFixtureView: View {
         .task {
             guard scenario != .signIn, !scenario.isHistory else { return }
             await sync.load()
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
             if ![.empty, .loadFailure, .onboarding, .groups].contains(scenario) {
                 sync.startWorkout()
                 if [.readyToFinish, .correctionFailure].contains(scenario) {
@@ -154,6 +156,7 @@ private struct UIFixtureServer {
     var sessions: [[String: Any]] = []
     var sets: [[String: Any]] = []
     var groupReceipts: [String: [String: Any]] = [:]
+    var returnedFeedbackConflict = false
     var revision = 1_788_912_000_000
     let dayID = "synthetic-day", sessionID = "synthetic-session"
 
@@ -350,7 +353,19 @@ private struct UIFixtureServer {
         case ("PATCH", "/api/sets/synthetic-set"):
             status = 422; response = ["error": "Synthetic correction rejected"]
         case ("PATCH", "/api/sessions/\(sessionID)"):
-            sessions = [makeSession(status: "completed", attempt: sessions.first?["attempt"] as? Int ?? 0)]
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_FEEDBACK_CONFLICT"] == "1", !returnedFeedbackConflict {
+                returnedFeedbackConflict = true
+                sessions[0]["notes"] = "Newer saved feedback"
+                sessions[0]["perceived_fatigue"] = 8
+                sessions[0]["updated_at"] = revision
+                status = 409
+                response = ["error": "session_feedback_conflict", "current_session": sessions[0]]
+                break
+            }
+            var completed = makeSession(status: "completed", attempt: sessions.first?["attempt"] as? Int ?? 0)
+            completed["notes"] = body["notes"] ?? sessions.first?["notes"]
+            completed["perceived_fatigue"] = body["perceived_fatigue"] ?? sessions.first?["perceived_fatigue"]
+            sessions = [completed]
             response = sessions[0]
         case ("GET", "/api/sessions/\(sessionID)/summary"):
             let workingSets = sets.filter { $0["is_warmup"] as? Int == 0 }
@@ -368,5 +383,21 @@ private struct UIFixtureServer {
         }
         return (status, try JSONSerialization.data(withJSONObject: response, options: [.sortedKeys]))
     }
+}
+/// Exercises the real editor lifecycle without microphone, provider, or network access.
+@MainActor
+final class SyntheticFeedbackTranscriber: WorkoutFeedbackTranscribing {
+    private var callback: (@MainActor (WorkoutFeedbackTranscription) -> Void)?
+    func start(result: @escaping @MainActor (WorkoutFeedbackTranscription) -> Void) async throws {
+        callback = result
+        switch ProcessInfo.processInfo.environment["TRESFORT_FEEDBACK_SPEECH"] {
+        case "denied": throw FeedbackRecordingError.denied
+        case "unavailable": throw FeedbackRecordingError.unavailable
+        case "empty": result(.transcript(""))
+        default: result(.transcript(ProcessInfo.processInfo.environment["TRESFORT_FEEDBACK_TRANSCRIPT"] ?? "Left shoulder felt fine overhead."))
+        }
+    }
+    func finish() { callback?(.finished); callback = nil }
+    func stop() { callback = nil }
 }
 #endif

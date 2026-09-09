@@ -138,15 +138,18 @@ else: print('synthetic-tool-version')
             self.assertEqual(result.returncode,0,result.stderr)
             args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
             selections.extend(arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:'))
-        self.assertEqual(len(selections),6)
-        self.assertEqual(len(set(selections)),6)
+        self.assertEqual(len(selections),7)
+        self.assertEqual(len(set(selections)),7)
         self.assertIn('TresFortTests',selections)
         root=SCRIPT.parents[1]/'ios'
         for selection in selections:
             if selection=='TresFortTests': continue
-            target,suite,method=selection.split('/')
+            target,suite,*methods=selection.split('/')
             source=(root/target/(suite+'.swift')).read_text()
-            self.assertRegex(source,rf'func\s+{re.escape(method)}\s*\(')
+            if methods:
+                self.assertRegex(source,rf'func\s+{re.escape(methods[0])}\s*\(')
+            else:
+                self.assertRegex(source,rf'class\s+{re.escape(suite)}\s*:\s*XCTestCase')
         for extra in [['--ui-suite','invalid'],
                       ['--ui-suite','smoke','--only-testing','TresFortTests']]:
             calls_before=self.calls()

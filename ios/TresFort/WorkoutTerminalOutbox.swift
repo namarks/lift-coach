@@ -26,6 +26,8 @@ struct WorkoutTerminalIntent: Codable, Identifiable, Equatable {
     // Version-one durable envelope: retain the released persistence key.
     private enum CodingKeys: String, CodingKey {
         case id
+        case feedback
+        case feedbackConflict
         case action
         case date
         case workoutID = "dayTemplateID"
@@ -36,6 +38,8 @@ struct WorkoutTerminalIntent: Codable, Identifiable, Equatable {
         case failedHTTPStatus
     }
     let id: String
+    let feedback: WorkoutFeedback?
+    var feedbackConflict: WorkoutFeedbackBaseline?
     let action: WorkoutTerminalAction
     let date: String
     let workoutID: String?
@@ -58,9 +62,13 @@ struct WorkoutTerminalIntent: Codable, Identifiable, Equatable {
         deliveryState: WorkoutTerminalDeliveryState,
         failedHTTPStatus: Int?,
         expectedAttempt: Int? = nil,
-        restartDiscardedAttempt: Int? = nil
+        restartDiscardedAttempt: Int? = nil,
+        feedback: WorkoutFeedback? = nil,
+        feedbackConflict: WorkoutFeedbackBaseline? = nil
     ) {
         self.id = id
+        self.feedback = feedback
+        self.feedbackConflict = feedbackConflict
         self.action = action
         self.date = date
         self.workoutID = workoutID
@@ -133,8 +141,8 @@ struct WorkoutTerminalOutbox: Codable, Equatable {
         } else if current.expectedAttempt != nil {
             replacement.expectedAttempt = current.expectedAttempt
         }
-        if replacement.restartDiscardedAttempt
-            != current.restartDiscardedAttempt
+        if replacement.feedback != current.feedback
+            || replacement.restartDiscardedAttempt != current.restartDiscardedAttempt
         {
             // The restart authorization is part of the immutable user intent,
             // not delivery metadata. A callback built from an older/minimal
@@ -148,9 +156,22 @@ struct WorkoutTerminalOutbox: Codable, Equatable {
                 deliveryState: replacement.deliveryState,
                 failedHTTPStatus: replacement.failedHTTPStatus,
                 expectedAttempt: replacement.expectedAttempt,
-                restartDiscardedAttempt: current.restartDiscardedAttempt)
+                restartDiscardedAttempt: current.restartDiscardedAttempt,
+                feedback: current.feedback, feedbackConflict: replacement.feedbackConflict)
         }
         intentsByDate[intent.date] = replacement
+    }
+
+    /// A feedback conflict requires a new explicit choice, never an automatic
+    /// retry that changes the original expected feedback.
+    mutating func resolveFeedbackConflict(id: String, replacement: WorkoutTerminalIntent) {
+        guard let current = intentsByDate[replacement.date], current.id == id,
+              current.action == .finish, current.deliveryState == .failed,
+              current.feedbackConflict != nil, replacement.action == .finish,
+              replacement.resolvedSessionID == current.resolvedSessionID,
+              replacement.expectedAttempt == current.expectedAttempt,
+              replacement.id != current.id else { return }
+        intentsByDate[replacement.date] = replacement
     }
 
     /// Removes an acknowledged finish (or an abandoned finish) only if the id
@@ -270,6 +291,11 @@ enum WorkoutTerminalOutboxStore {
         defaults: UserDefaults = .standard
     ) {
         update(userID: userID, defaults: defaults) { $0.replace(intent) }
+    }
+
+    static func resolveFeedbackConflict(id: String, replacement: WorkoutTerminalIntent,
+                                        userID: String?, defaults: UserDefaults = .standard) {
+        update(userID: userID, defaults: defaults) { $0.resolveFeedbackConflict(id: id, replacement: replacement) }
     }
 
     static func remove(

@@ -39,6 +39,7 @@ fi
 if [[ "$ui_suite" == smoke ]]; then
   if [[ "$ci_shard" != 2 ]]; then
     test_args+=("-only-testing:TresFortTests")
+    test_args+=("-only-testing:TresFortUITests/WorkoutFeedbackJourneyTests")
     for method in testVerifiedEmptyPlanCanCreateRoutineAndFirstWorkout \
       testOrdinarySetLogsAndCompletesThroughAcknowledgement \
       testCorrectionRecoveryRemainsReachable testWeightEntryAndKeyboardCanSaveExactLoad; do

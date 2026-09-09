@@ -1,6 +1,6 @@
 # Coaching Feedback Loop
 
-Slug: coaching-feedback-loop · Status: planned · Updated: 2026-09-09 · Theme: coaching
+Slug: coaching-feedback-loop · Status: paused · Updated: 2026-09-09 · Theme: coaching
 
 ## Goal
 
@@ -12,8 +12,8 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 
 ## Phases
 
-- [ ] **P0 — Workout feedback reaches the coach**
-  - [ ] **(a) Coach-facing feedback reads**
+- [x] **P0 — Workout feedback reaches the coach**
+  - [x] **(a) Coach-facing feedback reads**
     - Expose the existing session fatigue and note fields through the relevant
       history, current-state, and coaching-brief reads so the next coaching
       conversation receives the member's words and the recorded workout without
@@ -22,7 +22,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
       brief paths. Verify a skipped/in-progress latest session does not hide the
       prior completed session's feedback. This read-path slice can be implemented
       independently of the iOS runner and finish flow.
-  - [ ] **(b) Voice and typed finish input**
+  - [x] **(b) Voice and typed finish input**
     - Add an optional, quick finish flow for perceived fatigue and a short note;
       pain can be described in the note, and completing a workout must not
       require a questionnaire.
@@ -36,7 +36,8 @@ surfaces without adding AI to the Worker or creating a second coaching record.
       and any required speech permission only after the member chooses to talk.
       Add `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription`
       purpose strings in `ios/TresFort/Info.plist` before requesting permission,
-      and verify fresh-install grant and denial paths on the supported iPhone.
+      with fresh-install grant and denial checks on the supported iPhone
+      deferred by the owner to a future TestFlight build (2026-09-09).
       If permission is denied or recognition is unavailable, preserve any text
       draft and offer typing or skipping. No cloud transcription fallback or
       audio upload is included in this scope.
@@ -91,7 +92,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 
 ## Execution frontier
 
-- P0(a)
+- P1
 
 ## Dependencies
 
@@ -105,14 +106,52 @@ P0(b) reuses the completed [superset runner/editor integration](../completed/sup
 
 ## Next step
 
-**Now (@owner):** Activate P0(a) when member-to-coach feedback should enter the
-executable backlog; it does not require the later change-history work to start.
-The approved scope includes voice input with transcript review. P0(a) is the
-independent coach-facing read slice. After it completes, advance the frontier
-to P0(b), reusing the completed supersets runner/editor foundation for shared
-iOS finish-flow edits.
+**Now (@owner):** After a separately authorized Worker release and TestFlight
+build containing [PR #163](https://github.com/namarks/tres-fort/pull/163), perform
+the [physical iPhone feedback checks](device-verification.md). The owner
+explicitly deferred these checks until that build; they no longer block
+repository delivery. P0 implementation and automated verification are complete;
+delivery still requires exact-head review/CI, merge and integration verification
+under the existing authorization. Keep this workstream paused after P0; P1/P2
+need explicit activation. Production deployment and TestFlight distribution
+remain outside this goal.
 
 ## Notes / open questions
+
+- P0(a) implementation milestone (2026-09-09): session notes/fatigue now travel
+  through private exercise history and both brief paths. Focused real-D1/MCP
+  checks passed 20/20, including skipped/in-progress latest sessions and group
+  privacy. The coherent P0 delivery is tracked in PR #163.
+- P0(b) uses a local approved-feedback checkpoint and immutable terminal
+  envelope. Explicitly saved empty fields clear feedback; Skip omits feedback.
+  Finish requests compare the original note/rating in the same atomic write,
+  so retries cannot overwrite different newer feedback. A conflict retains the
+  local words and requires an explicit choice. No schema migration is needed.
+- Recording Stop finalizes on-device transcription with a bounded wait;
+  cancellation, editing and leaving immediately invalidate callbacks and release
+  capture resources. The draft comparison baseline belongs to the editor's
+  lifetime. Only explicitly approved text is persisted.
+- Verification milestone (2026-09-09): typecheck, plan graph, and the full
+  backend suite passed (62 files / 906 tests). Final iPhone 17 simulator checks
+  passed all 419 unit tests and all 5 feedback UI journeys, including both
+  conflict choices. The broader smoke run passed 9 UI journeys. Recovery covers
+  approved feedback before any sets, relaunch, stale app views and first-set
+  session binding. Independent review cleared `6a2606a` against main `fd560e4`,
+  and every configured check passed in [CI run 34391201635](https://github.com/namarks/tres-fort/actions/runs/34391201635).
+  The final owner-decision/cleanup commit still requires fresh exact-head
+  review and CI before merge; PR #163 carries that live evidence.
+- Release ordering after separate owner authorization: deploy the compatible
+  Worker before distributing the iOS build that sends `expected_feedback`.
+  Older Workers can reject that new field. No schema migration is required;
+  no production or TestFlight action is part of repository delivery.
+- Owner decision (2026-09-09): proceed through PR, merge and integration
+  verification now; the owner will test on a future TestFlight version. Fresh
+  physical permission and successful on-device transcription evidence remains
+  unverified and is a release follow-up, not a pre-merge gate. The temporary
+  separate checker and installer are retired; no tailnet link was hosted and
+  no TestFlight upload ran. This decision does not authorize deployment or app
+  distribution. Synthetic recognition, simulator and D1/MCP tests remain the
+  repository evidence and must not be described as physical-device results.
 
 - Owner decision (2026-09-08): offer spoken feedback because talking after
   training may be easier than typing. This is an adoption hypothesis to check

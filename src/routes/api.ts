@@ -855,10 +855,17 @@ apiRoutes.patch('/sessions/:id', async (c) => {
   const invalid = invalidMutationFields(b, {}, {
     // status remains deliberately `unknown`: patchSession owns its closed
     // status allowlist and stable invalid_status response.
-    perceived_fatigue: isNonNegativeInteger,
-    notes: (value) => typeof value === 'string',
+    perceived_fatigue: isNullableNonNegativeInteger,
+    notes: isNullableString,
+    expected_feedback: (value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+      && Object.keys(value).length === 2
+      && 'notes' in value && isNullableString(value.notes)
+      && 'perceived_fatigue' in value && isNullableNonNegativeInteger(value.perceived_fatigue),
     workout_id: (value) => value === null || isNonEmptyString(value),
   });
+  if (hasOwn(b, 'expected_feedback') && (!hasOwn(b, 'notes') || !hasOwn(b, 'perceived_fatigue'))) {
+    invalid.push('expected_feedback');
+  }
   if (
     hasOwn(b, 'workout_id') &&
     !(typeof b.status === 'string' && b.status.trim().toLowerCase() === 'planned')

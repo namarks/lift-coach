@@ -1,0 +1,131 @@
+import { env, applyD1Migrations, SELF } from 'cloudflare:test';
+import { beforeAll, describe, expect, it } from 'vitest';
+import { issueAppJwt } from '../src/auth';
+import feedback from '../ios/TresFortTests/Fixtures/WorkoutFeedback.json';
+
+const BASE = 'https://tres-fort.test';
+let jwt: string;
+let session: { id: string; date: string; attempt: number };
+async function rest(path: string, method = 'GET', body?: unknown, token = jwt) {
+  const response = await SELF.fetch(`${BASE}/api/${path}`, {
+    method, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  expect(response.ok).toBe(true);
+  return response.json<any>();
+}
+async function rpc(method: string, params: unknown) {
+  const r = await SELF.fetch(`${BASE}/mcp`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer test-mcp-token' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+  });
+  expect(r.status).toBe(200);
+  return (await r.json<any>()).result;
+}
+async function tool(name: string, args = {}) {
+  return JSON.parse((await rpc('tools/call', { name, arguments: args })).content[0].text);
+}
+function brief(text: string) { return JSON.parse(text.match(/```json\n([\s\S]*?)\n```/)![1]!); }
+
+beforeAll(async () => {
+  await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
+  const auth = await SELF.fetch(`${BASE}/auth/dev`, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ secret: 'test-dev' }) });
+  jwt = (await auth.json<any>()).jwt;
+  await rest('plan', 'POST', { name: 'Feedback contract' });
+  session = await rest('sessions', 'POST', { date: '2026-09-08' });
+  await rest(`sessions/${session.id}/sets`, 'POST', { id: crypto.randomUUID(),
+    exercise_id: 'ex_bench', set_index: 1, weight: 45, reps: 5 });
+  // The same edited transcript and fatigue fixture is encoded by iOS tests.
+  await rest(`sessions/${session.id}?expected_attempt=${session.attempt}`, 'PATCH', {
+    notes: feedback.recognized, perceived_fatigue: feedback.perceived_fatigue,
+  });
+  await rest(`sessions/${session.id}?expected_attempt=${session.attempt}`, 'PATCH', {
+    status: 'completed', notes: feedback.edited, perceived_fatigue: feedback.perceived_fatigue,
+    expected_feedback: { notes: feedback.recognized, perceived_fatigue: feedback.perceived_fatigue },
+  });
+});
+
+const expected = { notes: feedback.edited, perceived_fatigue: feedback.perceived_fatigue };
+describe('private workout feedback from finish to coach', () => {
+  it('returns the edited words and fatigue through state, session log, and exercise history', async () => {
+    const state = await rest('state');
+    expect(state.sessions.find((s: any) => s.id === session.id)).toMatchObject(expected);
+    expect((await tool('get_session_log', { date: session.date }))[0].session).toMatchObject(expected);
+    const history = await tool('get_history', { exercise: 'bench', range: '365d' });
+    expect(history.by_session.find((s: any) => s.date === session.date)).toMatchObject(expected);
+  });
+  it('keeps feedback on the latest completed session in the resource and prompt', async () => {
+    const resource = await rpc('resources/read', { uri: 'coach://state/current' });
+    expect(brief(resource.contents[0].text).last_session).toMatchObject(expected);
+    const prompt = await rpc('prompts/get', { name: 'coach_brief' });
+    expect(prompt.messages.map((m: any) => m.content.text).join('\n')).toContain(feedback.edited);
+  });
+  it.each(['skipped', 'in_progress'])('keeps prior completed feedback when latest is %s', async (status) => {
+    const latest = await rest('sessions', 'POST', { date: '2026-09-09' });
+    if (status === 'skipped') await rest(`sessions/${latest.id}`, 'PATCH', { status });
+    else await rest(`sessions/${latest.id}/sets`, 'POST', { id: crypto.randomUUID(),
+      exercise_id: 'ex_bench', set_index: 1, weight: 45, reps: 5 });
+    const resource = await rpc('resources/read', { uri: 'coach://state/current' });
+    const result = brief(resource.contents[0].text);
+    expect(result.last_session.status).toBe(status);
+    expect(result.last_session.notes).toBeNull();
+    expect(result.last_session.perceived_fatigue).toBeNull();
+    expect(result.last_completed_session).toMatchObject({ date: session.date, ...expected });
+    expect((await tool('get_today_workout')).last_completed_session).toMatchObject(expected);
+  });
+  it('retries an identical finish without losing edited feedback', async () => {
+    const response = await rest(`sessions/${session.id}?expected_attempt=${session.attempt}`, 'PATCH', {
+      status: 'completed', ...expected,
+    });
+    expect(response).toMatchObject(expected);
+    expect((await rest('state')).sessions.filter((s: any) => s.id === session.id)).toHaveLength(1);
+  });
+  it('does not replay a timed-out finish over newer feedback in the same attempt', async () => {
+    await rest(`sessions/${session.id}`, 'PATCH', { notes: 'Newer coaching correction', perceived_fatigue: 4 });
+    const response = await SELF.fetch(`${BASE}/api/sessions/${session.id}?expected_attempt=${session.attempt}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({ status: 'completed', ...expected,
+        expected_feedback: { notes: feedback.recognized, perceived_fatigue: feedback.perceived_fatigue } }),
+    });
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: 'session_feedback_conflict', current_session: {
+      notes: 'Newer coaching correction', perceived_fatigue: 4,
+    } });
+    expect((await rest('state')).sessions.find((s: any) => s.id === session.id)).toMatchObject({
+      notes: 'Newer coaching correction', perceived_fatigue: 4,
+    });
+  });
+  it('allows explicit clearing while an absent feedback envelope leaves fields unchanged', async () => {
+    const unchanged = await rest(`sessions/${session.id}`, 'PATCH', { status: 'completed' });
+    expect(unchanged).toMatchObject(expected);
+    const cleared = await rest(`sessions/${session.id}`, 'PATCH', { status: 'completed',
+      notes: null, perceived_fatigue: null, expected_feedback: expected });
+    expect(cleared).toMatchObject({ notes: null, perceived_fatigue: null });
+  });
+  it('accepts exact feedback retries and rejects a competing edit atomically', async () => {
+    const send = (notes: string) => SELF.fetch(`${BASE}/api/sessions/${session.id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${jwt}` },
+      body: JSON.stringify({ status: 'completed', notes, perceived_fatigue: 5, expected_feedback: expected }),
+    });
+    const responses = await Promise.all([send('Choice A'), send('Choice B')]);
+    expect(responses.map(r => r.status).sort()).toEqual([200, 409]);
+    const winner = await responses.find(r => r.status === 200)!.json<any>();
+    const retry = await send(winner.notes);
+    expect(retry.status).toBe(200);
+    expect(await retry.json()).toMatchObject({ notes: winner.notes, perceived_fatigue: 5 });
+  });
+  it('keeps feedback absent from group projections and other member state', async () => {
+    const group = await rest('groups', 'POST', { name: 'Private feedback check' });
+    const feed = await tool('get_group_feed', { group_id: group.id, range: '30d' });
+    expect(feed.items.length).toBeGreaterThan(0);
+    expect(JSON.stringify(feed)).not.toContain(feedback.edited);
+    expect(JSON.stringify(feed)).not.toMatch(/perceived_fatigue|session_notes/);
+    const id = crypto.randomUUID();
+    await env.DB.prepare('INSERT INTO users (id,apple_sub,display_name,created_at) VALUES (?1,?2,?3,?4)')
+      .bind(id, `synthetic-${id}`, 'Other member', Date.now()).run();
+    const other = await rest('state', 'GET', undefined, await issueAppJwt(id, 'test-secret'));
+    expect(other.sessions).toEqual([]);
+    expect(JSON.stringify(other)).not.toContain(feedback.edited);
+  });
+});

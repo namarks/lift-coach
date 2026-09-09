@@ -297,6 +297,14 @@ struct APIClient {
                 expectedAttempt: expectedAttempt))
     }
 
+    func completeSession(
+        sessionId: String, expectedAttempt: Int?, feedback: WorkoutFeedback?, jwt: String
+    ) async throws -> SessionRow {
+        try await patch(attemptScopedPath("api/sessions/\(sessionId)", expectedAttempt: expectedAttempt),
+                        body: feedback?.finishBody ?? ["status": "completed"], jwt: jwt,
+                        headers: Self.attemptProtocolHeaders(expectedAttempt: expectedAttempt))
+    }
+
     /// Discard a session — "I didn't really do this." Soft-deletes its sets
     /// and marks it discarded server-side (vanishes from the projection).
     /// Restarting the same day resurrects a fresh planned session.
@@ -924,6 +932,7 @@ extension APIClient: RoutineEditingAPI {}
 /// destructive/completing session mutations and new set persistence.
 @MainActor
 protocol WorkoutTerminalAPI {
+    func completeSession(sessionId: String, expectedAttempt: Int?, feedback: WorkoutFeedback?, jwt: String) async throws -> SessionRow
     func completeSession(sessionId: String, jwt: String) async throws -> SessionRow
     func discardSession(sessionId: String, jwt: String) async throws -> SessionRow
     func completeSession(
@@ -939,6 +948,14 @@ protocol WorkoutTerminalAPI {
 }
 
 extension WorkoutTerminalAPI {
+    func completeSession(sessionId: String, expectedAttempt: Int?, feedback: WorkoutFeedback?, jwt: String) async throws -> SessionRow {
+        // Legacy test/provider adapters may complete only feedback-free choices.
+        guard feedback == nil || feedback?.isEmpty == true else {
+            throw APIError.decoding("Terminal adapter does not support workout feedback")
+        }
+        return try await completeSession(sessionId: sessionId, expectedAttempt: expectedAttempt, jwt: jwt)
+    }
+
     func completeSession(
         sessionId: String,
         expectedAttempt: Int?,
