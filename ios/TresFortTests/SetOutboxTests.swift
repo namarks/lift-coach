@@ -240,6 +240,42 @@ private final class SetPlanEditingAPIStub: PlanEditingAPI {
     private(set) var addCalls = 0
     private(set) var updateCalls = 0
     private(set) var deleteCalls = 0
+    private(set) var updatedFields: [String: Any] = [:]
+    struct GroupCall {
+        let dayID: String
+        let groupID: String
+        let memberIDs: [String]
+        let expectedVersion: Int
+        let roundRest: Int
+        let transitionRest: Int
+        let targetSets: Int
+        let orderIndex: Int?
+        let jwt: String
+    }
+    var groupHandler: ((GroupCall) async throws -> APIClient.ExerciseGroupAcknowledgement)?
+    var clearGroupHandler: ((String, String, Int, String) async throws -> APIClient.ExerciseGroupAcknowledgement)?
+    private(set) var groupCalls: [GroupCall] = []
+    private(set) var clearGroupCalls = 0
+
+    func setExerciseGroup(dayID: String, groupID: String, memberIDs: [String],
+                          expectedVersion: Int, roundRest: Int, transitionRest: Int,
+                          targetSets: Int, orderIndex: Int?, jwt: String) async throws
+        -> APIClient.ExerciseGroupAcknowledgement {
+        let call = GroupCall(dayID: dayID, groupID: groupID, memberIDs: memberIDs,
+                             expectedVersion: expectedVersion, roundRest: roundRest,
+                             transitionRest: transitionRest, targetSets: targetSets,
+                             orderIndex: orderIndex, jwt: jwt)
+        groupCalls.append(call)
+        guard let groupHandler else { throw URLError(.badServerResponse) }
+        return try await groupHandler(call)
+    }
+
+    func clearExerciseGroup(dayID: String, groupID: String, expectedVersion: Int, jwt: String)
+        async throws -> APIClient.ExerciseGroupAcknowledgement {
+        clearGroupCalls += 1
+        guard let clearGroupHandler else { throw URLError(.badServerResponse) }
+        return try await clearGroupHandler(dayID, groupID, expectedVersion, jwt)
+    }
 
     func addExercise(
         dayID: String,
@@ -264,6 +300,7 @@ private final class SetPlanEditingAPIStub: PlanEditingAPI {
         jwt: String
     ) async throws -> APIClient.SlotIDRow {
         updateCalls += 1
+        updatedFields = fields
         guard let updateHandler else { throw URLError(.badServerResponse) }
         return try await updateHandler()
     }
@@ -564,7 +601,10 @@ final class SetOutboxTests: XCTestCase {
         targetSets: Int = 3,
         warmup: Bool = false,
         modality: String? = nil,
-        targetWeight: Double? = nil
+        targetWeight: Double? = nil,
+        groupID: String? = nil,
+        roundRest: Int = 75,
+        transitionRest: Int = 10
     ) -> TemplateExercise {
         let resolvedModality = modality ?? (timed ? "timed" : (bodyweight ? "bw" : "barbell"))
         let resolvedBodyweight = bodyweight || resolvedModality == "bw"
@@ -586,7 +626,10 @@ final class SetOutboxTests: XCTestCase {
             exercise_load_mode: "total",
             exercise_demo_slug: nil,
             target_duration_s: timed ? 30 : nil,
-            is_warmup: warmup ? 1 : 0)
+            is_warmup: warmup ? 1 : 0,
+            group_id: groupID,
+            group_rest_seconds: groupID == nil ? nil : roundRest,
+            group_transition_seconds: groupID == nil ? nil : transitionRest)
     }
 
     private func day(with exercises: [TemplateExercise]) -> DayTemplate {
@@ -687,7 +730,8 @@ final class SetOutboxTests: XCTestCase {
             activities: [],
             server_time: serverTime,
             externalSyncCursorsVersion:
-                externalSyncCursorsVersion)
+                externalSyncCursorsVersion,
+            planGroupsVersion: 1)
     }
 
     private func configureSuccess(
@@ -9798,7 +9842,7 @@ final class SetOutboxTests: XCTestCase {
             external_events: [],
             external_activities: [],
             activities: [],
-            server_time: base.server_time))
+            server_time: base.server_time, planGroupsVersion: 1))
         model.startWorkout()
 
         let write = Task { await model.logSet(ex, weight: 135, reps: 5) }
@@ -10372,5 +10416,589 @@ extension SetOutboxTests {
         model.replaceState(with: state(session: session(status: "planned", attempt: 1), sets: [], exercise: ex))
         await release.open(); await task.value
         XCTAssertNil(model.completionSummary(for: "session-a"))
+    }
+}
+
+extension SetOutboxTests {
+    func testGroupOfflineCircuitRotatesUUIDProgressAndUsesTransitionThenRoundRest() async {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(groupID: "group-a")
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+        let c = exercise(id: "slot-c", exerciseID: "exercise-c", groupID: "group-a")
+        let after = exercise(id: "slot-d", exerciseID: "exercise-d", targetSets: 1)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(attempt: 0), sets: [], exercises: [a, b, c, after]))
+        model.startWorkout()
+        var sequence: [String] = [], indexes: [Int] = []
+        for round in 1...3 {
+            for member in [a, b, c] {
+                XCTAssertEqual(model.currentExercise?.id, member.id)
+                XCTAssertEqual(model.currentSetNumber, round)
+                sequence.append(member.id)
+                // Each physical action occurs on a later UI turn. The local
+                // duplicate-tap guard intentionally lasts through this turn.
+                for _ in 0..<50 {
+                    if !model.isSetEntryBlocked(member) { break }
+                    await Task.yield()
+                }
+                XCTAssertFalse(model.isSetEntryBlocked(member))
+                await model.logCurrentSet(expected: member, expectedSetNumber: model.currentPhysicalSetNumber)
+                indexes.append(model.setOutbox.pending.last!.body.set_index)
+                XCTAssertEqual(model.restTotal, member.id == c.id ? 75 : 10)
+                await model.drainSetOutbox()
+            }
+        }
+        XCTAssertEqual(sequence, [a.id, b.id, c.id, a.id, b.id, c.id, a.id, b.id, c.id])
+        XCTAssertEqual(indexes, [1, 1, 1, 2, 2, 2, 3, 3, 3])
+        XCTAssertEqual(Set(model.setOutbox.pending.map(\.id)).count, 9)
+        XCTAssertEqual(model.currentExercise?.id, after.id)
+        XCTAssertEqual(model.restActivityCurrentStepName, after.exercise_name)
+        XCTAssertFalse(model.finished)
+    }
+
+    func testGroupReversedStateAcknowledgementsKeepManualFocusAndRestDeadline() async {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(groupID: "group-a")
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+        let active = session(attempt: 0)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [], exercises: [a, b]))
+        model.startWorkout()
+        await model.logCurrentSet(expected: a, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        await model.logCurrentSet(expected: b, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        let intents = model.setOutbox.pending
+        let acceptedA = setLog(body: intents[0].body), acceptedB = setLog(body: intents[1].body)
+        let deadline = model.restEndDate
+        model.jump(to: 1)
+        model.replaceState(with: state(session: active, sets: [acceptedB], exercises: [a, b]))
+        XCTAssertEqual(model.runnerSetsDone(a), 1)
+        XCTAssertEqual(model.runnerSetsDone(b), 1)
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertEqual(model.currentSetNumber, 2)
+        XCTAssertEqual(model.restEndDate, deadline)
+        model.previous()
+        model.next()
+        model.replaceState(with: state(session: active, sets: [acceptedB, acceptedA], exercises: [a, b]))
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertEqual(model.restEndDate, deadline)
+        model.replaceState(with: state(session: active, sets: [acceptedA, acceptedB], exercises: [a, b]))
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertEqual(model.runnerSetsDone(b), 1)
+    }
+
+    func testGroupAheadTimedMemberKeepsPhysicalIdentityAcrossUnchangedRefreshAndDuplicateExpiry() async {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(timed: true, groupID: "group-a")
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+        let active = session(attempt: 0), prior = correctionFixture(a)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [prior], exercises: [a, b]))
+        model.startWorkout()
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        model.jump(to: 0)
+        XCTAssertEqual(model.currentSetNumber, 1)
+        XCTAssertEqual(model.currentPhysicalSetNumber, 2)
+        model.startTimedSet(expected: a, expectedSetNumber: 2, at: fixedDate)
+        let started = model.timedStartDate
+        model.replaceState(with: state(session: active, sets: [prior], exercises: [a, b]))
+        XCTAssertTrue(model.timedActive)
+        XCTAssertEqual(model.currentExercise?.id, a.id)
+        XCTAssertEqual(model.timedStartDate, started)
+        await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+        await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+        await model.drainSetOutbox()
+        XCTAssertEqual(model.setOutbox.count, 1)
+        XCTAssertEqual(model.setOutbox.pending.first?.body.set_index, 2)
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertEqual(model.currentSetNumber, 1)
+        model.jump(to: 0)
+        model.startTimedSet(expected: a, expectedSetNumber: 2, at: fixedDate)
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.currentPhysicalSetNumber, 3)
+    }
+
+    func testGroupSkipUsesPendingCountsAndLastRemainingMemberGetsRoundRest() async {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(targetSets: 1, groupID: "group-a", transitionRest: 0)
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1,
+                         groupID: "group-a", transitionRest: 0)
+        let c = exercise(id: "slot-c", exerciseID: "exercise-c", targetSets: 1,
+                         groupID: "group-a", transitionRest: 0)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(attempt: 0), sets: [], exercises: [a, b, c]))
+        model.startWorkout()
+        await model.logCurrentSet(expected: a, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        XCTAssertNil(model.restEndDate)
+        model.jump(to: 2)
+        model.skip()
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        await model.logCurrentSet(expected: b, expectedSetNumber: 1)
+        XCTAssertEqual(model.restTotal, 75)
+        XCTAssertTrue(model.finished)
+        XCTAssertEqual(model.setOutbox.count, 2)
+        XCTAssertEqual(model.sets.count, 0)
+    }
+
+    func testGroupColdCheckpointRepairsPendingProgressButPreservesRecordedManualFocus() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(groupID: "group-a")
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+        let active = session(attempt: 0), sharedAuth = retainedAuth(defaults: defaults)
+        let prior = correctionFixture(a)
+        let body = SetRequestBody(id: prior.id, exercise_id: a.exercise_id,
+            template_exercise_id: a.id, set_index: 1, weight: 100, reps: 5,
+            is_warmup: false, logged_at: prior.logged_at, duration_s: nil, is_timed: false)
+        var outbox = SetOutbox()
+        outbox.enqueue(.init(body: body, date: fixedCivilDate, dayTemplateID: "day-a",
+                             resolvedSessionID: active.id, deliveryState: .queued,
+                             failedHTTPStatus: nil, expectedAttempt: 0))
+        SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults)
+        WorkoutRunnerCheckpointStore.save(.init(date: fixedCivilDate, sessionID: active.id,
+            selectedDayID: "day-a", currentSlotID: a.id, skippedSlotIDs: [],
+            workoutStartedAtMS: prior.logged_at, finished: false, sessionAttempt: 0),
+            userID: "user-a", defaults: defaults)
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let cold = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        cold.replaceState(with: state(session: active, sets: [], exercises: [a, b]))
+        XCTAssertEqual(cold.resumableCheckpoint?.currentSlotID, b.id)
+        cold.resumeWorkout()
+        cold.jump(to: 0)
+        let checkpoint = try XCTUnwrap(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults))
+        XCTAssertNotNil(checkpoint.groupProgress)
+        let next = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        next.replaceState(with: state(session: active, sets: [], exercises: [a, b]))
+        XCTAssertEqual(next.resumableCheckpoint?.currentSlotID, a.id)
+        next.resumeWorkout()
+        XCTAssertEqual(next.currentExercise?.id, a.id)
+        XCTAssertEqual(next.currentSetNumber, 1)
+        XCTAssertEqual(next.currentPhysicalSetNumber, 2)
+    }
+
+    func testGroupValueCorrectionPreservesFocusAndDeletionRepairsAtTimedBoundary() async {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(timed: true, groupID: "group-a")
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+        let active = session(updatedAt: 100, attempt: 0)
+        let priorA = correctionFixture(a, id: "prior-a"), priorB = correctionFixture(b, id: "prior-b")
+        api.correctionHandler = { [self] intent, _ in
+            corrected(intent.setID == priorA.id ? priorA : priorB, intent: intent, session: active)
+        }
+        api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [priorA, priorB], exercises: [a, b]))
+        model.startWorkout()
+        model.jump(to: 1)
+        model.startRest(seconds: 51, name: b.exercise_name)
+        let rest = model.restEndDate
+        XCTAssertTrue(model.enqueueCorrection(set: priorB, values: .init(weight: 95, reps: 4, rpe: 8, durationSeconds: nil)))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertEqual(model.restEndDate, rest)
+        model.jump(to: 0)
+        model.startTimedSet(expected: a, expectedSetNumber: 2, at: fixedDate)
+        XCTAssertTrue(model.enqueueCorrection(set: priorA, values: nil))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.timedActive)
+        XCTAssertEqual(model.currentExercise?.id, a.id)
+        XCTAssertEqual(model.runnerSetsDone(a), 0)
+        await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+        await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+        XCTAssertFalse(model.timedActive)
+        XCTAssertEqual(model.setOutbox.count, 1)
+        XCTAssertEqual(model.runnerSetsDone(a), 1)
+        XCTAssertEqual(model.currentExercise?.id, a.id)
+        XCTAssertEqual(model.currentSetNumber, 2)
+    }
+
+    func testGroupAcknowledgedFinalDeletionReopensJustCompletedGroupWithoutRestartingRest() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(targetSets: 1, groupID: "group-a")
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1, groupID: "group-a")
+        let after = exercise(id: "slot-c", exerciseID: "exercise-c")
+        let active = session(updatedAt: 100, attempt: 0)
+        var accepted: [SetLog] = []
+        api.logHandler = { [self] id, body, _ in
+            let row = setLog(body: body, sessionID: id)
+            accepted.append(row)
+            return .init(set: row, deduped: false, session: active)
+        }
+        api.correctionHandler = { [self] intent, _ in
+            corrected(try XCTUnwrap(accepted.first { $0.id == intent.setID }), intent: intent, session: active)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [], exercises: [a, b, after]))
+        model.startWorkout()
+        await model.logCurrentSet(expected: a, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        await model.logCurrentSet(expected: b, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        XCTAssertEqual(model.currentExercise?.id, after.id)
+        let rest = model.restEndDate
+        XCTAssertTrue(model.enqueueCorrection(set: try XCTUnwrap(accepted.last), values: nil))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertEqual(model.restEndDate, rest)
+        XCTAssertEqual(model.restActivityCurrentStepName, b.exercise_name)
+        XCTAssertFalse(model.finished)
+    }
+
+    private func groupAcknowledgement(_ call: SetPlanEditingAPIStub.GroupCall) -> APIClient.ExerciseGroupAcknowledgement {
+        .init(ok: true, plan_id: "plan-a", version: call.expectedVersion + 1,
+              group_id: call.groupID, day_id: call.dayID, members: call.memberIDs,
+              round_rest: call.roundRest, transition_rest: call.transitionRest,
+              target_sets: call.targetSets, cleared: false)
+    }
+
+    func testGroupEditorPinsWholeGroupRequestAndAcknowledgesFailedRefresh() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), editor = SetPlanEditingAPIStub()
+        let a = exercise(), b = exercise(id: "slot-b", exerciseID: "exercise-b")
+        editor.groupHandler = { [self] call in groupAcknowledgement(call) }
+        api.stateHandler = { _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(), sets: [], exercises: [a, b]))
+        let saved = await model.saveExerciseGroup(dayID: "day-a", groupID: "stable-group", memberIDs: [b.id, a.id],
+            expectedVersion: 1, roundRest: 80, transitionRest: 5, targetSets: 4, orderIndex: 0)
+        XCTAssertTrue(saved)
+        XCTAssertTrue(model.workoutEditorRefreshNeeded)
+        XCTAssertNotNil(model.loadError)
+        XCTAssertEqual(editor.groupCalls.count, 1)
+        XCTAssertEqual(editor.groupCalls.first?.groupID, "stable-group")
+        XCTAssertEqual(editor.groupCalls.first?.expectedVersion, 1)
+        XCTAssertEqual(editor.groupCalls.first?.memberIDs, [b.id, a.id])
+        XCTAssertEqual(editor.groupCalls.first?.orderIndex, 0)
+        let repeated = await model.saveExerciseGroup(dayID: "day-a", groupID: "stable-group", memberIDs: [b.id, a.id],
+            expectedVersion: 1, roundRest: 80, transitionRest: 5, targetSets: 4)
+        XCTAssertFalse(repeated)
+        XCTAssertEqual(editor.groupCalls.count, 1)
+    }
+
+    func testGroupClearAcknowledgementAdoptsNewTreeAndGroupedSlotPatchOmitsRounds() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), editor = SetPlanEditingAPIStub()
+        let a = exercise(groupID: "group-a"), b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+        editor.updateHandler = { .init(id: a.id) }
+        api.stateHandler = { [self] _ in state(session: session(), sets: [], exercises: [a, b]) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(), sets: [], exercises: [a, b]))
+        let updated = await model.updateSlot(dayID: "day-a", teID: a.id, isWarmup: false,
+            targetSets: 9, targetReps: 6, targetRepsMax: nil, restSeconds: 90, targetDurationS: nil)
+        XCTAssertTrue(updated)
+        XCTAssertNil(editor.updatedFields["target_sets"])
+        XCTAssertNil(editor.updatedFields["rest_seconds"])
+        XCTAssertEqual(editor.updatedFields["target_reps"] as? Int, 6)
+        editor.clearGroupHandler = { dayID, groupID, version, _ in
+            XCTAssertEqual(dayID, "day-a")
+            XCTAssertEqual(groupID, "group-a")
+            XCTAssertEqual(version, 1)
+            return .init(ok: true, plan_id: "plan-a", version: 2, group_id: groupID,
+                         day_id: dayID, members: [], round_rest: nil, transition_rest: nil,
+                         target_sets: nil, cleared: true)
+        }
+        let ungrouped = [exercise(), exercise(id: "slot-b", exerciseID: "exercise-b")]
+        api.stateHandler = { [self] _ in
+            state(session: session(), sets: [], days: [day(with: ungrouped)], planVersion: 2)
+        }
+        let cleared = await model.clearExerciseGroup(dayID: "day-a", groupID: "group-a", expectedVersion: 1)
+        XCTAssertTrue(cleared)
+        XCTAssertEqual(model.plan?.version, 2)
+        XCTAssertNil(model.exercises.first?.group_id)
+        XCTAssertEqual(editor.clearGroupCalls, 1)
+    }
+
+    func testGroupEditorStaleVersionRefreshesWithoutAcknowledgingAndLateACKIsAccountFenced() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), editor = SetPlanEditingAPIStub()
+        let a = exercise(), b = exercise(id: "slot-b", exerciseID: "exercise-b")
+        let sharedAuth = retainedAuth(defaults: defaults)
+        editor.clearGroupHandler = { _, _, _, _ in throw APIError.http(409, #"{"conflict":true,"current_version":2}"#) }
+        api.stateHandler = { [self] _ in
+            state(session: session(), sets: [], days: [day(with: [a, b])], planVersion: 2)
+        }
+        let model = SyncModel(auth: sharedAuth, setWriteAPI: api,
+            planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(), sets: [], exercises: [a, b]))
+        let cleared = await model.clearExerciseGroup(dayID: "day-a", groupID: "group-a", expectedVersion: 1)
+        XCTAssertFalse(cleared)
+        XCTAssertEqual(model.plan?.version, 2)
+        let entered = SetAsyncLatch(), release = SetAsyncLatch()
+        editor.groupHandler = { [self] call in
+            await entered.open()
+            await release.wait()
+            return groupAcknowledgement(call)
+        }
+        let write = Task { await model.saveExerciseGroup(dayID: "day-a", groupID: "group-a", memberIDs: [a.id, b.id],
+            expectedVersion: 2, roundRest: 60, transitionRest: 0, targetSets: 3) }
+        await entered.wait()
+        let calls = api.stateCalls
+        sharedAuth.signOut()
+        await release.open()
+        let saved = await write.value
+        XCTAssertFalse(saved)
+        XCTAssertEqual(api.stateCalls, calls)
+    }
+}
+
+extension SetOutboxTests {
+    func testGroupMemberDeletionAcknowledgementRequiresRefreshBeforeFurtherEditing() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), editor = SetPlanEditingAPIStub()
+        let a = exercise(groupID: "group-a"), b = exercise(id: "slot-b", groupID: "group-a")
+        editor.deleteHandler = {}
+        api.stateHandler = { _ in throw URLError(.timedOut) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(), sets: [], exercises: [a, b]))
+        await model.deleteSlot(dayID: "day-a", teID: a.id)
+        XCTAssertEqual(editor.deleteCalls, 1)
+        XCTAssertTrue(model.workoutEditorRefreshNeeded)
+        XCTAssertNotNil(model.loadError)
+        // The server may have dissolved the remaining singleton group.
+        await model.deleteSlot(dayID: "day-a", teID: b.id)
+        XCTAssertEqual(editor.deleteCalls, 1)
+    }
+
+    func testAcknowledgedSlotReorderRequiresRefreshBeforeAnotherMove() async {
+        let defaults = defaults(), api = SetWriteAPIStub(), editor = SetPlanEditingAPIStub()
+        let a = exercise(), b = exercise(id: "slot-b")
+        editor.updateHandler = { .init(id: a.id) }
+        api.stateHandler = { _ in throw URLError(.timedOut) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            planEditingAPI: editor, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: session(), sets: [], exercises: [a, b]))
+        await model.moveSlot(dayID: "day-a", teID: a.id, toIndex: 1)
+        XCTAssertEqual(editor.updateCalls, 1)
+        XCTAssertTrue(model.workoutEditorRefreshNeeded)
+        XCTAssertNotNil(model.loadError)
+        await model.moveSlot(dayID: "day-a", teID: a.id, toIndex: 0)
+        XCTAssertEqual(editor.updateCalls, 1)
+    }
+
+    func testGroupDeletionDeferredDuringLaterHoldRepairsOnSkipAndManualFocusSupersedesRepair() async throws {
+        for boundary in ["skip", "manual", "complete"] {
+            let defaults = defaults(), api = SetWriteAPIStub()
+            let a = exercise(targetSets: 1, groupID: "group-a")
+            let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1, groupID: "group-a")
+            let c = exercise(id: "slot-c", exerciseID: "exercise-c", timed: true, targetSets: 1)
+            let d = exercise(id: "slot-d", exerciseID: "exercise-d", timed: true, targetSets: 2)
+            let active = session(updatedAt: 100, attempt: 0)
+            var accepted: [SetLog] = []
+            api.logHandler = { [self] id, body, _ in
+                let row = setLog(body: body, sessionID: id)
+                accepted.append(row)
+                return .init(set: row, deduped: false, session: active)
+            }
+            api.correctionHandler = { [self] intent, _ in
+                corrected(try XCTUnwrap(accepted.first { $0.id == intent.setID }), intent: intent, session: active)
+            }
+            let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                                  defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: active, sets: [], exercises: [a, b, c, d]))
+            model.startWorkout()
+            await model.logCurrentSet(expected: a, expectedSetNumber: 1)
+            await model.drainSetOutbox()
+            await model.logCurrentSet(expected: b, expectedSetNumber: 1)
+            await model.drainSetOutbox()
+            XCTAssertEqual(model.currentExercise?.id, c.id)
+            model.startTimedSet(expected: c, expectedSetNumber: 1, at: fixedDate)
+            XCTAssertTrue(model.enqueueCorrection(set: try XCTUnwrap(accepted.last), values: nil))
+            await model.drainWorkoutWriteOutboxes()
+            XCTAssertTrue(model.timedActive)
+            if boundary == "manual" {
+                model.jump(to: 3)
+                model.startTimedSet(expected: d, expectedSetNumber: 1, at: fixedDate)
+                await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+                // The explicit focus discarded the old repair; completing
+                // D1 therefore stays on D2 instead of jumping back to B.
+                XCTAssertEqual(model.currentExercise?.id, d.id)
+                model.jump(to: 2)
+                await model.drainSetOutbox()
+                XCTAssertEqual(model.currentExercise?.id, c.id)
+            } else if boundary == "skip" {
+                model.skip()
+                XCTAssertEqual(model.currentExercise?.id, b.id)
+                XCTAssertTrue(model.isSkipped(c))
+            } else {
+                await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+                XCTAssertEqual(model.currentExercise?.id, b.id)
+                XCTAssertEqual(model.runnerSetsDone(c), 1)
+            }
+            XCTAssertFalse(model.timedActive)
+        }
+    }
+}
+
+extension SetOutboxTests {
+    func testGroupDeletionOfOldExecutionClassDoesNotChangeCurrentManualFocus() async {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(groupID: "group-a"), b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+        let oldWarmup = correctionFixture(exercise(warmup: true))
+        let active = session(updatedAt: 100, attempt: 0)
+        api.correctionHandler = { [self] intent, _ in corrected(oldWarmup, intent: intent, session: active) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [oldWarmup], exercises: [a, b]))
+        model.startWorkout()
+        model.jump(to: 1)
+        XCTAssertEqual(model.runnerSetsDone(a), 0)
+        XCTAssertTrue(model.enqueueCorrection(set: oldWarmup, values: nil))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.sets.isEmpty)
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertEqual(model.currentSetNumber, 1)
+    }
+}
+
+extension SetOutboxTests {
+    func testGroupDeletionLiveReadBeforeACKRepairsOnceAndDefersDuringLaterHold() async throws {
+        for timedLater in [false, true] {
+            let defaults = defaults(), api = SetWriteAPIStub()
+            let a = exercise(targetSets: 1, groupID: "group-a")
+            let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1, groupID: "group-a")
+            let c = exercise(id: "slot-c", exerciseID: "exercise-c", timed: timedLater, targetSets: 2)
+            let active = session(updatedAt: 100, attempt: 0)
+            var accepted: [SetLog] = []
+            api.logHandler = { [self] id, body, _ in
+                let row = setLog(body: body, sessionID: id)
+                accepted.append(row)
+                return .init(set: row, deduped: false, session: active)
+            }
+            let entered = SetAsyncLatch(), release = SetAsyncLatch()
+            var deleted: SetLog?
+            api.correctionHandler = { [self] intent, _ in
+                let result = corrected(try XCTUnwrap(accepted.first { $0.id == intent.setID }), intent: intent, session: active)
+                deleted = result.set
+                await entered.open()
+                await release.wait()
+                return result
+            }
+            let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                                  defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: active, sets: [], exercises: [a, b, c]))
+            model.startWorkout()
+            await model.logCurrentSet(expected: a, expectedSetNumber: 1)
+            await model.drainSetOutbox()
+            await model.logCurrentSet(expected: b, expectedSetNumber: 1)
+            await model.drainSetOutbox()
+            if timedLater { model.startTimedSet(expected: c, expectedSetNumber: 1, at: fixedDate) }
+            let rest = model.restEndDate
+            XCTAssertTrue(model.enqueueCorrection(set: try XCTUnwrap(accepted.last), values: nil))
+            let drain = Task { await model.drainWorkoutWriteOutboxes() }
+            await entered.wait()
+            model.replaceState(with: state(session: active,
+                sets: [accepted[0], try XCTUnwrap(deleted)], exercises: [a, b, c]))
+            XCTAssertEqual(model.currentExercise?.id, timedLater ? c.id : b.id)
+            XCTAssertEqual(model.timedActive, timedLater)
+            XCTAssertEqual(model.restEndDate, rest)
+            if !timedLater { model.jump(to: 2) }
+            await release.open()
+            await drain.value
+            XCTAssertTrue(model.setCorrections.isEmpty)
+            XCTAssertEqual(model.currentExercise?.id, c.id)
+            if timedLater {
+                XCTAssertTrue(model.timedActive)
+                await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+                XCTAssertEqual(model.currentExercise?.id, b.id)
+                XCTAssertEqual(model.runnerSetsDone(c), 1)
+            } else {
+                // The read already handled deletion; its late ACK must keep
+                // the manual focus selected after that authoritative read.
+                XCTAssertEqual(model.restEndDate, rest)
+            }
+        }
+    }
+
+    func testGroupRetryOfPermanentFailurePreservesManualFocusInAnotherGroup() async throws {
+        for retryAll in [false, true] {
+            let defaults = defaults(), api = SetWriteAPIStub()
+            let a = exercise(groupID: "group-a")
+            let b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+            let c = exercise(id: "slot-c", exerciseID: "exercise-c", groupID: "group-b")
+            let d = exercise(id: "slot-d", exerciseID: "exercise-d", groupID: "group-b")
+            let active = session(attempt: 0)
+            var rejecting = true
+            api.logHandler = { [self] id, body, _ in
+                if rejecting { throw APIError.http(400, #"{"error":"invalid_set"}"#) }
+                return .init(set: setLog(body: body, sessionID: id), deduped: false, session: active)
+            }
+            let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                                  defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: active, sets: [], exercises: [a, b, c, d]))
+            model.startWorkout()
+            await model.logCurrentSet(expected: a, expectedSetNumber: 1)
+            await model.drainSetOutbox()
+            let failed = try XCTUnwrap(model.setOutbox.pending.first)
+            XCTAssertEqual(failed.deliveryState, .failed)
+            XCTAssertEqual(model.runnerSetsDone(a), 0)
+            model.jump(to: 3)
+            let rest = model.restEndDate
+            rejecting = false
+            if retryAll { await model.retryFailedSetIntents() }
+            else { await model.retrySetIntent(id: failed.id) }
+            XCTAssertTrue(model.setOutbox.isEmpty)
+            XCTAssertEqual(model.sets.first?.id, failed.id)
+            XCTAssertEqual(model.runnerSetsDone(a), 1)
+            XCTAssertEqual(model.currentExercise?.id, d.id)
+            XCTAssertEqual(model.currentSetNumber, 1)
+            XCTAssertEqual(model.restEndDate, rest)
+            XCTAssertEqual(api.logCalls.map(\.body.id), [failed.id, failed.id])
+        }
+    }
+}
+
+extension SetOutboxTests {
+    func testPendingGroupDeletionDoesNotTreatChangedExecutionClassAsDeletionEvidence() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(targetSets: 1, groupID: "group-a")
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1, groupID: "group-a")
+        let c = exercise(id: "slot-c", exerciseID: "exercise-c", targetSets: 2)
+        let changedA = exercise(targetSets: 1, warmup: true, groupID: "group-a")
+        let changedB = exercise(id: b.id, exerciseID: b.exercise_id, targetSets: 1, warmup: true, groupID: "group-a")
+        let active = session(updatedAt: 100, attempt: 0)
+        var accepted: [SetLog] = []
+        api.logHandler = { [self] id, body, _ in
+            let row = setLog(body: body, sessionID: id)
+            accepted.append(row)
+            return .init(set: row, deduped: false, session: active)
+        }
+        let entered = SetAsyncLatch(), release = SetAsyncLatch()
+        api.correctionHandler = { [self] intent, _ in
+            let result = corrected(try XCTUnwrap(accepted.first { $0.id == intent.setID }), intent: intent, session: active)
+            await entered.open()
+            await release.wait()
+            return result
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [], exercises: [a, b, c]))
+        model.startWorkout()
+        await model.logCurrentSet(expected: a, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        await model.logCurrentSet(expected: b, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        XCTAssertTrue(model.enqueueCorrection(set: try XCTUnwrap(accepted.last), values: nil))
+        let drain = Task { await model.drainWorkoutWriteOutboxes() }
+        await entered.wait()
+        model.replaceState(with: state(session: active, sets: accepted,
+            days: [day(with: [changedA, changedB, c])], planVersion: 2))
+        XCTAssertEqual(model.sets.count, 2)
+        XCTAssertEqual(model.runnerSetsDone(changedB), 0)
+        XCTAssertEqual(model.currentExercise?.id, c.id)
+        await release.open()
+        await drain.value
+        XCTAssertTrue(model.setCorrections.isEmpty)
+        XCTAssertEqual(model.currentExercise?.id, c.id)
     }
 }

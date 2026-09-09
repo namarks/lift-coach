@@ -77,6 +77,7 @@ describe('group authoring API and released-client projection', () => {
     for (const path of ['/state', '/plan/active']) {
       const response = await api(path);
       expect(response.status).toBe(200);
+      expect(response.body).not.toHaveProperty('plan_groups_version');
       const view = path === '/state' ? response.body.plan : response.body;
       expect(view.days[0].exercises.map((slot: any) => slot.rest_seconds)).toEqual([30, 30, 120]);
       for (const slot of view.days[0].exercises) {
@@ -113,6 +114,7 @@ describe('group authoring API and released-client projection', () => {
     await api(`/days/${day().id}/groups`, 'PUT', grouping());
     for (const path of ['/state', '/plan/active']) {
       const response = await api(path, 'GET', undefined, 'slots, groups ,future');
+      if (path === '/state') expect(response.body.plan_groups_version).toBe(1);
       const view = path === '/state' ? response.body.plan : response.body;
       expect(view.days[0].exercises.map((slot: any) => slot.rest_seconds)).toEqual([45, 90, 120]);
       expect(view.days[0].exercises[0]).toMatchObject({ group_id: groupId, group_rest_seconds: 30 });
@@ -120,6 +122,16 @@ describe('group authoring API and released-client projection', () => {
     }
     const delta = await api(`/state?since=${plan.version + 1}`, 'GET', undefined, 'groups');
     expect(delta.body.plan).toBeNull();
+    expect(delta.body.plan_groups_version).toBe(1);
+  });
+
+  it('does not certify a state representation for unrelated or partial capability names', async () => {
+    for (const capability of ['slots', 'groups-v2', 'no-groups', '']) {
+      const response = await api('/state', 'GET', undefined, capability);
+      expect(response.status).toBe(200);
+      expect(response.body).not.toHaveProperty('plan_groups_version');
+      expect(response.body.plan.days[0].exercises[0]).not.toHaveProperty('group_id');
+    }
   });
 
   it('recognizes a REST acknowledged retry before stale rejection, without duplicate history', async () => {

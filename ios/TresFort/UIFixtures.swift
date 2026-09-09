@@ -6,7 +6,7 @@ import SwiftUI
 /// of this code. An unknown fixture fails closed before constructing real auth.
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, loadFailure = "load-failure"
-    case ordinary, bodyweight, timed, pending, onboarding
+    case ordinary, bodyweight, timed, pending, onboarding, groups
     case historySmall = "history-small", historyLarge = "history-large"
 
     var isHistory: Bool { self == .historySmall || self == .historyLarge }
@@ -101,13 +101,13 @@ struct UIFixtureView: View {
         .task {
             guard scenario != .signIn, !scenario.isHistory else { return }
             await sync.load()
-            if ![.empty, .loadFailure, .onboarding].contains(scenario) {
+            if ![.empty, .loadFailure, .onboarding, .groups].contains(scenario) {
                 sync.startWorkout()
                 if [.readyToFinish, .correctionFailure].contains(scenario) {
                     sync.finished = true
                 }
                 if scenario == .pending, let exercise = sync.currentExercise {
-                    await sync.logCurrentSet(expected: exercise, expectedSetNumber: sync.currentSetNumber)
+                    await sync.logCurrentSet(expected: exercise, expectedSetNumber: sync.currentPhysicalSetNumber)
                     sync.skipRest()
                 }
             }
@@ -150,6 +150,7 @@ private struct UIFixtureServer {
     var plan: [String: Any]?
     var sessions: [[String: Any]] = []
     var sets: [[String: Any]] = []
+    var groupReceipts: [String: [String: Any]] = [:]
     var revision = 1_788_912_000_000
     let dayID = "synthetic-day", sessionID = "synthetic-session"
 
@@ -157,7 +158,7 @@ private struct UIFixtureServer {
         self.scenario = scenario
         if ![.signIn, .empty, .loadFailure, .onboarding].contains(scenario) {
             plan = makePlan()
-            sessions = [makeSession()]
+            sessions = scenario == .groups ? [] : [makeSession()]
             if [.readyToFinish, .correctionFailure].contains(scenario) {
                 sets = [["id": "synthetic-set", "session_id": sessionID,
                     "exercise_id": "synthetic-exercise", "template_exercise_id": "synthetic-slot",
@@ -167,12 +168,29 @@ private struct UIFixtureServer {
         }
     }
 
-    func makeSession(status: String = "in_progress") -> [String: Any] {
+    // The same contract is consumed by real-D1 and unit tests. Only the UI
+    // test bundle carries the file; the app receives it via launch environment.
+    var groupFixture: [String: Any] {
+        guard let raw = ProcessInfo.processInfo.environment["TRESFORT_UI_GROUP_CONTRACT"],
+              let data = raw.data(using: .utf8),
+              let fixture = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            preconditionFailure("Missing synthetic group contract")
+        }
+        return fixture
+    }
+
+    func makeSession(status: String = "in_progress", attempt: Int = 1) -> [String: Any] {
         ["id": sessionID, "date": "2026-09-08", "status": status,
          "day_template_id": dayID, "updated_at": revision,
-         "attempt": 1, "write_protocol": "attempt-v1"]
+         "attempt": attempt, "write_protocol": "attempt-v1"]
     }
     func makePlan(name: String = "Synthetic Training", days: Bool = true) -> [String: Any] {
+        if scenario == .groups {
+            return ["id": "synthetic-plan", "name": groupFixture["name"]!, "version": 1,
+                "meta": "{\"schedule\":{\"version\":1,\"week\":{\"tue\":\"synthetic-day\"}}}",
+                "days": [["id": dayID, "name": groupFixture["day_name"]!, "order_index": 0,
+                          "exercises": groupFixture["slots"]!]]]
+        }
         let modality = scenario == .bodyweight ? "bw" : scenario == .timed ? "timed" : "barbell"
         var slot: [String: Any] = ["id": "synthetic-slot", "exercise_id": "synthetic-exercise",
             "exercise_name": scenario == .bodyweight ? "Pull-Up" : scenario == .timed ? "Plank" : "Barbell Squat",
@@ -211,9 +229,19 @@ private struct UIFixtureServer {
         switch (method, path) {
         case ("GET", "/api/state"):
             if scenario == .loadFailure { throw URLError(.notConnectedToInternet) }
+            if scenario == .groups {
+                guard request.value(forHTTPHeaderField: "X-TresFort-Capabilities")?
+                    .split(separator: ",").contains(where: { $0.trimmingCharacters(in: .whitespaces) == "groups" }) == true
+                else { throw URLError(.badServerResponse) }
+            }
             response = ["plan": plan as Any? ?? NSNull(), "plan_version": plan?["version"] ?? 0,
-                "sessions": sessions, "sets": sets, "server_time": revision,
+                "sessions": sessions, "sets": sets, "server_time": revision, "plan_groups_version": 1,
                 "activities": [], "external_events": [], "external_activities": []]
+        case ("GET", "/api/exercises") where scenario == .groups:
+            response = (groupFixture["slots"] as! [[String: Any]]).map { slot in
+                ["id": slot["exercise_id"]!, "name": slot["exercise_name"]!,
+                 "modality": slot["exercise_modality"]!, "unit": "lb", "primary_muscle": "full body"]
+            }
         case ("GET", "/api/exercises"):
             response = [["id": "synthetic-exercise",
                 "name": scenario == .bodyweight ? "Pull-Up" : scenario == .timed ? "Plank" : "Barbell Squat",
@@ -228,11 +256,62 @@ private struct UIFixtureServer {
             day["label"] = NSNull()
             plan?["days"] = [day]; plan?["version"] = 2
             response = ["id": dayID]
+        case ("PUT", "/api/days/\(dayID)/groups") where scenario == .groups:
+            let receiptKey = String(data: try JSONSerialization.data(withJSONObject: body, options: [.sortedKeys]), encoding: .utf8)!
+            if let receipt = groupReceipts[receiptKey] { response = receipt; break }
+            guard let version = plan?["version"] as? Int, body["expected_version"] as? Int == version else {
+                status = 409; response = ["conflict": true, "current_version": plan?["version"] ?? 0]; break
+            }
+            guard let groupID = body["group_id"] as? String, UUID(uuidString: groupID) != nil,
+                  let ids = body["exercises"] as? [String] else { throw URLError(.badServerResponse) }
+            var days = plan!["days"] as! [[String: Any]]
+            var slots = days[0]["exercises"] as! [[String: Any]]
+            if !ids.isEmpty {
+                // Only the two prescribed selections in this journey are accepted.
+                let expected = (groupFixture["groups"] as! [[String: Any]]).first { group in
+                    let indices = group["member_indices"] as! [Int]
+                    let original = groupFixture["slots"] as! [[String: Any]]
+                    return indices.map { original[$0]["id"] as! String } == ids
+                }
+                guard let expected,
+                      body["round_rest"] as? Int == expected["round_rest"] as? Int,
+                      body["transition_rest"] as? Int == expected["transition_rest"] as? Int,
+                      body["target_sets"] as? Int == expected["rounds"] as? Int else {
+                    throw URLError(.badServerResponse)
+                }
+            }
+            for index in slots.indices where ids.contains(slots[index]["id"] as! String)
+                || (ids.isEmpty && slots[index]["group_id"] as? String == groupID) {
+                slots[index]["group_id"] = ids.isEmpty ? NSNull() : groupID as Any
+                slots[index]["group_rest_seconds"] = ids.isEmpty ? NSNull() : body["round_rest"]!
+                slots[index]["group_transition_seconds"] = ids.isEmpty ? NSNull() : body["transition_rest"]!
+                if !ids.isEmpty { slots[index]["target_sets"] = body["target_sets"]! }
+            }
+            days[0]["exercises"] = slots; plan?["days"] = days; plan?["version"] = version + 1
+            let ack: [String: Any] = ["ok": true, "plan_id": "synthetic-plan", "version": version + 1,
+                "group_id": groupID, "day_id": dayID, "members": ids,
+                "round_rest": body["round_rest"] ?? NSNull(), "transition_rest": body["transition_rest"] ?? NSNull(),
+                "target_sets": body["target_sets"] ?? NSNull(), "cleared": ids.isEmpty]
+            groupReceipts[receiptKey] = ack
+            response = ack
         case ("POST", "/api/sessions"):
-            if sessions.isEmpty { sessions = [makeSession()] }
+            if sessions.isEmpty {
+                guard body["expected_attempt"] as? Int == 0 else { throw URLError(.badServerResponse) }
+                sessions = [makeSession(attempt: 0)]
+            }
             response = sessions[0]
         case ("POST", "/api/sessions/\(sessionID)/sets"):
             if scenario == .pending { throw URLError(.notConnectedToInternet) }
+            if scenario == .groups, !sets.contains(where: { $0["id"] as? String == body["id"] as? String }) {
+                let indices = groupFixture["execution_indices"] as! [Int]
+                let slots = groupFixture["slots"] as! [[String: Any]]
+                guard sets.count < indices.count,
+                      body["template_exercise_id"] as? String == slots[indices[sets.count]]["id"] as? String else {
+                    // A wrong member is observable as a failed set; never bless a
+                    // sequential runner just because it eventually logs eight sets.
+                    status = 422; response = ["error": "Synthetic member sequence mismatch"]; break
+                }
+            }
             var set = body
             set["is_warmup"] = (body["is_warmup"] as? Bool == true) ? 1 : 0
             set["is_timed"] = (body["is_timed"] as? Bool == true) ? 1 : 0
@@ -240,17 +319,22 @@ private struct UIFixtureServer {
             set["logged_at"] = revision
             sets.removeAll { ($0["id"] as? String) == (set["id"] as? String) }
             sets.append(set)
-            sessions = [makeSession()]
+            sessions = [makeSession(attempt: sessions.first?["attempt"] as? Int ?? 0)]
             response = ["set": set, "session": sessions[0], "deduped": false]
         case ("PATCH", "/api/sets/synthetic-set"):
             status = 422; response = ["error": "Synthetic correction rejected"]
         case ("PATCH", "/api/sessions/\(sessionID)"):
-            sessions = [makeSession(status: "completed")]
+            sessions = [makeSession(status: "completed", attempt: sessions.first?["attempt"] as? Int ?? 0)]
             response = sessions[0]
         case ("GET", "/api/sessions/\(sessionID)/summary"):
-            response = ["version": 1, "session_id": sessionID, "date": "2026-09-08", "attempt": 1,
-                "final": sessions.first?["status"] as? String == "completed", "working_sets": sets.count,
-                "total_reps": sets.count * 5, "external_load_volume": sets.count * 225,
+            let workingSets = sets.filter { $0["is_warmup"] as? Int == 0 }
+            let totalReps = workingSets.reduce(0) { $0 + ($1["reps"] as? Int ?? 0) }
+            let externalVolume = workingSets.reduce(0.0) {
+                $0 + ($1["weight"] as? Double ?? 0) * Double($1["reps"] as? Int ?? 0)
+            }
+            response = ["version": 1, "session_id": sessionID, "date": "2026-09-08", "attempt": sessions.first?["attempt"] ?? 0,
+                "final": sessions.first?["status"] as? String == "completed", "working_sets": workingSets.count,
+                "total_reps": totalReps, "external_load_volume": externalVolume,
                 "cohorts": [], "records": [], "targets_available": false, "targets": []]
         default:
             // Unsupported UI interactions are visible failures, never passthrough.

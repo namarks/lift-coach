@@ -14,7 +14,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
     private func state(
         planName: String = "Cached Plan",
         serverTime: Int = 2_000_000_000_000,
-        externalSyncCursorsVersion: Int? = nil
+        externalSyncCursorsVersion: Int? = nil,
+        planGroupsVersion: Int? = 1
     ) throws -> StateResponse {
         var object: [String: Any] = [
             "plan": [
@@ -68,6 +69,7 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             object["external_sync_cursors_version"] =
                 externalSyncCursorsVersion
         }
+        if let planGroupsVersion { object["plan_groups_version"] = planGroupsVersion }
         let data = try JSONSerialization.data(withJSONObject: object)
         return try JSONDecoder().decode(StateResponse.self, from: data)
     }
@@ -260,7 +262,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             external_activities: [externalActivity(id: "activity-a")],
             activities: baseline.activities,
             server_time: serverTime,
-            externalSyncCursorsVersion: 2)
+            externalSyncCursorsVersion: 2,
+            planGroupsVersion: baseline.planGroupsVersion)
         let expectedCursor = serverTime
             - StateSyncWatermarks.overlapMilliseconds
 
@@ -281,7 +284,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             external_activities: [externalActivity(id: "activity-a")],
             activities: baseline.activities,
             server_time: serverTime,
-            externalSyncCursorsVersion: 2)
+            externalSyncCursorsVersion: 2,
+            planGroupsVersion: baseline.planGroupsVersion)
         XCTAssertEqual(
             StateSyncWatermarks.next(after: incomparableEvent).eventsSince,
             0)
@@ -300,7 +304,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
                 id: "activity-a", syncedAt: nil)],
             activities: baseline.activities,
             server_time: serverTime,
-            externalSyncCursorsVersion: 2)
+            externalSyncCursorsVersion: 2,
+            planGroupsVersion: baseline.planGroupsVersion)
         XCTAssertEqual(
             StateSyncWatermarks.next(after: incomparableActivity).eventsSince,
             expectedCursor)
@@ -373,7 +378,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             external_activities: [externalActivity(id: "activity-a")],
             activities: baseline.activities,
             server_time: initialTime,
-            externalSyncCursorsVersion: 2)
+            externalSyncCursorsVersion: 2,
+            planGroupsVersion: baseline.planGroupsVersion)
         StateSnapshotStore.save(
             initial, userID: "user-a", defaults: defaults)
 
@@ -442,7 +448,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
                 external_activities: [externalActivity(id: "activity-a")],
                 activities: baseline.activities,
                 server_time: initialTime,
-                externalSyncCursorsVersion: 2),
+                externalSyncCursorsVersion: 2,
+                planGroupsVersion: baseline.planGroupsVersion),
             userID: "user-a",
             defaults: defaults)
 
@@ -624,7 +631,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             external_events: [event(id: "event-a")],
             external_activities: [externalActivity(id: "external-a")],
             activities: [],
-            server_time: baseline.server_time)
+            server_time: baseline.server_time,
+            planGroupsVersion: baseline.planGroupsVersion)
         StateSnapshotStore.save(
             initial, userID: "user-a", defaults: defaults)
 

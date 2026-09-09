@@ -65,6 +65,13 @@ struct TemplateExercise: Codable, Identifiable, Equatable {
     /// pre-0026 payloads decode → defaults to a working slot. (Migration 0026.)
     let is_warmup: Int?
 
+    /// Group-owned round/transition rests leave the ordinary slot rest intact.
+    /// Mutable defaults preserve older memberwise initializers while synthesized
+    /// Codable still reads both absent/null legacy fields and current values.
+    var group_id: String? = nil
+    var group_rest_seconds: Int? = nil
+    var group_transition_seconds: Int? = nil
+
     /// A prescribed warm-up slot (erg, mobility). Renders in a warm-up style
     /// and its logged sets are flagged is_warmup.
     var isWarmup: Bool { is_warmup == 1 }
@@ -161,7 +168,7 @@ struct PlanSchedule: Decodable, Equatable {
     }
 }
 
-struct PlanTree: Codable {
+struct PlanTree: Codable, Equatable {
     let id: String
     let name: String
     let version: Int
@@ -650,6 +657,12 @@ struct ExternalActivity: Codable, Identifiable, Equatable {
 
 struct StateResponse: Codable {
     static let externalSyncCursorsCapabilityVersion = 2
+    static let planGroupsCapabilityVersion = 1
+
+    /// Wire proof that a full plan uses the group-aware representation. The
+    /// snapshot store separately records which committed plan it certifies;
+    /// this field alone never upgrades an older cached compatibility view.
+    let planGroupsVersion: Int?
 
     /// P2 Workers send version 2 once both external cache `synced_at`
     /// columns are true change cursors. Older Workers omit this field and
@@ -683,6 +696,7 @@ struct StateResponse: Codable {
         case plan, plan_version, sessions, sets
         case external_events, external_activities, activities, server_time
         case externalSyncCursorsVersion = "external_sync_cursors_version"
+        case planGroupsVersion = "plan_groups_version"
         case manualActivityCursorCapable = "_manual_activity_cursor_capable"
     }
 
@@ -696,8 +710,10 @@ struct StateResponse: Codable {
         activities: [ActivityRow],
         server_time: Int,
         manualActivityCursorCapable: Bool = true,
-        externalSyncCursorsVersion: Int? = nil
+        externalSyncCursorsVersion: Int? = nil,
+        planGroupsVersion: Int? = nil
     ) {
+        self.planGroupsVersion = planGroupsVersion
         self.externalSyncCursorsVersion = externalSyncCursorsVersion
         self.plan = plan
         self.plan_version = plan_version
@@ -712,6 +728,8 @@ struct StateResponse: Codable {
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        planGroupsVersion = try c.decodeIfPresent(
+            Int.self, forKey: .planGroupsVersion)
         externalSyncCursorsVersion = try c.decodeIfPresent(
             Int.self, forKey: .externalSyncCursorsVersion)
         plan = try c.decodeIfPresent(PlanTree.self, forKey: .plan)
@@ -759,6 +777,7 @@ struct StateResponse: Codable {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(planGroupsVersion, forKey: .planGroupsVersion)
         try c.encodeIfPresent(
             externalSyncCursorsVersion,
             forKey: .externalSyncCursorsVersion)

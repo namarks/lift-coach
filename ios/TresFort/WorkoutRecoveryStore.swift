@@ -19,6 +19,8 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
     let workoutStartedAtMS: Int
     let finished: Bool
     let input: RunnerInputState?
+    /// Progress observed when this exact focus was chosen; nil on legacy checkpoints.
+    let groupProgress: GroupRunnerProgress?
 
     init(
         date: String,
@@ -30,7 +32,8 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         finished: Bool,
         sessionAttempt: Int? = nil,
         restartDiscardedAttempt: Int? = nil,
-        input: RunnerInputState? = nil
+        input: RunnerInputState? = nil,
+        groupProgress: GroupRunnerProgress? = nil
     ) {
         self.date = date
         self.sessionID = sessionID
@@ -42,6 +45,7 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         self.workoutStartedAtMS = workoutStartedAtMS
         self.finished = finished
         self.input = input
+        self.groupProgress = groupProgress
     }
 }
 

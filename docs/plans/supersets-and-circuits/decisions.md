@@ -69,6 +69,43 @@ embedded plan omit all group columns and return the round rest as each grouped
 member's ordinary rest. This projection never writes to storage. Other
 capabilities compose in the same header.
 
+The group-aware app sends that header on plan-bearing reads and writes. A
+`/state` response to a group-capable request includes `plan_groups_version: 1`.
+The snapshot envelope certifies a plan only when a current live request returns
+the complete tree with this proof, or an authoritative absence at plan version
+zero. Cached wire fields and mutation acknowledgements cannot create the
+certificate. An older sequential cache forces a plan-only refresh at version
+zero while preserving independent collection cursors. Unchanged-plan deltas
+and acknowledgements retain an existing certificate. Replacement and explicit
+invalidation clear it. Oversized snapshots retain it only beside their live
+in-memory plan; the durable invalidation marker cannot certify a missing tree.
+
+## App runner and editor
+
+Group progress is derived from each slot's acknowledged set UUIDs plus durable,
+nonfailed queued UUIDs. Replacing a queued UUID with its acknowledgement does
+not advance progress again. Automatic rotation selects the first unskipped
+member at the lowest completed count. The displayed set number is the group
+round; rendered actions and timed holds use a separate per-slot physical-set
+number so a duplicate tap cannot log another set in that same round.
+
+Only a newly queued physical set starts a rest cue. A non-last executable
+member uses transition rest, where zero produces no cue; the last uses round
+rest. Rest and Live Activity labels follow the resulting current member.
+Acknowledgements, refreshes and retries do not restart a deadline. Manual
+navigation survives unchanged progress, and checkpoints retain enough group
+progress provenance to distinguish that choice from interrupted local advance.
+Acknowledged deletions repair the affected group at a stable runner boundary;
+value-only corrections preserve focus and rest.
+
+The editor renders contiguous groups as single movable cards. Selection accepts
+adjacent ordinary slots only. Group editing submits a stable group UUID and
+captured expected version, with whole-group rounds and both labeled rest values.
+Block movement uses the final flattened day index. A grouped member's rounds
+and individual rest are inactive in its target form; the ordinary rest remains
+stored for ungrouping. Accepted writes close their form even if the following
+refresh fails, and further edits wait for refreshed state.
+
 ## Delivery boundary
 
 The backend migration is additive and must be applied before deploying code

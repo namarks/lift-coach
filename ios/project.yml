@@ -63,6 +63,8 @@ targets:
     platform: iOS
     sources:
       - TresFortUITests
+      - path: TresFortTests/Fixtures/ExerciseGroups.json
+        buildPhase: resources
     dependencies:
       - target: TresFort
     settings:

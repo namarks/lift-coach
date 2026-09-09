@@ -217,9 +217,11 @@ apiRoutes.get('/state', async (c) => {
   // actuals cache, see migration 0015 / getState).
   const logSince = Number(c.req.query('log_since') ?? 0);
   const state = await getState(c.env.DB, userId, since, setsSince, eventsSince, activitiesSince, logSince);
+  const capabilities = readCapabilities(c.req.header('X-TresFort-Capabilities'));
   return c.json({ ...state, plan: state.plan
-    ? planForCapabilities(state.plan, readCapabilities(c.req.header('X-TresFort-Capabilities')))
-    : state.plan });
+    ? planForCapabilities(state.plan, capabilities)
+    : state.plan,
+    ...(capabilities.has('groups') ? { plan_groups_version: 1 } : {}) });
 });
 
 // ---- plan tree -----------------------------------------------------------
