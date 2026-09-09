@@ -10001,6 +10001,84 @@ extension SetOutboxTests {
         XCTAssertEqual(StateSnapshotStore.load(userID: "user-a", defaults: defaults)?.state.sets.first?.weight, 135)
     }
 
+    func testCorrectionPackingFailurePersistsInvalidationBeforeRetiringIntent() async throws {
+        let defaults = defaults(), ex = exercise()
+        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
+        let api = SetWriteAPIStub()
+        api.correctionHandler = { [self] intent, _ in corrected(original, intent: intent, session: active) }
+        let sharedAuth = retainedAuth(defaults: defaults)
+        let model = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [original], exercise: ex))
+        // Exercise the real codec's size failure without asking UserDefaults
+        // to store an invalid value. The mounted model supplies the fallback.
+        var generator: UInt64 = 0x123456789abcdef
+        var noise = Data(count: 5 * 1_024 * 1_024)
+        noise.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
+            for index in bytes.indices {
+                generator ^= generator << 13
+                generator ^= generator >> 7
+                generator ^= generator << 17
+                bytes[index] = UInt8(truncatingIfNeeded: generator)
+            }
+        }
+        let hugePlan = PlanTree(id: "plan-a", name: "Plan A", version: 1,
+            days: [day(with: [ex])], meta: noise.base64EncodedString())
+        XCTAssertNil(StateSnapshotStore.encodedEnvelope(try JSONEncoder().encode(hugePlan)))
+        model.plan = hugePlan
+        StateSnapshotStore.clear(userID: "user-a", defaults: defaults)
+        let oldTicket = try XCTUnwrap(StateSnapshotStore.reserveFullStateRequest(userID: "user-a", defaults: defaults))
+        XCTAssertTrue(model.enqueueCorrection(set: original,
+            values: .init(weight: 135, reps: 4, rpe: 9, durationSeconds: nil)))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertTrue(model.setCorrections.isEmpty)
+        XCTAssertEqual(model.sets.first?.weight, 135)
+        XCTAssertEqual(api.correctionCalls.count, 1)
+        XCTAssertTrue(model.correctionRefreshNeeded)
+        XCTAssertFalse(StateSnapshotStore.isCurrent(oldTicket, defaults: defaults))
+        XCTAssertNil(StateSnapshotStore.load(userID: "user-a", defaults: defaults))
+        let marker = try XCTUnwrap(defaults.data(forKey: StateSnapshotStore.scopedKey(userID: "user-a")))
+        XCTAssertLessThan(marker.count, 1_024)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: marker) as? [String: Any])
+        XCTAssertEqual(json["invalidated"] as? Bool, true)
+        // Neither a replacement model nor a delayed ACK may resurrect stale
+        // browse data; the next authenticated state request must be full.
+        let cold = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        XCTAssertTrue(cold.sets.isEmpty)
+        XCTAssertTrue(cold.setCorrections.isEmpty)
+        XCTAssertNil(StateSnapshotStore.mergeAcknowledgement(userID: "user-a",
+            fallback: state(session: active, sets: [original], exercise: ex), defaults: defaults) { $0 })
+        let next = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(userID: "user-a", defaults: defaults))
+        XCTAssertEqual(next.watermarks, .fullReload)
+    }
+
+    func testCorrectionRetainsIntentWhenSnapshotAndInvalidationCannotAdvance() async throws {
+        let defaults = defaults(), ex = exercise()
+        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
+        let api = SetWriteAPIStub()
+        let key = StateSnapshotStore.scopedKey(userID: "user-a")
+        api.correctionHandler = { [self] intent, _ in
+            // The monotonic revision guard is a deterministic failure for
+            // both the snapshot and its small invalidation fallback.
+            let data = try XCTUnwrap(defaults.data(forKey: key))
+            let json = try XCTUnwrap(StateSnapshotStore.decodedEnvelope(data))
+            var envelope = try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
+            envelope["revision"] = UInt64.max
+            defaults.set(try JSONSerialization.data(withJSONObject: envelope), forKey: key)
+            return corrected(original, intent: intent, session: active)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { self.fixedDate }, automaticWorkoutWriteRetryEnabled: false)
+        model.replaceState(with: state(session: active, sets: [original], exercise: ex))
+        XCTAssertTrue(model.enqueueCorrection(set: original,
+            values: .init(weight: 135, reps: 4, rpe: 9, durationSeconds: nil)))
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertEqual(model.sets.first?.weight, 135)
+        XCTAssertTrue(model.correctionRefreshNeeded)
+        XCTAssertEqual(model.setCorrections.count, 1)
+        XCTAssertEqual(SetCorrectionOutboxStore.load(userID: "user-a", defaults: defaults).count, 1)
+        XCTAssertEqual(model.setCorrections.first?.deliveryState, .queued)
+    }
+
     func testDelayedCorrectionCannotAcceptSecondLocalEditOrMoveFinalReview() async throws {
         let defaults = defaults(), ex = exercise(targetSets: 1)
         let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)

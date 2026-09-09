@@ -5744,10 +5744,16 @@ extension SyncModel {
                     Self.mergingSetAcknowledgement(into: state, acceptedSet: result.set,
                                                   acknowledgedSession: result.session)
                 }
-                // ACK is the mutation boundary. It cannot become a failed
-                // edit merely because a later refresh/local cache save fails.
-                SetCorrectionOutboxStore.remove(id: intent.id, userID: accountID, defaults: defaults)
-                adoptDurableWorkoutWriteOutboxes()
+                // ACK is the mutation boundary. Before retiring its durable
+                // intent, preserve either the merged rows or a small durable
+                // invalidation marker. Repacking the same oversized snapshot
+                // merely to clear its cursors can fail again.
+                let recoveryCommitted = merged != nil || StateSnapshotStore.invalidate(
+                    userID: accountID, defaults: defaults)
+                if recoveryCommitted {
+                    SetCorrectionOutboxStore.remove(id: intent.id, userID: accountID, defaults: defaults)
+                    adoptDurableWorkoutWriteOutboxes()
+                }
                 if canInitiateBoundFeatureAction {
                     let state = merged?.state ?? Self.mergingSetAcknowledgement(
                         into: currentStateResponse(), acceptedSet: result.set,
@@ -5758,12 +5764,12 @@ extension SyncModel {
                     persistRunnerCheckpoint()
                     correctionRefreshNeeded = merged == nil
                     if merged == nil {
-                        _ = StateSnapshotStore.requireFullReload(userID: accountID, defaults: defaults)
                         loadError = "Correction saved. Refresh to update the recovery cache."
                     }
-                } else {
+                } else if recoveryCommitted {
                     auth.noteAccountStatePersisted(for: accountID)
                 }
+                if !recoveryCommitted { return true }
             } catch {
                 sendingCorrectionIDs.remove(intent.id)
                 guard canMutateBoundSetAccount else { return true }

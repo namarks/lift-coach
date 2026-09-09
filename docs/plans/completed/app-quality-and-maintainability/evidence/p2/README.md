@@ -151,7 +151,9 @@ Envelopes of at least 256 KiB now use a `TFSS1` prefix plus Foundation LZFSE
 compression. Small envelopes remain plain JSON. Reads accept both forms and
 legacy raw StateResponse payloads. Compression/decompression errors fail closed;
 a packed value at or above 4 MiB is rejected before calling UserDefaults, so
-existing failed-save behavior retains pending writes instead of claiming success.
+failed-save handling retains the durable intent or stores a small invalidation
+marker before retiring an acknowledged correction. The marker requires a full
+reload and prevents delayed ACKs from recreating stale cached rows.
 This is lossless encoding, with no history trimming or retention-policy change.
 
 The cached UI test verifies exact seeded set counts before termination and on
@@ -161,6 +163,25 @@ that cannot decode the wrapper must perform its existing full reload; separate
 outboxes/checkpoints remain in their existing format. A downgrade while offline
 can therefore lack cached browsing until that reload succeeds. No server or
 schema migration is required.
+
+## Correction recovery on a failed snapshot save
+
+Independent review identified that corrections previously retired their outbox
+entry even when the merged snapshot could not be packed. Rewriting that same
+snapshot with cleared cursors could fail for the same reason. Corrections now
+retire only after the merged snapshot or a small durable invalidation marker is
+stored. If both fail, the intent remains queued. The mounted model still presents
+the server-acknowledged correction as saved and offers a recovery-cache refresh;
+it does not mislabel the accepted edit as rejected. Invalidation discards only
+an unusable browse cache and retains the existing full-reload ordering guard.
+
+Regression coverage exercises a real incompressible oversized fallback,
+replacement-model behavior, stale request/ACK rejection and explicit full
+reload. A saturated revision separately proves the outbox survives when neither
+the snapshot nor its marker can advance. All **328 unit tests** passed after
+this fix; [the copied-source manifest](sources-review-fix.json) records that run.
+The earlier full-suite run retains the 18 UI journeys and measurements above;
+the PR reruns the complete suite for the exact reviewed final head.
 
 ## Investigation budgets
 
