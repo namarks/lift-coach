@@ -157,7 +157,7 @@ temporary supersets dependencies become completed-foundation links in this
 closeout; its product decisions and activation boundary are preserved.
 
 Local verification passed all 871 backend tests. An isolated iPhone 17 /
-iOS 26.2 simulator passed 376 iOS unit tests. The synthetic UI journeys author a
+iOS 26.2 simulator passed 379 iOS unit tests. The synthetic UI journeys author a
 push-up/squat warm-up and bench/row working superset, execute eight alternating
 sets with transition/round cues, finish, edit grouped targets and ungroup while
 preserving individual rests. The same JSON prescription drives real-D1
