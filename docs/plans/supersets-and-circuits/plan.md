@@ -145,17 +145,19 @@ Reuse that delivered path when changing the runner.
 
 P0 uses the completed [validated atomic writer](../completed/prescription-integrity/decisions.md). Extend the [canonical snapshot serializer](../completed/reversible-plan-management/decisions.md) to include `group_id` so restoration preserves grouping.
 
+[Completed app quality and maintainability](../completed/app-quality-and-maintainability/plan.md)
+supplies the shared history and persistence refactors. Rebase onto their
+integrated main before P1/P2 edits to SyncModel, the runner or editors.
+
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
 | P0 | coordinates_with | plan:workouts-and-multi-session#P0 | Both add or rename columns on the same plan-tree tables; whichever lands second rebases onto the other's migration and serializer. |
-| P1 | coordinates_with | plan:app-quality-and-maintainability#P2 | Shared SyncModel and runner ownership; wait for overlapping refactors to merge and rebase before editing. |
-| P2 | coordinates_with | plan:app-quality-and-maintainability#P2 | Shared editor and persistence ownership; hand off after refactors land. |
 | P2 | coordinates_with | plan:workout-library#P0 | Both edit the routine and slot editors; do not run concurrently on the same iOS files. |
 
 ## Next step
 
 **Now (@agent):** Complete P0 in parallel with app-quality-and-maintainability,
-then wait for its overlapping iOS refactors to land, rebase, and continue P1/P2.
+then rebase onto its completed iOS foundation and continue P1/P2.
 The September 8 owner instruction authorizes execution through required review
 and verification until human input is necessary.
 P0 is backend and MCP only, so Claude can author supersets before the runner
