@@ -13,6 +13,7 @@ import SwiftUI
 /// onboarding finishes, MainTabView spins up the real, retained instances and
 /// pulls fresh server state — so nothing this view loads needs to survive.
 struct OnboardingView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var auth: AuthModel
     @StateObject private var groupModel: GroupModel
 
@@ -27,14 +28,21 @@ struct OnboardingView: View {
     var body: some View {
         ZStack {
             Theme.background
-            VStack(spacing: 0) {
-                ProgressDots(total: Step.allCases.count, index: step.rawValue)
-                    .padding(.top, 20)
-                Spacer(minLength: 12)
-                content
-                    .padding(.horizontal, 28)
-                    .frame(maxWidth: 480)
-                Spacer(minLength: 12)
+            GeometryReader { geometry in
+                ScrollView {
+                    VStack(spacing: 0) {
+                        ProgressDots(total: Step.allCases.count, index: step.rawValue)
+                            .padding(.top, 20)
+                        Spacer(minLength: 12)
+                        content
+                            .padding(.horizontal, 28)
+                            .frame(maxWidth: 480)
+                        Spacer(minLength: 12)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: geometry.size.height)
+                }
+                .scrollDismissesKeyboard(.interactively)
+                .id(step)
             }
         }
         .preferredColorScheme(.dark)
@@ -61,7 +69,7 @@ struct OnboardingView: View {
 
     private func advance() {
         if let next = Step(rawValue: step.rawValue + 1) {
-            withAnimation(.snappy) { step = next }
+            withAnimation(reduceMotion ? nil : .snappy) { step = next }
         } else {
             auth.completeOnboarding()
         }
@@ -123,6 +131,7 @@ private struct JoinGroupStep: View {
                 .font(Theme.mono(24, .bold))
                 .multilineTextAlignment(.center)
                 .foregroundStyle(Theme.text)
+                .accessibilityLabel("Group invite code")
                 .padding(.vertical, 16)
                 .frame(maxWidth: .infinity)
                 .background(Theme.surface, in: RoundedRectangle(cornerRadius: 12))
@@ -232,6 +241,7 @@ private struct ConnectIntervalsStep: View {
                     Text("Use an API key instead")
                         .font(.footnote)
                         .foregroundStyle(Theme.muted)
+                        .frame(minHeight: 44)
                 }
             }
 
@@ -385,11 +395,13 @@ private struct OnboardingSkipButton: View {
             Text(title)
                 .font(.subheadline)
                 .foregroundStyle(Theme.muted)
+                .frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
         }
     }
 }
 
 private struct ProgressDots: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let total: Int
     let index: Int
 
@@ -401,7 +413,9 @@ private struct ProgressDots: View {
                     .frame(width: i == index ? 22 : 7, height: 7)
             }
         }
-        .animation(.snappy, value: index)
+        .animation(reduceMotion ? nil : .snappy, value: index)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Step \(index + 1) of \(total)")
     }
 }
 

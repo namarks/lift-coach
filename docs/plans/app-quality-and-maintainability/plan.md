@@ -11,7 +11,7 @@ durable account/attempt-bound writes remain the foundation.
 
 ## Phases
 
-- [ ] **P0 — Reproducible iOS and contract verification**
+- [x] **P0 — Reproducible iOS and contract verification**
   - Provide one documented command for unsigned XcodeGen build and existing
     iOS tests on an explicitly selected simulator/runtime, with disposable
     output cleanup and useful retained failure evidence. Add iOS build/tests
@@ -29,20 +29,19 @@ durable account/attempt-bound writes remain the foundation.
   - Keep numerical/calendar contracts comparable across TypeScript and Swift
     with shared fixture cases. Run checks tied to the changed surface; a green
     backend job alone is not proof of an iOS change.
-- [ ] **P1 — Accessible end-to-end gym journey**
-  - Fix confirmed enabled-control/text contrast and tiny unlabeled destructive
-    actions. Provide contextual VoiceOver names/values, adequate touch targets
-    (44 by 44 points for ordinary interactive controls), logical focus order
-    and non-color state cues without losing the scoreboard visual identity.
-  - Honor Reduce Motion for rest-complete animation. Make onboarding, load
-    entry, error/recovery messages and completion controls reachable with large
-    accessibility text and the keyboard. Preserve custom-font scaling; do not
-    infer a Dynamic Type defect merely from use of custom fonts.
-  - Verify the P0 fixtures on the smallest supported layout and a current
-    device size, with VoiceOver, large text and Reduce Motion. Record simulator
-    versus physical-device evidence separately. Audio/lock-screen cues and
-    interruption behavior require an authorized device walkthrough before a
-    release claim.
+- [x] **P1 — Basic usability of the gym journey**
+  - Fix confirmed enabled-control/text contrast, provide contextual control
+    names/values, 44-point targets and non-color state cues while preserving
+    the scoreboard identity. Keep the implemented scrolling, load-entry,
+    recovery, completion and Reduce Motion improvements.
+  - Prioritize current iPhones at normal text sizes in automated verification.
+    Exercise sign-in/creation, ordinary/bodyweight/timed runner, pending writes,
+    correction recovery, onboarding, keyboard entry and completion. Keep
+    inexpensive contrast-policy and visible-viewport target/description/clipping
+    checks. Do not require exhaustive older-device or extreme-font matrices.
+  - Physical VoiceOver, audio/lock-screen and interruption observations can
+    inform future improvements, but are not a delivery gate. Repository
+    verification does not claim that those device-specific behaviors were tested.
 - [ ] **P2 — Measured hot paths and bounded module extraction**
   - Measure cached cold launch, calendar open/scroll, exercise history and
     log/acknowledgment with a small history and a synthetic multi-year history.
@@ -66,6 +65,10 @@ durable account/attempt-bound writes remain the foundation.
     structured conflicts, and the exact atomicity of field edits. Separate
     historical design intent from current implementation claims.
 
+## Execution frontier
+
+- P2
+
 ## Dependencies
 
 [Completed Gym Runner Depth](../completed/gym-runner-depth/plan.md) supplies
@@ -78,13 +81,18 @@ P2 preserves the completed [validated atomic prescription writer](../completed/p
 |---|---|---|---|
 | P1 | coordinates_with | plan:member-activation-and-adherence#P0 | Entry copy, errors and large-text layouts touch the same surfaces. |
 
+
 ## Next step
 
-**Now (@agent):** Land P0 through current-head independent review and all three
-CI jobs, then continue P1 accessibility from the synthetic fixture baseline.
-The September 8 instruction activates this plan until human input is needed.
-Physical-device walkthroughs remain owner work; measure P2 before choosing
-performance changes.
+**Now (@agent):** Land the basic P1 usability changes through current-head
+independent review and the current-iPhone CI suite, then continue P2 with
+repeatable small-history and multi-year measurements before choosing bounded
+performance changes. P0 is merged in [PR #153](https://github.com/namarks/tres-fort/pull/153)
+(`bd9bf6f3f34903c1c09115f7e68f2f8a2f6642f4`). The September 8 steering prioritizes
+current iPhones and normal text sizes, stops exhaustive older-device/extreme-font
+testing and explicitly removes accessibility walkthroughs as delivery gates.
+Deployment, migration, signing/distribution and production-data authority remain
+separate from this repository work.
 
 ## Notes / open questions
 
@@ -108,5 +116,10 @@ performance changes.
   alongside the existing bodyweight numerical fixtures. The
   [synthetic simulator baseline](evidence/p0/README.md) retains the passing
   walkthrough screenshots and exact copied-source hashes. A confirmed initial-load
-  failure now offers retry instead of claiming an empty plan. Repository delivery
-  and P0 completion remain pending current-head review and terminal-green CI.
+  failure now offers retry instead of claiming an empty plan. P0's exact
+  `77093f2df9` head passed independent Codex review and all three jobs in
+  [CI run 34305359863](https://github.com/namarks/tres-fort/actions/runs/34305359863)
+  before merge; the merge tree matched that reviewed head.
+- P1 retains [verification evidence and its limits](evidence/p1/README.md).
+  Device walkthroughs are optional follow-up evidence, not an execution gate.
+  Continue P2 under the existing activation.

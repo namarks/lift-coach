@@ -170,6 +170,7 @@ struct ExerciseDemoSheet: View {
 /// Compact tap target — a circled (i) glyph rendered to the right of the
 /// exercise name. Calls `onTap` to open ExerciseDemoSheet on the parent.
 struct DemoInfoButton: View {
+    var exerciseName: String? = nil
     let onTap: () -> Void
 
     var body: some View {
@@ -177,8 +178,10 @@ struct DemoInfoButton: View {
             Image(systemName: "info.circle")
                 .font(.system(size: 18, weight: .regular))
                 .foregroundStyle(Theme.muted)
+                .frame(width: 44, height: 44)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Show exercise demo")
+        .accessibilityLabel(exerciseName.map { "Show demo for " + $0 } ?? "Show exercise demo")
     }
 }

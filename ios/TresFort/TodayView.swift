@@ -289,7 +289,11 @@ struct TodayView: View {
                             .disabled(sync.hasDiscardIntentForCurrentWorkout)
                         }
                         Button("Sign out", role: .destructive) { auth.signOut() }
-                    } label: { Image(systemName: "ellipsis.circle").foregroundStyle(Theme.muted) }
+                    } label: {
+                        Image(systemName: "ellipsis.circle").foregroundStyle(Theme.muted)
+                            .frame(width: 44, height: 44).contentShape(Rectangle())
+                    }
+                    .accessibilityLabel("Workout options")
                 }
             }
             // The expanded rest screen is modal across the whole app chrome,
@@ -355,17 +359,20 @@ struct TodayView: View {
                 Text("COULDN’T LOAD YOUR PLAN")
                     .font(Theme.display(28)).foregroundStyle(Theme.text)
                 Text(error)
-                    .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                    .font(.callout).foregroundStyle(Theme.text)
+                    .accessibilityIdentifier("today.load-error")
                     .multilineTextAlignment(.center)
-                Button("Try again") { Task { await sync.load() } }
-                    .frame(minHeight: 44)
+                Button { Task { await sync.load() } } label: {
+                    Text("Try again").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
+                }
             }
             .padding(24)
         } else if sync.plan == nil {
             VStack(spacing: 14) {
                 Text("NO PLAN YET").font(Theme.display(28)).foregroundStyle(Theme.text)
                 Text("Build and schedule your first workout here, or ask your coach.")
-                    .font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                    .font(.callout).foregroundStyle(Theme.text)
+                    .accessibilityIdentifier("today.empty-guidance")
                     .multilineTextAlignment(.center)
                 Button {
                     showRoutine = true
@@ -522,7 +529,7 @@ private struct NextWorkoutCard: View {
                     Spacer()
                     Image(systemName: "chevron.right")
                         .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(Theme.dim)
+                        .foregroundStyle(Theme.muted)
                 }
                 // `next.day` is nil when the resolved template isn't cached
                 // — still show the real next date (never skip ahead), just
@@ -539,7 +546,7 @@ private struct NextWorkoutCard: View {
                             .map(\.exercise_name)
                             .joined(separator: " · "))
                         .font(Theme.mono(11))
-                        .foregroundStyle(Theme.dim)
+                        .foregroundStyle(Theme.muted)
                         .multilineTextAlignment(.leading)
                         .padding(.top, 2)
                 }
@@ -682,7 +689,7 @@ private struct TodayWorkoutView: View {
                         HStack(spacing: 8) {
                             Text(ex.exercise_name.uppercased())
                                 .font(Theme.display(22)).foregroundStyle(Theme.text)
-                            DemoInfoButton { demoFor = ex }
+                            DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
                             if ex.isWarmup { WarmupTag() }
                             Spacer()
                             Text(ex.targetLabel)
@@ -848,6 +855,7 @@ private struct ProgressBar: View {
 // MARK: - Runner
 
 private struct RunnerView: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
     @ObservedObject var auth: AuthModel
 
@@ -886,39 +894,44 @@ private struct RunnerView: View {
                                 currentIndex: sync.exerciseIndex, sync: sync)
                         .padding(.bottom, 22)
 
-                    // Fixed-height single line so switching exercises with
-                    // longer names never reflows the layout below. The demo
-                    // (i) sits inline so "what does this look like?" is one
-                    // tap mid-workout, not only from the pre-start preview
-                    // (#54).
+                    // Keep the compact scoreboard at ordinary sizes; allow
+                    // the full exercise name to wrap at accessibility sizes.
                     HStack(alignment: .center, spacing: 10) {
                         Text(ex.exercise_name.uppercased())
                             .font(Theme.display(52)).foregroundStyle(Theme.text)
-                            .lineLimit(1).minimumScaleFactor(0.4)
-                        DemoInfoButton { demoFor = ex }
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                            .minimumScaleFactor(dynamicTypeSize.isAccessibilitySize ? 1 : 0.4)
+                            .fixedSize(horizontal: false, vertical: true)
+                        DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
                         if ex.isWarmup { WarmupTag() }
                         Spacer(minLength: 0)
                     }
-                    .frame(height: 56)
+                    .frame(minHeight: 56)
                     .frame(maxWidth: .infinity, alignment: .leading)
 
-                    HStack {
+                    let metadataLayout = dynamicTypeSize.isAccessibilitySize
+                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                        : AnyLayout(HStackLayout())
+                    metadataLayout {
                         let complete = sync.isComplete(ex)
                         meta("SET", "\(min(displayedSetNumber, ex.target_sets))",
                              complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
-                        Spacer()
+                        if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                         meta("TARGET", ex.targetLabel, "")
-                        Spacer()
+                        if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                         meta("REST", "\(ex.rest_seconds)s", "")
                     }
                     .padding(.top, 12)
 
                     prescriptionContext(ex: ex)
-                    Button("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE") {
+                    Button {
                         valueDraft = sync.currentInputState
                         editingValues = true
+                    } label: {
+                        Text("Edit weight, \(ex.isTimed ? "duration" : "reps") & RPE")
+                            .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
                     }
-                    .font(Theme.mono(12, .bold)).frame(minHeight: 44)
+                    .accessibilityLabel("Edit next set for \(ex.exercise_name)")
                     .disabled(sync.timedActive || sync.isSetEntryBlocked(ex))
                     if let rpe = sync.rpe {
                         Text("LOGGING RPE \(SetValueFormatter.number(rpe))")
@@ -933,16 +946,19 @@ private struct RunnerView: View {
                         loadControl(ex: ex).disabled(sync.timedActive)
                     }
                     if ex.exercise_modality == "barbell", ex.exercise_unit == "lb" {
-                        Button("Plates & warm-up guide") {
+                        Button {
                             loadingTarget = sync.weight
                             showingLoading = true
-                        }.font(Theme.mono(12, .bold)).frame(minHeight: 44)
+                        } label: {
+                            Text("Plates & warm-up guide")
+                                .font(Theme.mono(12, .bold)).frame(minHeight: 44).contentShape(Rectangle())
+                        }
                     }
 
                     if ex.isTimed {
                         TimedSetView(sync: sync, ex: ex)
                     } else {
-                        stepper(label: "REPS", value: "\(sync.reps)",
+                        stepper(label: "REPS", value: "\(sync.reps)", context: "reps",
                                 steps: [("−1", { sync.adjustReps(-1) }, false),
                                         ("+1", { sync.adjustReps(1) }, false)])
 
@@ -992,10 +1008,11 @@ private struct RunnerView: View {
                     Button { sync.skip() } label: {
                         Text("Skip this exercise")
                             .font(Theme.mono(11, .bold)).tracking(1)
-                            .foregroundStyle(Theme.dim)
+                            .foregroundStyle(Theme.muted)
                             .frame(maxWidth: .infinity)
-                            .padding(.vertical, 12)
+                            .padding(.vertical, 12).frame(minHeight: 44)
                     }
+                    .accessibilityLabel("Skip \(ex.exercise_name)")
                     .padding(.top, 8)
                 }
                 .padding(20)
@@ -1072,16 +1089,20 @@ private struct RunnerView: View {
                     let done = sync.isComplete(e)
                     let skipped = sync.isSkipped(e) && !done
                     Button { sync.jump(to: i) } label: {
-                        Text(e.exercise_name)
+                        Text(e.exercise_name + (done ? " ✓" : skipped ? " · skipped" : ""))
                             .font(Theme.mono(11, .bold))
                             .strikethrough(skipped, color: Theme.muted)
                             .padding(.horizontal, 12).padding(.vertical, 8)
+                            .frame(minHeight: 44)
                             .background(cur ? Theme.accent : Theme.surface)
-                            .foregroundStyle(cur ? .black : (done ? Theme.done : (skipped ? Theme.muted.opacity(0.5) : Theme.muted)))
+                            .foregroundStyle(cur ? .black : (done ? Theme.done : Theme.muted))
                             .clipShape(RoundedRectangle(cornerRadius: 8))
                             .overlay(RoundedRectangle(cornerRadius: 8)
                                 .stroke(done && !cur ? Theme.done.opacity(0.3) : .clear))
                     }
+                    .accessibilityLabel(e.exercise_name)
+                    .accessibilityValue(done ? "Complete" : skipped ? "Skipped" : cur ? "Current exercise" : "Not completed")
+                    .accessibilityAddTraits(cur ? [.isSelected] : [])
                 }
             }
         }
@@ -1109,6 +1130,7 @@ private struct RunnerView: View {
         return stepper(
             label: label,
             value: value,
+            context: "weight in \(unit)" + (ex.isPerHand ? " per hand" : ""),
             steps: [
                 ("−10", { sync.adjustWeight(-10) }, true),
                 ("−5", { sync.adjustWeight(-5) }, false),
@@ -1122,49 +1144,27 @@ private struct RunnerView: View {
             })
     }
 
-    private func stepper(label: String, value: String,
+    private func stepper(label: String, value: String, context: String,
                          steps: [(String, () -> Void, Bool)],
                          onTapValue: (() -> Void)? = nil) -> some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(label).font(Theme.mono(10, .bold)).tracking(2).foregroundStyle(Theme.muted)
-            HStack(spacing: 8) {
-                ForEach(Array(steps.prefix(steps.count / 2)), id: \.0) { s in
-                    stepBtn(s.0, s.2, s.1)
-                }
-                // JetBrains Mono is fixed-width: every value is the same
-                // size in a fixed-height slot (no digit jitter).
-                // The whole slot is one tap target when `onTapValue` is set
-                // (decimal-pad entry for weird-increment machines), with a
-                // dotted underline as the hint. plain buttonStyle so the
-                // number doesn't tint accent on press.
-                Group {
-                    if let onTapValue {
-                        Button(action: onTapValue) {
-                            Text(value)
-                                .font(Theme.number(52))
-                                .foregroundStyle(Theme.text)
-                                .lineLimit(1).minimumScaleFactor(0.5)
-                                .frame(maxWidth: .infinity)
-                                .frame(height: 56)
-                                .overlay(alignment: .bottom) {
-                                    Rectangle()
-                                        .fill(Theme.muted.opacity(0.35))
-                                        .frame(height: 1)
-                                        .padding(.horizontal, 8)
-                                }
-                        }
-                        .buttonStyle(.plain)
-                    } else {
-                        Text(value)
-                            .font(Theme.number(52))
-                            .foregroundStyle(Theme.text)
-                            .lineLimit(1).minimumScaleFactor(0.5)
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 56)
+            Text(label).font(Theme.mono(11, .bold)).tracking(2).foregroundStyle(Theme.muted)
+            if dynamicTypeSize.isAccessibilitySize {
+                stepperValue(value, context: context, onTap: onTapValue)
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+                    ForEach(steps, id: \.0) { s in
+                        stepBtn(s.0, s.2, context: context, value: value, s.1)
                     }
                 }
-                ForEach(Array(steps.suffix(steps.count - steps.count / 2)), id: \.0) { s in
-                    stepBtn(s.0, s.2, s.1)
+            } else {
+                HStack(spacing: 8) {
+                    ForEach(Array(steps.prefix(steps.count / 2)), id: \.0) { s in
+                        stepBtn(s.0, s.2, context: context, value: value, s.1)
+                    }
+                    stepperValue(value, context: context, onTap: onTapValue)
+                    ForEach(Array(steps.suffix(steps.count - steps.count / 2)), id: \.0) { s in
+                        stepBtn(s.0, s.2, context: context, value: value, s.1)
+                    }
                 }
             }
         }
@@ -1173,13 +1173,40 @@ private struct RunnerView: View {
         .padding(.top, 16)
     }
 
-    private func stepBtn(_ t: String, _ lg: Bool, _ a: @escaping () -> Void) -> some View {
+    @ViewBuilder private func stepperValue(_ value: String, context: String,
+                                          onTap: (() -> Void)?) -> some View {
+        let number = Text(value).font(Theme.number(52)).foregroundStyle(Theme.text)
+            .lineLimit(1).minimumScaleFactor(0.5)
+            .frame(maxWidth: .infinity)
+            .frame(minHeight: 56)
+        if let onTap {
+            Button(action: onTap) {
+                number.overlay(alignment: .bottom) {
+                    Rectangle().fill(Theme.muted.opacity(0.35))
+                        .frame(height: 1).padding(.horizontal, 8)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Edit " + context)
+            .accessibilityValue(value)
+            .accessibilityIdentifier("runner.weight")
+        } else {
+            number.accessibilityLabel(context).accessibilityValue(value)
+        }
+    }
+
+    private func stepBtn(_ t: String, _ lg: Bool, context: String, value: String,
+                         _ a: @escaping () -> Void) -> some View {
         Button(action: a) {
             Text(t).font(Theme.mono(15, .bold))
-                .frame(width: lg ? 60 : 54, height: 50)
+                .frame(maxWidth: dynamicTypeSize.isAccessibilitySize ? .infinity : nil)
+                .frame(width: dynamicTypeSize.isAccessibilitySize ? nil : (lg ? 60 : 54))
+                .frame(minHeight: 50)
                 .background(Theme.surface2).foregroundStyle(Theme.text)
                 .clipShape(RoundedRectangle(cornerRadius: 10))
         }
+        .accessibilityLabel("\(t.hasPrefix("−") ? "Decrease" : "Increase") \(context) by \(t.dropFirst())")
+        .accessibilityValue(value)
     }
 
     private func prescriptionContext(ex: TemplateExercise) -> some View {
@@ -1238,27 +1265,31 @@ private struct WeightEditorSheet: View {
 
     var body: some View {
         NavigationStack {
-            VStack(spacing: 20) {
-                Text("WEIGHT (\(unit))")
-                    .font(Theme.mono(11, .bold)).tracking(2)
-                    .foregroundStyle(Theme.muted)
-                    .padding(.top, 8)
-                TextField("0", text: $draft)
-                    .keyboardType(allowsAssistance ? .numbersAndPunctuation : .decimalPad)
-                    .multilineTextAlignment(.center)
-                    .font(Theme.number(56))
-                    .foregroundStyle(Theme.text)
-                    .padding(.horizontal, 20).padding(.vertical, 14)
-                    .background(Theme.surface)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
-                    .focused($focused)
-                Text(allowsAssistance
-                     ? "Positive adds load · negative records assistance"
-                     : "Any value — \(unit) (e.g. 14.3)")
-                    .font(Theme.mono(11)).foregroundStyle(Theme.dim)
-                Spacer()
+            ScrollView {
+                VStack(spacing: 20) {
+                    Text("WEIGHT (\(unit))")
+                        .font(Theme.mono(11, .bold)).tracking(2)
+                        .foregroundStyle(Theme.muted)
+                        .padding(.top, 8)
+                    TextField("0", text: $draft)
+                        .keyboardType(allowsAssistance ? .numbersAndPunctuation : .decimalPad)
+                        .multilineTextAlignment(.center)
+                        .font(Theme.number(56))
+                        .foregroundStyle(Theme.text)
+                        .padding(.horizontal, 20).padding(.vertical, 14)
+                        .background(Theme.surface)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .focused($focused)
+                        .accessibilityLabel("Weight in \(unit)")
+                        .accessibilityIdentifier("weight.entry")
+                    Text(allowsAssistance
+                         ? "Positive adds load · negative records assistance"
+                         : "Any value — \(unit) (e.g. 14.3)")
+                        .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                }
+                .padding(20)
             }
-            .padding(20)
+            .scrollDismissesKeyboard(.interactively)
             .background(Theme.bg.ignoresSafeArea())
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
@@ -1272,7 +1303,7 @@ private struct WeightEditorSheet: View {
                 }
             }
         }
-        .presentationDetents([.height(280)])
+        .presentationDetents([.large])
         .presentationDragIndicator(.visible)
         .preferredColorScheme(.dark)
         .onAppear { focused = true }
@@ -1341,6 +1372,8 @@ private struct TimedSetView: View {
 // MARK: - Rest overlay (full screen)
 
 private struct RestOverlay: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var sync: SyncModel
     /// Collapse the overlay to the floating pill (timer keeps running). The
     /// pill caller restores it; this view never ends rest on its own —
@@ -1358,66 +1391,85 @@ private struct RestOverlay: View {
                 return max(0, min(1, end.timeIntervalSince(ctx.date) / Double(sync.restTotal)))
             }()
             ZStack {
-                Theme.bg.opacity(0.96).ignoresSafeArea()
-                VStack(spacing: 0) {
-                    Text("REST").font(Theme.mono(11, .bold)).tracking(4)
-                        .foregroundStyle(Theme.muted).padding(.bottom, 8)
-                    Text(clock(remaining))
-                        .font(Theme.display(140))
-                        .foregroundStyle(remaining <= 0 ? Theme.done : Theme.accent)
-                        .shadow(color: (remaining <= 0 ? Theme.done : Theme.accent).opacity(0.4),
-                                radius: 30)
-                        .opacity(remaining <= 0 ? (Int(ctx.date.timeIntervalSince1970 * 2) % 2 == 0 ? 1 : 0.4) : 1)
+                Theme.bg.ignoresSafeArea()
+                GeometryReader { geometry in
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            Text("REST").font(Theme.mono(11, .bold)).tracking(4)
+                                .foregroundStyle(Theme.muted).padding(.bottom, 8)
+                            Text(clock(remaining))
+                                .font(Theme.display(140))
+                                .lineLimit(1).minimumScaleFactor(0.2)
+                                .frame(maxWidth: .infinity)
+                                .accessibilityLabel(remaining <= 0 ? "Rest complete" : "Rest remaining")
+                                .accessibilityValue(remaining <= 0 ? "" : "\(remaining) seconds")
+                                .accessibilityIdentifier("rest.status")
+                                .foregroundStyle(remaining <= 0 ? Theme.done : Theme.accent)
+                                .shadow(color: (remaining <= 0 ? Theme.done : Theme.accent).opacity(0.4),
+                                        radius: 30)
+                                .opacity(remaining <= 0 && !reduceMotion ? (Int(ctx.date.timeIntervalSince1970 * 2) % 2 == 0 ? 1 : 0.4) : 1)
 
-                    RoundedRectangle(cornerRadius: 3).fill(Theme.surface)
-                        .frame(width: 240, height: 6)
-                        .overlay(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 3).fill(Theme.accent)
-                                .frame(width: 240 * frac, height: 6)
+                            RoundedRectangle(cornerRadius: 3).fill(Theme.surface)
+                                .frame(width: 240, height: 6)
+                                .overlay(alignment: .leading) {
+                                    RoundedRectangle(cornerRadius: 3).fill(Theme.accent)
+                                        .frame(width: 240 * frac, height: 6)
+                                }
+                                .padding(.top, 24)
+
+                            let buttonsLayout = dynamicTypeSize.isAccessibilitySize
+                                ? AnyLayout(VStackLayout(spacing: 12)) : AnyLayout(HStackLayout(spacing: 12))
+                            buttonsLayout {
+                                restBtn("−15s") { sync.addRest(-15) }
+                                    .accessibilityLabel("Shorten rest by 15 seconds")
+                                restBtn("+15s") { sync.addRest(15) }
+                                    .accessibilityLabel("Extend rest by 15 seconds")
+                                restBtn("DONE", primary: true) { sync.skipRest() }
+                                    .accessibilityLabel("End rest").accessibilityIdentifier("rest.done")
+                            }
+                            .padding(.top, 36)
+
+                            VStack(spacing: 4) {
+                                Text("UP NEXT").font(Theme.mono(11, .bold)).tracking(2)
+                                    .foregroundStyle(Theme.muted)
+                                Text(sync.currentExercise?.exercise_name.uppercased() ?? "DONE")
+                                    .font(Theme.display(22)).foregroundStyle(Theme.text)
+                            }
+                            .padding(.top, 28)
+
+                            // Peek-through: collapse to a floating pill so the runner
+                            // (current exercise, jump strip, completed sets) is
+                            // visible/scrollable without ending the timer. Discoverable
+                            // tap target; swipe-down on the overlay also minimizes.
+                            Button(action: onMinimize) {
+                                HStack(spacing: 6) {
+                                    Image(systemName: "chevron.down")
+                                        .font(.system(size: 11, weight: .bold))
+                                    Text("PREVIEW WORKOUT")
+                                        .font(Theme.mono(11, .bold)).tracking(2)
+                                }
+                                .foregroundStyle(Theme.muted)
+                                .padding(.horizontal, 16).padding(.vertical, 12)
+                                .frame(minHeight: 44)
+                                .background(Capsule().fill(Theme.surface))
+                            }
+                            .padding(.top, 36)
                         }
-                        .padding(.top, 24)
-
-                    HStack(spacing: 12) {
-                        restBtn("−15s") { sync.addRest(-15) }
-                        restBtn("+15s") { sync.addRest(15) }
-                        restBtn("DONE", primary: true) { sync.skipRest() }
+                        .padding(20)
+                        .frame(maxWidth: .infinity, minHeight: geometry.size.height)
                     }
-                    .padding(.top, 36)
-
-                    VStack(spacing: 4) {
-                        Text("UP NEXT").font(Theme.mono(11, .bold)).tracking(2)
-                            .foregroundStyle(Theme.muted)
-                        Text(sync.currentExercise?.exercise_name.uppercased() ?? "DONE")
-                            .font(Theme.display(22)).foregroundStyle(Theme.text)
-                    }
-                    .padding(.top, 28)
-
-                    // Peek-through: collapse to a floating pill so the runner
-                    // (current exercise, jump strip, completed sets) is
-                    // visible/scrollable without ending the timer. Discoverable
-                    // tap target; swipe-down on the overlay also minimizes.
-                    Button(action: onMinimize) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "chevron.down")
-                                .font(.system(size: 11, weight: .bold))
-                            Text("PREVIEW WORKOUT")
-                                .font(Theme.mono(11, .bold)).tracking(2)
-                        }
-                        .foregroundStyle(Theme.muted)
-                        .padding(.horizontal, 16).padding(.vertical, 12)
-                        .background(Capsule().fill(Theme.surface))
-                    }
-                    .padding(.top, 36)
                 }
             }
             // Swipe-down anywhere on the overlay minimizes (matches the
             // sheet-dismissal idiom). Threshold high enough not to fight the
             // button taps above.
             .contentShape(Rectangle())
-            .gesture(
+            .simultaneousGesture(
                 DragGesture(minimumDistance: 30)
                     .onEnded { v in
-                        if v.translation.height > 60 { onMinimize() }
+                        if !dynamicTypeSize.isAccessibilitySize, v.translation.height > 60 {
+                            onMinimize()
+                        }
                     }
             )
         }
@@ -1463,11 +1515,14 @@ private struct RestPill: View {
                 }
                 .foregroundStyle(color)
                 .padding(.horizontal, 14).padding(.vertical, 10)
+                .frame(minHeight: 44)
                 .background(Capsule().fill(Theme.surface))
                 .overlay(Capsule().stroke(color.opacity(0.5), lineWidth: 1))
                 .shadow(color: .black.opacity(0.45), radius: 12, y: 4)
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Expand rest timer")
+            .accessibilityValue(remaining <= 0 ? "Rest complete" : "\(remaining) seconds remaining")
             .padding(.top, 6)
         }
     }
@@ -1527,9 +1582,10 @@ private struct FinishedView: View {
                 SetReviewList(sync: sync, sets: sync.sets.filter {
                     $0.session_id == sync.todaySession?.id && $0.deleted_at == nil
                 }, pending: sync.setOutbox.pending.filter { $0.date == sync.todayString })
-                Button("Return to exercises") { sync.jump(to: sync.exerciseIndex) }
-                    .frame(minHeight: 44)
-                    .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
+                Button { sync.jump(to: sync.exerciseIndex) } label: {
+                    Text("Return to exercises").frame(minHeight: 44).contentShape(Rectangle())
+                }
+                .disabled(sync.hasPendingTerminalIntentForCurrentWorkout)
 
                 Button {
                     guard let target = sync.terminalActionTarget else { return }
@@ -1554,6 +1610,7 @@ private struct FinishedView: View {
             Text(a).font(Theme.mono(13)).foregroundStyle(Theme.text)
             Spacer()
             Text(b).font(Theme.mono(13)).foregroundStyle(Theme.muted)
+                .accessibilityIdentifier("summary.value." + a)
         }
         .padding(.vertical, 12)
         .overlay(alignment: .bottom) { Divider().overlay(Theme.surface2) }

@@ -10,7 +10,7 @@ enum Theme {
     static let surface = Color(hex: 0x141417)
     static let surface2 = Color(hex: 0x1C1C21)
     static let text = Color(hex: 0xF4F4F5)
-    static let muted = Color(hex: 0x8A8A93)
+    static let muted = Color(hex: 0xA1A1AA)
     static let dim = Color(hex: 0x4A4A52)
     static let accent = Color(hex: 0xF59E0B)
     static let done = Color(hex: 0x84CC16)

@@ -6,7 +6,7 @@ import SwiftUI
 /// of this code. An unknown fixture fails closed before constructing real auth.
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, loadFailure = "load-failure"
-    case ordinary, bodyweight, timed, pending
+    case ordinary, bodyweight, timed, pending, onboarding
     case correctionFailure = "correction-failure", readyToFinish = "ready-to-finish"
 
     static let selected: Self? = {
@@ -37,7 +37,7 @@ enum UIFixtureModel {
         if UIFixtureScenario.selected != .signIn {
             auth.userID = "synthetic-ui-user"
             auth.jwt = "synthetic-ui-bearer"
-            auth.onboardingComplete = true
+            auth.onboardingComplete = UIFixtureScenario.selected != .onboarding
             auth.phase = .signedIn
         }
         return auth
@@ -62,17 +62,24 @@ struct UIFixtureView: View {
     var body: some View {
         VStack(spacing: 0) {
             Text("SYNTHETIC · \(scenario.rawValue)")
-                .font(.caption).accessibilityIdentifier("fixture.scenario")
+                .font(.caption).dynamicTypeSize(.large)
+                .accessibilityIdentifier("fixture.scenario")
             if scenario == .signIn {
                 RootView().environmentObject(auth)
+            } else if scenario == .onboarding && !auth.onboardingComplete {
+                OnboardingView(auth: auth)
             } else {
                 TodayView(sync: sync, auth: auth)
             }
         }
+        .tint(Theme.accent)
+        .environment(\.openURL, OpenURLAction { _ in .discarded })
+        .environment(\.dynamicTypeSize,
+            ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : .large)
         .task {
             guard scenario != .signIn else { return }
             await sync.load()
-            if ![.empty, .loadFailure].contains(scenario) {
+            if ![.empty, .loadFailure, .onboarding].contains(scenario) {
                 sync.startWorkout()
                 if [.readyToFinish, .correctionFailure].contains(scenario) {
                     sync.finished = true
@@ -126,7 +133,7 @@ private struct UIFixtureServer {
 
     init(scenario: UIFixtureScenario) {
         self.scenario = scenario
-        if ![.signIn, .empty, .loadFailure].contains(scenario) {
+        if ![.signIn, .empty, .loadFailure, .onboarding].contains(scenario) {
             plan = makePlan()
             sessions = [makeSession()]
             if [.readyToFinish, .correctionFailure].contains(scenario) {
