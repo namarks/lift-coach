@@ -24,7 +24,7 @@ Two model corrections that the workout library exposed:
   - [x] **(a) Repository implementation and rollout verification**
     - Migration: `ALTER TABLE day_templates RENAME TO workouts`; rename
       `template_exercises.day_template_id` and `sessions.day_template_id` to
-      `workout_id`; recreate `ix_te_day` under the new column. SQLite rewrites
+      `workout_id`; replace `ix_te_day` with `ix_te_workout`. SQLite rewrites
       foreign-key references on `RENAME TABLE`; add a test that
       `PRAGMA foreign_key_check` is clean and that `session_aliases`,
       `set_logs.template_exercise_id`, and the `0032` attempt trigger still
@@ -78,8 +78,13 @@ Two model corrections that the workout library exposed:
     - After separate release authorization, deploy release A, verify both-schema
       support, apply release B's rename, and verify the current clients against
       production before switching the iOS outbound vocabulary.
-    - Retain the old routes, request keys and MCP names for one TestFlight
-      compatibility cycle. Record exact release sources and evidence here.
+    - [x] Release A deployed and migration 0045 applied on 2026-09-09;
+      the verification completed and deferred under the approved exception
+      is recorded below.
+    - [ ] Distribute compatible and later canonical-writing clients, then
+      observe the compatibility cycle after the canonical-writing build becomes
+      the minimum supported build. Retain the old routes, request keys and MCP
+      names until that evidence is recorded.
   - [ ] **(c) Compatibility cleanup after the observed cycle**
     - After the minimum supported client has completed the compatibility cycle,
       remove temporary physical-schema adaptation and deprecated wire aliases.
@@ -209,28 +214,83 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | gated_by | external:owner-workout-production-release | Repository implementation and the three-stage design are authorized; production migrations, deployment and TestFlight distribution are not. |
+| P0(b) | gated_by | external:owner-workout-testflight-release | Backend deployment and migration are complete. TestFlight distribution and the later canonical-writing client release require separate authorization and evidence; complete the deferred live REST write checks during client rollout. |
 | P0(c) | gated_by | external:workout-client-compatibility-cycle | Cleanup requires P0(b) release evidence and the observed released-client compatibility cycle. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step
 
-**Now (@owner):** After PR #161 passes current-head review/CI and merges,
-authorize the concrete release-A deployment in [the rollout runbook](rollout.md)
-when ready. P0(a) delivers the adaptive Worker, migration 0045 plus rollback,
-canonical service/wire vocabulary, compatible iOS decoding and Library P0.
-Production migration/deployment and TestFlight distribution have not run in
-this workstream. P0(b) remains open; P0(c) requires a later canonical-writing
-app and the observed compatibility cycle. P1 remains outside this goal.
+**Now (@owner):** Begin the separately authorized client rollout with the
+deferred legacy-route REST checks, including disposable-workout authoring,
+date assignment and set/finish/discard behavior, before distributing the first
+compatible Workouts TestFlight build. That build still sends legacy routes and
+fields. Complete the canonical-route checks before distributing a later
+canonical-writing build. Record the supported-client compatibility cycle here
+in `plan.md`, following [the rollout sequence](rollout.md). Backend release A
+and migration 0045 are complete under the approved verification exception;
+do not repeat them. P0(b) remains open for client rollout; P0(c) and multiple
+sessions per date (P1) remain later work.
 
-Repository verification (2026-09-09, [PR #161](https://github.com/namarks/tres-fort/pull/161)):
-`npm run typecheck`, `npm test` (896 tests / 61 files, plus upload and query-plan
-checks), `npm run plans:check`, and Wrangler deploy dry-run passed. The local
-same-Worker migration/rename/rollback rehearsal passed. iOS unit coverage passed
-397 tests; all 20 relevant creation, group and library UI journeys passed across
-the final runs. The independent review approved the implementation; the final
-head and CI remain merge gates. No production changes or app distribution are
-claimed by this repository milestone.
+Production release evidence (2026-09-09):
+
+- Approved source `ff512825779f90b630a4a5dfd11a68e6a113825a`, tree
+  `0f3621b3132ff27e659d7554a72bc96010973f8b`, is Worker version
+  `c5a298d1-a72a-4fa8-a24f-bd2cf0e27a6b`. Deployment
+  `7217b618-148d-4c8c-9200-1ee5ba15a4fe`, created 17:57:39 UTC, serves 100%
+  of traffic. Wrangler deployment/version metadata carries the source SHA and
+  tree annotation recorded during the deploy. Bindings and runtime
+  configuration match the previous version.
+- A D1 Time Travel bookmark was saved privately before mutation. Migration
+  `0045_workouts.sql` applied successfully at 18:25:52 UTC. The ledger records
+  0045 and no migrations remain pending. `workouts`, both `workout_id` columns,
+  and `ix_te_workout` exist; the old table/index names are absent.
+- Post-migration schema metadata matches the baseline after normalizing the
+  renamed columns. Foreign-key checks are clean. Aggregate record counts,
+  plan-version totals and session-attempt totals are unchanged by migration;
+  the migration contains only schema/index operations, no data rewrites.
+- Health and both OAuth discovery endpoints return 200; unauthenticated
+  `/api/state` returns 401. The authenticated MCP plan read passes after
+  migration, with matching `workouts` and `days` collections.
+- Before migration, the owner-approved disposable MCP workout passed
+  `add_workout`, `update_day`, `update_workout` and `delete_workout`; each
+  write advanced the version once. Existing workouts and schedule were
+  preserved, and cleanup was verified both by client read and an aggregate
+  database query. Only boolean results and called tool names were retained;
+  normal audit/notes/snapshot history remains. The owner also confirmed the
+  current TestFlight app's refresh and Routine/Workouts read looked good.
+- **Approved verification exception:** after those checks and 897 passing
+  backend tests, the owner explicitly approved applying 0045 while deferring
+  production REST write checks to the client rollout. Live REST authoring,
+  date assignment and set/finish/discard checks are not claimed by this release.
+  Both REST aliases use the same authenticated handlers; both-schema wire
+  tests and the local same-Worker rename/rollback rehearsal passed. The owner
+  app check preceded migration; the post-migration authenticated read was MCP.
+- No continuous production error-rate observation or confirmed warm-isolate
+  write across the rename was recorded. The post-migration checks were point-in-time
+  reads. The client-rollout checks must include the observation and stop
+  conditions in the runbook; do not infer production write coverage from the
+  local rename/rollback rehearsal. Legacy `add_day` was covered locally, while
+  the production canary used `add_workout` and both update names.
+- No TestFlight build was distributed. Keep this adaptive Worker as the
+  rollback target; a pre-A Worker cannot restore its v2 snapshots. Follow the
+  runbook for any separately authorized rollback.
+- The private receipt and sanitized acknowledgements are retained on the
+  release host under
+  `~/.codex/visualizations/2026/09/09/01a08686-4285-7e33-a73c-d9278bd8070f/backend-release/`.
+  `receipt.json` indexes the evidence; the recovery bookmark is in the private
+  subdirectory and is never included in repository publication.
+
+Repository verification: [PR #161](https://github.com/namarks/tres-fort/pull/161)
+merged as the release source after independent review and green CI. The combined
+integration source `ff512825779f90b630a4a5dfd11a68e6a113825a` was independently
+reviewed and passed
+[integration CI](https://github.com/namarks/tres-fort/actions/runs/34374758223).
+Release preflight reran typecheck, 897 backend tests / 61 files, upload and
+query-plan checks, and Wrangler deploy dry-run successfully. Repository delivery
+also passed plan validation and the local same-Worker migration/rename/rollback
+rehearsal. [PR #161 CI](https://github.com/namarks/tres-fort/actions/runs/34371920505)
+at head `d0309b5f971dd0626beb24b8cdba536b998cf153` passed 404 iOS unit tests
+and 23 UI journeys, including the library coverage.
 
 ## Notes / open questions
 
