@@ -15,6 +15,7 @@ import {
   deleteTemplateExercise,
   discardSession,
   findRecentMatchingSet,
+  findMcpExerciseGroupAcknowledgement,
   getActivePlan,
   getExercises,
   getGroupFeed,
@@ -934,8 +935,16 @@ const TOOLS: Record<string, Tool> = {
         round_rest: nonNegativeSafeInteger,
       }, { transition_rest: nonNegativeSafeInteger, target_sets: positiveSafeInteger, order_index: nonNegativeSafeInteger });
       if (fields.length) return { error: 'invalid_fields', fields };
+      const replay = await findMcpExerciseGroupAcknowledgement(env.DB, userId, 'group_exercises', a);
+      if (replay) return replay;
       const tree = await getPlanTree(env.DB, userId);
       if (!tree) return { error: 'no_active_plan' };
+      if (tree.version !== a.expected_version) {
+        // A simultaneous copy may have committed after the first receipt read.
+        // Changed stale payloads conflict before stale names can fail lookup.
+        return await findMcpExerciseGroupAcknowledgement(env.DB, userId, 'group_exercises', a)
+          ?? { conflict: true, current_version: tree.version };
+      }
       const matchingDays = tree.days.filter((day) => day.id === a.day || day.day_label === a.day || day.name === a.day);
       if (matchingDays.length > 1) return { error: 'ambiguous_day' };
       if (!matchingDays.length && !isGroupId(a.day)) return { error: 'day_not_found' };
@@ -974,6 +983,8 @@ const TOOLS: Record<string, Tool> = {
       if (unknown.length) return { error: 'unknown_fields', fields: unknown };
       const fields = invalidToolFields(a, { group_id: isGroupId, expected_version: positiveSafeInteger });
       if (fields.length) return { error: 'invalid_fields', fields };
+      const replay = await findMcpExerciseGroupAcknowledgement(env.DB, userId, 'ungroup_exercises', a);
+      if (replay) return replay;
       return clearGroup(env.DB, userId, a.group_id as string, a.expected_version as number,
         { actor: 'mcp', operation: 'ungroup_exercises', args: a, note: 'Ungrouped exercise slots.' });
     },

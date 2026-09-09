@@ -35,9 +35,9 @@ async function api(path: string, method = 'GET', body?: unknown, capabilities?: 
     ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   return { status: response.status, body: await response.json<any>() };
 }
-async function mcp(name: string, args: Record<string, unknown> = {}) {
+async function mcp(name: string, args: Record<string, unknown> = {}, callerId = userId) {
   const result = await handleMcp({ jsonrpc: '2.0', id: 1, method: 'tools/call',
-    params: { name, arguments: args } }, env, userId) as any;
+    params: { name, arguments: args } }, env, callerId) as any;
   expect(result.json.result.isError).not.toBe(true);
   return JSON.parse(result.json.result.content[0].text);
 }
@@ -227,6 +227,46 @@ describe('group authoring API and released-client projection', () => {
     expect(await mcp('group_exercises', args)).toMatchObject({ ok: true, version: accepted.version, replayed: true });
     expect(await trail()).toEqual(before);
     expect((await getPlanTree(env.DB, userId))!.days[0]!.name).toBe('Replacement');
+  });
+
+  it.each(['A', 'Strength'])('replays a name-based request for %s after IDs are rebuilt', async (dayReference) => {
+    const args = { ...grouping(), day: dayReference, exercises: ['push-up', 'squat'] };
+    const accepted = await mcp('group_exercises', args);
+    const replaced = await mcp('update_plan', { expected_version: accepted.version,
+      days: [{ name: 'Strength', day_label: 'A', exercises: [
+        { exercise: 'push-up', target_sets: 4, target_reps: 12 },
+        { exercise: 'squat', target_sets: 4, target_reps: 12 },
+      ] }] });
+    expect(replaced.plan.days[0].id).not.toBe(day().id);
+    expect(replaced.plan.days[0].exercises.map((slot: any) => slot.id)).not.toEqual(members());
+    const before = await trail();
+    const beforeTree = await getPlanTree(env.DB, userId);
+    const reorderedArguments = Object.fromEntries(Object.entries(args).reverse());
+    expect(await mcp('group_exercises', reorderedArguments)).toEqual({ ...accepted, replayed: true });
+    expect(await mcp('group_exercises', { ...args, round_rest: 40 }))
+      .toEqual({ conflict: true, current_version: replaced.plan.version });
+    expect(await mcp('group_exercises', { ...args, exercises: ['squat', 'push-up'] }))
+      .toEqual({ conflict: true, current_version: replaced.plan.version });
+    expect(await trail()).toEqual(before);
+    expect(await getPlanTree(env.DB, userId)).toEqual(beforeTree);
+  });
+
+  it('replays names after their day is removed without bypassing argument or tenant validation', async () => {
+    const args = { ...grouping(), day: 'A', exercises: ['push-up', 'squat'] };
+    const accepted = await mcp('group_exercises', args);
+    await mcp('update_plan', { expected_version: accepted.version, days: [] });
+    const before = await trail();
+    expect(await mcp('group_exercises', args)).toEqual({ ...accepted, replayed: true });
+    expect(await mcp('group_exercises', { ...args, surprise: true }))
+      .toEqual({ error: 'unknown_fields', fields: ['surprise'] });
+    expect(await mcp('group_exercises', { ...args, round_rest: '30' }))
+      .toEqual({ error: 'invalid_fields', fields: ['round_rest'] });
+    const otherUserId = crypto.randomUUID();
+    await env.DB.prepare('INSERT INTO users(id,apple_sub,created_at) VALUES(?1,?2,?3)')
+      .bind(otherUserId, `group-retry-${otherUserId}`, Date.now()).run();
+    expect(await mcp('group_exercises', args, otherUserId)).toEqual({ error: 'no_active_plan' });
+    expect(await trail()).toEqual(before);
+    expect((await getPlanTree(env.DB, userId))!.days).toEqual([]);
   });
 
   it('rejects unknown group arguments and malformed MCP values without coercing', async () => {

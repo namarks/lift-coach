@@ -11946,6 +11946,51 @@ export interface SetExerciseGroupOptions {
   order_index?: number;
 }
 
+/** Preserve JSON value semantics while ignoring object-property insertion order.
+ * Arrays remain ordered because member order is part of group authoring. */
+function canonicalExerciseGroupArgs(value: unknown): string {
+  const normalized = (item: unknown): unknown => {
+    if (Array.isArray(item)) return item.map(normalized);
+    if (isPlainRecord(item)) return Object.fromEntries(
+      Object.keys(item).sort().map((key) => [key, normalized(item[key])]),
+    );
+    return item;
+  };
+  return JSON.stringify(normalized(value));
+}
+
+/** A name-based MCP retry must recognize the original accepted request before
+ * resolving names against a renamed, rebuilt or removed day. Original args and
+ * the canonical acknowledgement already share the writer's atomic audit row.
+ * The MCP wrapper validates allowed fields and their types before this lookup. */
+export async function findMcpExerciseGroupAcknowledgement(
+  db: D1Database,
+  userId: string,
+  operation: 'group_exercises' | 'ungroup_exercises',
+  args: Record<string, unknown>,
+): Promise<ExerciseGroupAcknowledgement | null> {
+  if (!isGroupId(args.group_id) || !Number.isSafeInteger(args.expected_version)
+      || (args.expected_version as number) < 1) return null;
+  const rows = await db.prepare(
+    `SELECT args,result FROM audit_log
+      WHERE user_id=?1 AND actor='mcp' AND tool=?2
+        AND json_extract(CASE WHEN json_valid(args) THEN args ELSE '{}' END,'$.group_id')=?3
+        AND json_extract(CASE WHEN json_valid(args) THEN args ELSE '{}' END,'$.expected_version')=?4
+        AND json_type(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.exercise_group_receipt')='text'
+        AND json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.ok')=1
+        AND json_extract(CASE WHEN json_valid(result) THEN result ELSE '{}' END,'$.group_id')=?3
+      ORDER BY created_at,id`,
+  ).bind(userId, operation, args.group_id, args.expected_version).all<{ args: string; result: string }>();
+  const request = canonicalExerciseGroupArgs(args);
+  for (const row of rows.results) {
+    if (canonicalExerciseGroupArgs(JSON.parse(row.args)) !== request) continue;
+    const { exercise_group_receipt: _, ...acknowledgement } = JSON.parse(row.result) as
+      ExerciseGroupAcknowledgement & { exercise_group_receipt: string };
+    return { ...acknowledgement, replayed: true };
+  }
+  return null;
+}
+
 async function findExerciseGroupReceipt(db: D1Database, userId: string, actor: string, key: string): Promise<ExerciseGroupAcknowledgement | null> {
   const row = await db.prepare(
     `SELECT result FROM audit_log WHERE user_id=?1 AND actor=?2 AND json_valid(result)

@@ -18,7 +18,7 @@ remaining singleton without changing its ordinary rest.
 
 An accepted group mutation records its normalized request and acknowledgement
 inside its atomic audit result. An exact retry is scoped to the same user,
-actor, plan, operation, and expected version, and returns the committed version
+actor, operation, and expected version, and returns the original plan and committed version
 before checking the now-stale version. It does not reapply an old membership
 after a subsequent rewrite. A changed payload at a stale version conflicts.
 A request whose current membership and values already match makes no new
@@ -51,7 +51,11 @@ and order fields when clearing. These writes record iOS attribution.
 MCP exposes `group_exercises` and `ungroup_exercises` with the same shared
 operations. Grouping accepts a day ID, label, or name and slot IDs or
 unambiguous exercise names/aliases. Prefer IDs from `get_current_plan` for
-repeat occurrences and durable retries across subsequent plan changes. A1/A2
+repeat occurrences. Before resolving current names, an exact MCP retry matches
+the original audited arguments, so rebuilt IDs or a removed day cannot hide its
+acknowledgement. Object key order is irrelevant; member order and argument values
+remain part of the request identity. Unknown or malformed arguments still reject
+before replay, and another user's receipt is never visible. A1/A2
 labels are response annotations derived from the member order; both rest
 values remain visible in plan/today reads and the compact coach brief.
 Single-slot authoring rejects raw group columns with `unknown_fields`. Full-plan
