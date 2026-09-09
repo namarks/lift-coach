@@ -13,46 +13,47 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 ## Phases
 
 - [ ] **P0 — Workout feedback reaches the coach**
-  - Add an optional, quick finish flow for perceived fatigue and a short note;
-    pain can be described in the note, and completing a workout must not
-    require a questionnaire.
-  - Make speaking an obvious input choice with **Talk about your workout**.
-    The member starts and stops recording, reviews an editable transcript,
-    then explicitly saves it as the session note. Keep **Type instead** and
-    **Skip** available; keyboard dictation alone does not satisfy the visible
-    voice-entry requirement. Do not infer fatigue or rewrite the member's
-    words from the recording.
-  - Use on-device transcription for the initial voice path. Request microphone
-    and any required speech permission only after the member chooses to talk.
-    If permission is denied or recognition is unavailable, preserve any text
-    draft and offer typing or skipping. No cloud transcription fallback or
-    audio upload is included in this scope.
-  - Keep audio in memory only for recording and transcription; release it on
-    completion, cancellation, interruption, or leaving the flow. Persist
-    only the member-approved transcript through the existing private session
-    note path; do not add stored voice messages or an audio retention system.
-    A late recognition result must not overwrite a typed correction, restore a
-    canceled draft, or submit feedback without the member's save action.
-  - Verify voice-to-editable-text-to-MCP, typing, skip, denied permission,
-    unavailable recognition, cancellation and interruption with synthetic
-    recognition outcomes. Use current iPhones at normal text sizes. Neither
-    a failed recording nor empty recognition output may block workout
-    completion or erase existing feedback.
-  - Persist those existing session fields and expose them through the relevant
-    history, current-state, and coaching-brief reads so the next coaching
-    conversation receives the member's words and the recorded workout without
-    a schema change.
-  - Verify one end-to-end path from iOS capture to MCP read, including an edit
-    made before the session is finalized.
-  - Decode the stored feedback into iOS session models and carry optional
-    fatigue/notes through the durable finish envelope, retries, relaunch and
-    final-set review. Missing feedback stays absent rather than becoming a
-    zero score. Preserve member-authored discomfort/constraints verbatim as
-    data for the coach; keep these private fields out of group projections.
-  - Include session notes in both recent-session and last-completed-session
-    brief paths. Verify a skipped/in-progress latest session does not hide the
-    prior completed session's feedback and that delayed acknowledgments cannot
-    overwrite a newer feedback edit.
+  - [ ] **(a) Coach-facing feedback reads**
+    - Expose the existing session fatigue and note fields through the relevant
+      history, current-state, and coaching-brief reads so the next coaching
+      conversation receives the member's words and the recorded workout without
+      a schema change. Keep these private fields out of group projections.
+    - Include session notes in both recent-session and last-completed-session
+      brief paths. Verify a skipped/in-progress latest session does not hide the
+      prior completed session's feedback. This read-path slice can be implemented
+      independently of the iOS runner and finish flow.
+  - [ ] **(b) Voice and typed finish input**
+    - Add an optional, quick finish flow for perceived fatigue and a short note;
+      pain can be described in the note, and completing a workout must not
+      require a questionnaire.
+    - Make speaking an obvious input choice with **Talk about your workout**.
+      The member starts and stops recording, reviews an editable transcript,
+      then explicitly saves it as the session note. Keep **Type instead** and
+      **Skip** available; keyboard dictation alone does not satisfy the visible
+      voice-entry requirement. Do not infer fatigue or rewrite the member's
+      words from the recording.
+    - Use on-device transcription for the initial voice path. Request microphone
+      and any required speech permission only after the member chooses to talk.
+      If permission is denied or recognition is unavailable, preserve any text
+      draft and offer typing or skipping. No cloud transcription fallback or
+      audio upload is included in this scope.
+    - Keep audio in memory only for recording and transcription; release it on
+      completion, cancellation, interruption, or leaving the flow. Persist
+      only the member-approved transcript through the existing private session
+      note path; do not add stored voice messages or an audio retention system.
+      A late recognition result must not overwrite a typed correction, restore a
+      canceled draft, or submit feedback without the member's save action.
+    - Decode the stored feedback into iOS session models and carry optional
+      fatigue/notes through the durable finish envelope, retries, relaunch and
+      final-set review. Missing feedback stays absent rather than becoming a
+      zero score. Preserve member-authored discomfort/constraints verbatim as
+      data for the coach. Delayed acknowledgments must not overwrite a newer
+      feedback edit.
+    - Verify voice-to-editable-text-to-MCP, including an edit before the session
+      is finalized, plus typing, skip, denied permission, unavailable recognition,
+      cancellation and interruption with synthetic recognition outcomes. Use
+      current iPhones at normal text sizes. Neither a failed recording nor empty
+      recognition output may block workout completion or erase existing feedback.
 - [ ] **P1 — Coaching changes are visible and correctable**
   - Show recent plan changes in iOS with actor, time, concise rationale, and the
     affected day or exercise, using the canonical audit, note, and plan-history
@@ -85,23 +86,28 @@ surfaces without adding AI to the Worker or creating a second coaching record.
     interference advice.
   - Verify that iOS and MCP describe the same recent sessions and plan state.
 
+## Execution frontier
+
+- P0(a)
+
 ## Dependencies
 
 P1 reuses the completed [shared snapshot/history projection](../completed/reversible-plan-management/decisions.md) for visibility and reversion, preserving one change feed.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:supersets-and-circuits#P1 | Voice/typed finish input and durable feedback share the runner and recovery files; implement that client slice after the superset runner lands. Coach-facing read projections can proceed independently. |
-| P0 | coordinates_with | plan:supersets-and-circuits#P2 | The supersets task also owns shared client models, API/cache handling and synthetic UI fixtures; finish its client integration before editing those same files for feedback. |
+| P0(b) | blocked_by | plan:supersets-and-circuits#P1 | Voice/typed finish input and durable feedback share the runner and recovery files; the superset runner must land before this client slice. |
+| P0(b) | blocked_by | plan:supersets-and-circuits#P2 | The supersets task also owns shared client models, API/cache handling and synthetic UI fixtures; its client integration must land before feedback edits to those files. |
 | P2 | coordinates_with | plan:activity-integration-integrity#P0 | Identity/civil-date fixes and unknown-load labels need consistent source context. |
 
 ## Next step
 
-**Now (@owner):** Activate P0 when member-to-coach feedback should enter the
+**Now (@owner):** Activate P0(a) when member-to-coach feedback should enter the
 executable backlog; it does not require the later change-history work to start.
-The approved scope includes voice input with transcript review. On activation,
-start with coach-facing read projections; implement the shared iOS finish-flow
-changes after the supersets runner/editor integration lands.
+The approved scope includes voice input with transcript review. P0(a) is the
+independent coach-facing read slice. After it completes, advance the frontier
+to P0(b), which remains blocked until the supersets runner/editor integration
+lands before shared iOS finish-flow edits begin.
 
 ## Notes / open questions
 
