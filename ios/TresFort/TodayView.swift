@@ -685,15 +685,31 @@ private struct TodayWorkoutView: View {
                     Text("TODAY · \(day.title.uppercased())")
                         .font(Theme.mono(11, .bold)).tracking(2)
                         .foregroundStyle(Theme.muted).padding(.bottom, 6)
-                    ForEach(day.exercises) { ex in
-                        HStack(spacing: 8) {
-                            Text(ex.exercise_name.uppercased())
-                                .font(Theme.display(22)).foregroundStyle(Theme.text)
-                            DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
-                            if ex.isWarmup { WarmupTag() }
-                            Spacer()
-                            Text(ex.targetLabel)
-                                .font(Theme.mono(14)).foregroundStyle(Theme.muted)
+                    ForEach(ExerciseGroupBlock.blocks(day.exercises)) { block in
+                        VStack(alignment: .leading, spacing: 12) {
+                            if block.isGroup {
+                                HStack {
+                                    Text(block.title.uppercased()).font(Theme.mono(12, .bold)).foregroundStyle(Theme.accent)
+                                    if block.isWarmup { WarmupTag() }
+                                }
+                                Text("\(block.rounds) rounds · \(block.roundRest)s round rest · \(block.transitionRest)s transition")
+                                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
+                            }
+                            ForEach(Array(block.members.enumerated()), id: \.element.id) { index, ex in
+                                HStack(spacing: 8) {
+                                    if block.isGroup {
+                                        Text(block.memberLabel(at: index)).font(Theme.mono(12, .bold)).foregroundStyle(Theme.accent)
+                                    }
+                                    Text(ex.exercise_name.uppercased())
+                                        .font(Theme.display(22)).foregroundStyle(Theme.text)
+                                    DemoInfoButton(exerciseName: ex.exercise_name) { demoFor = ex }
+                                    if ex.isWarmup && !block.isWarmup { WarmupTag() }
+                                    if ex.isWarmup && !block.isGroup { WarmupTag() }
+                                    Spacer()
+                                    Text(ex.targetLabel)
+                                        .font(Theme.mono(14)).foregroundStyle(Theme.muted)
+                                }
+                            }
                         }
                         .padding(16)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -878,6 +894,7 @@ private struct RunnerView: View {
     var body: some View {
         if let ex = sync.currentExercise {
             let displayedSetNumber = sync.currentSetNumber
+            let physicalSetNumber = sync.currentPhysicalSetNumber
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     if sync.workoutStart != nil {
@@ -893,6 +910,14 @@ private struct RunnerView: View {
                     ProgressBar(exercises: sync.exercises,
                                 currentIndex: sync.exerciseIndex, sync: sync)
                         .padding(.bottom, 22)
+
+                    if let block = ExerciseGroupBlock.blocks(sync.exercises).first(where: { $0.members.contains(where: { $0.id == ex.id }) }),
+                       block.isGroup, let memberIndex = block.members.firstIndex(where: { $0.id == ex.id }) {
+                        Text("\(block.title.uppercased()) · \(block.memberLabel(at: memberIndex)) · \(block.transitionRest)s TRANSITION")
+                            .font(Theme.mono(11, .bold)).foregroundStyle(Theme.accent)
+                            .padding(.bottom, 8)
+                            .accessibilityIdentifier("runner.group")
+                    }
 
                     // Keep the compact scoreboard at ordinary sizes; allow
                     // the full exercise name to wrap at accessibility sizes.
@@ -914,12 +939,13 @@ private struct RunnerView: View {
                         : AnyLayout(HStackLayout())
                     metadataLayout {
                         let complete = sync.isComplete(ex)
-                        meta("SET", "\(min(displayedSetNumber, ex.target_sets))",
+                        meta(ex.group_id == nil ? "SET" : "ROUND", "\(min(displayedSetNumber, ex.target_sets))",
                              complete ? "OF \(ex.target_sets) ✓" : "OF \(ex.target_sets)")
                         if !dynamicTypeSize.isAccessibilitySize { Spacer() }
                         meta("TARGET", ex.targetLabel, "")
                         if !dynamicTypeSize.isAccessibilitySize { Spacer() }
-                        meta("REST", "\(ex.rest_seconds)s", "")
+                        meta(ex.group_id == nil ? "REST" : "ROUND REST",
+                             "\(ex.group_rest_seconds ?? ex.rest_seconds)s", "")
                     }
                     .padding(.top, 12)
 
@@ -970,10 +996,10 @@ private struct RunnerView: View {
                             Task {
                                 await sync.logCurrentSet(
                                     expected: renderedExercise,
-                                    expectedSetNumber: displayedSetNumber)
+                                    expectedSetNumber: physicalSetNumber)
                             }
                         } label: {
-                            Text("LOG SET \(displayedSetNumber)")
+                            Text(ex.group_id == nil ? "LOG SET \(displayedSetNumber)" : "LOG ROUND \(displayedSetNumber)")
                                 .font(Theme.display(26)).tracking(1.2)
                                 .frame(maxWidth: .infinity).padding(.vertical, 18)
                         }
@@ -1316,6 +1342,7 @@ private struct TimedSetView: View {
 
     var body: some View {
         let displayedSetNumber = sync.currentSetNumber
+        let physicalSetNumber = sync.currentPhysicalSetNumber
         VStack(spacing: 16) {
             Text(sync.timedActive ? "HOLD" : "DURATION")
                 .font(Theme.mono(10, .bold)).tracking(2).foregroundStyle(Theme.muted)
@@ -1349,9 +1376,9 @@ private struct TimedSetView: View {
                 Button {
                     sync.startTimedSet(
                         expected: ex,
-                        expectedSetNumber: displayedSetNumber)
+                        expectedSetNumber: physicalSetNumber)
                 } label: {
-                    Text("START SET \(displayedSetNumber)")
+                    Text(ex.group_id == nil ? "START SET \(displayedSetNumber)" : "START ROUND \(displayedSetNumber)")
                         .font(Theme.display(24)).tracking(1.2)
                         .frame(maxWidth: .infinity).padding(.vertical, 16)
                 }
@@ -1432,8 +1459,9 @@ private struct RestOverlay: View {
                             VStack(spacing: 4) {
                                 Text("UP NEXT").font(Theme.mono(11, .bold)).tracking(2)
                                     .foregroundStyle(Theme.muted)
-                                Text(sync.currentExercise?.exercise_name.uppercased() ?? "DONE")
+                                Text(sync.finished ? "DONE" : sync.currentExercise?.exercise_name.uppercased() ?? "DONE")
                                     .font(Theme.display(22)).foregroundStyle(Theme.text)
+                                    .accessibilityIdentifier("rest.upNext")
                             }
                             .padding(.top, 28)
 

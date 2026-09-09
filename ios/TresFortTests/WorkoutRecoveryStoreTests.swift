@@ -14,7 +14,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
     private func state(
         planName: String = "Cached Plan",
         serverTime: Int = 2_000_000_000_000,
-        externalSyncCursorsVersion: Int? = nil
+        externalSyncCursorsVersion: Int? = nil,
+        planGroupsVersion: Int? = 1
     ) throws -> StateResponse {
         var object: [String: Any] = [
             "plan": [
@@ -68,6 +69,7 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             object["external_sync_cursors_version"] =
                 externalSyncCursorsVersion
         }
+        if let planGroupsVersion { object["plan_groups_version"] = planGroupsVersion }
         let data = try JSONSerialization.data(withJSONObject: object)
         return try JSONDecoder().decode(StateResponse.self, from: data)
     }
@@ -260,7 +262,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             external_activities: [externalActivity(id: "activity-a")],
             activities: baseline.activities,
             server_time: serverTime,
-            externalSyncCursorsVersion: 2)
+            externalSyncCursorsVersion: 2,
+            planGroupsVersion: baseline.planGroupsVersion)
         let expectedCursor = serverTime
             - StateSyncWatermarks.overlapMilliseconds
 
@@ -281,7 +284,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             external_activities: [externalActivity(id: "activity-a")],
             activities: baseline.activities,
             server_time: serverTime,
-            externalSyncCursorsVersion: 2)
+            externalSyncCursorsVersion: 2,
+            planGroupsVersion: baseline.planGroupsVersion)
         XCTAssertEqual(
             StateSyncWatermarks.next(after: incomparableEvent).eventsSince,
             0)
@@ -300,7 +304,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
                 id: "activity-a", syncedAt: nil)],
             activities: baseline.activities,
             server_time: serverTime,
-            externalSyncCursorsVersion: 2)
+            externalSyncCursorsVersion: 2,
+            planGroupsVersion: baseline.planGroupsVersion)
         XCTAssertEqual(
             StateSyncWatermarks.next(after: incomparableActivity).eventsSince,
             expectedCursor)
@@ -373,7 +378,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             external_activities: [externalActivity(id: "activity-a")],
             activities: baseline.activities,
             server_time: initialTime,
-            externalSyncCursorsVersion: 2)
+            externalSyncCursorsVersion: 2,
+            planGroupsVersion: baseline.planGroupsVersion)
         StateSnapshotStore.save(
             initial, userID: "user-a", defaults: defaults)
 
@@ -442,7 +448,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
                 external_activities: [externalActivity(id: "activity-a")],
                 activities: baseline.activities,
                 server_time: initialTime,
-                externalSyncCursorsVersion: 2),
+                externalSyncCursorsVersion: 2,
+                planGroupsVersion: baseline.planGroupsVersion),
             userID: "user-a",
             defaults: defaults)
 
@@ -624,7 +631,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             external_events: [event(id: "event-a")],
             external_activities: [externalActivity(id: "external-a")],
             activities: [],
-            server_time: baseline.server_time)
+            server_time: baseline.server_time,
+            planGroupsVersion: baseline.planGroupsVersion)
         StateSnapshotStore.save(
             initial, userID: "user-a", defaults: defaults)
 
@@ -967,5 +975,47 @@ extension WorkoutRecoveryStoreTests {
             }
         }
         XCTAssertNil(StateSnapshotStore.encodedEnvelope(noise))
+    }
+}
+
+extension WorkoutRecoveryStoreTests {
+    func testCheckpointFocusRevisionRoundTripsAndLegacyCheckpointRemainsReadable() throws {
+        let checkpoint = WorkoutRunnerCheckpoint(date: "2033-05-18", sessionID: "session-a",
+            selectedDayID: "day-a", currentSlotID: "slot-b", skippedSlotIDs: [],
+            workoutStartedAtMS: 2_000_000_000_000, finished: false,
+            focus: .init(revision: 9, isExplicit: true))
+        let encoded = try JSONEncoder().encode(checkpoint)
+        XCTAssertEqual(try JSONDecoder().decode(WorkoutRunnerCheckpoint.self, from: encoded), checkpoint)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        json.removeValue(forKey: "focus")
+        let legacy = try JSONDecoder().decode(WorkoutRunnerCheckpoint.self,
+            from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(legacy.focus)
+        XCTAssertEqual(legacy.currentSlotID, "slot-b")
+    }
+}
+
+extension WorkoutRecoveryStoreTests {
+    func testCheckpointDeferredGroupRepairRoundTripsAndLegacyCheckpointDecodes() throws {
+        let repairJSON = """
+        {"dayID":"day-a","groupID":"group-a","members":[
+          {"slotID":"slot-a","exerciseID":"exercise-a","warmup":false,"timed":false},
+          {"slotID":"slot-b","exerciseID":"exercise-b","warmup":false,"timed":false}
+        ]}
+        """
+        let repair = try JSONDecoder().decode(RunnerGroupRepair.self, from: Data(repairJSON.utf8))
+        let checkpoint = WorkoutRunnerCheckpoint(date: "2033-05-18", sessionID: "session-a",
+            selectedDayID: "day-a", currentSlotID: "slot-c", skippedSlotIDs: [],
+            workoutStartedAtMS: 2_000_000_000_000, finished: false, sessionAttempt: 2,
+            deferredGroupRepair: repair)
+        let encoded = try JSONEncoder().encode(checkpoint)
+        XCTAssertEqual(try JSONDecoder().decode(WorkoutRunnerCheckpoint.self, from: encoded), checkpoint)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        json.removeValue(forKey: "deferredGroupRepair")
+        let legacy = try JSONDecoder().decode(WorkoutRunnerCheckpoint.self,
+            from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(legacy.deferredGroupRepair)
+        XCTAssertEqual(legacy.currentSlotID, "slot-c")
+        XCTAssertEqual(legacy.sessionAttempt, 2)
     }
 }

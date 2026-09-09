@@ -375,6 +375,46 @@ struct APIClient {
         let version: Int
     }
 
+    struct ExerciseGroupAcknowledgement: Decodable {
+        let ok: Bool
+        let plan_id: String
+        let version: Int
+        let group_id: String
+        let day_id: String?
+        let members: [String]
+        let round_rest: Int?
+        let transition_rest: Int?
+        let target_sets: Int?
+        let cleared: Bool
+        var unchanged: Bool? = nil
+        var replayed: Bool? = nil
+    }
+
+    /// Keep the caller's group UUID and expected version unchanged on retries;
+    /// the server recognizes the original acknowledgement before stale checks.
+    func setExerciseGroup(
+        dayID: String, groupID: String, memberIDs: [String],
+        expectedVersion: Int, roundRest: Int, transitionRest: Int,
+        targetSets: Int, orderIndex: Int?, jwt: String
+    ) async throws -> ExerciseGroupAcknowledgement {
+        var body: [String: Any] = [
+            "group_id": groupID, "exercises": memberIDs,
+            "expected_version": expectedVersion, "round_rest": roundRest,
+            "transition_rest": transitionRest, "target_sets": targetSets,
+        ]
+        if let orderIndex { body["order_index"] = orderIndex }
+        return try await put("api/days/\(dayID)/groups", body: body, jwt: jwt)
+    }
+
+    func clearExerciseGroup(
+        dayID: String, groupID: String, expectedVersion: Int, jwt: String
+    ) async throws -> ExerciseGroupAcknowledgement {
+        try await put("api/days/\(dayID)/groups", body: [
+            "group_id": groupID, "exercises": [String](),
+            "expected_version": expectedVersion,
+        ], jwt: jwt)
+    }
+
     func getPlanHistory(limit: Int, beforeVersion: Int?, jwt: String) async throws -> PlanHistoryResponse {
         var path = "api/plan/history?limit=\(limit)"
         if let beforeVersion { path += "&before_version=\(beforeVersion)" }
@@ -637,6 +677,10 @@ struct APIClient {
     }
 
     func send<T: Decodable>(_ req: URLRequest) async throws -> T {
+        var req = req
+        // Covers every plan-bearing read, including restore responses, so a
+        // grouped slot always retains its ordinary rest alongside group rests.
+        req.setValue("groups", forHTTPHeaderField: "X-TresFort-Capabilities")
         let (data, resp) = try await Self.session.data(for: req)
         let http = resp as? HTTPURLResponse
         let code = http?.statusCode ?? -1
@@ -785,6 +829,14 @@ extension APIClient: ExerciseCatalogAPI {}
 /// feature-session replacement without exercising URLSession in unit tests.
 @MainActor
 protocol PlanEditingAPI {
+    func setExerciseGroup(
+        dayID: String, groupID: String, memberIDs: [String],
+        expectedVersion: Int, roundRest: Int, transitionRest: Int,
+        targetSets: Int, orderIndex: Int?, jwt: String
+    ) async throws -> APIClient.ExerciseGroupAcknowledgement
+    func clearExerciseGroup(
+        dayID: String, groupID: String, expectedVersion: Int, jwt: String
+    ) async throws -> APIClient.ExerciseGroupAcknowledgement
     func replaceExerciseSlot(
         dayID: String, teID: String, exercise: String,
         expectedVersion: Int, jwt: String

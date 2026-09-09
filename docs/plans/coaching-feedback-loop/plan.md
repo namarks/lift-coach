@@ -1,6 +1,6 @@
 # Coaching Feedback Loop
 
-Slug: coaching-feedback-loop · Status: planned · Updated: 2026-09-08 · Theme: coaching
+Slug: coaching-feedback-loop · Status: planned · Updated: 2026-09-09 · Theme: coaching
 
 ## Goal
 
@@ -97,10 +97,10 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 
 P1 reuses the completed [shared snapshot/history projection](../completed/reversible-plan-management/decisions.md) for visibility and reversion, preserving one change feed.
 
+P0(b) reuses the completed [superset runner/editor integration](../completed/supersets-and-circuits/plan.md), including shared recovery, models, API/cache handling and synthetic fixtures. Its temporary shared-file blockers are satisfied; preserve those delivered contracts when adding finish-flow feedback.
+
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | blocked_by | plan:supersets-and-circuits#P1 | Voice/typed finish input and durable feedback share the runner and recovery files; the superset runner must land before this client slice. |
-| P0(b) | blocked_by | plan:supersets-and-circuits#P2 | The supersets task also owns shared client models, API/cache handling and synthetic UI fixtures; its client integration must land before feedback edits to those files. |
 | P2 | coordinates_with | plan:activity-integration-integrity#P0 | Identity/civil-date fixes and unknown-load labels need consistent source context. |
 
 ## Next step
@@ -109,8 +109,8 @@ P1 reuses the completed [shared snapshot/history projection](../completed/revers
 executable backlog; it does not require the later change-history work to start.
 The approved scope includes voice input with transcript review. P0(a) is the
 independent coach-facing read slice. After it completes, advance the frontier
-to P0(b), which remains blocked until the supersets runner/editor integration
-lands before shared iOS finish-flow edits begin.
+to P0(b), reusing the completed supersets runner/editor foundation for shared
+iOS finish-flow edits.
 
 ## Notes / open questions
 

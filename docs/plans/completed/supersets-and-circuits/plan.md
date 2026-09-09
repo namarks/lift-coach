@@ -1,6 +1,6 @@
 # Supersets and Circuits
 
-Slug: supersets-and-circuits · Status: active · Updated: 2026-09-08 · Theme: gym-floor
+Slug: supersets-and-circuits · Status: done · Updated: 2026-09-09 · Theme: gym-floor · Archived: completed
 
 ## Goal
 
@@ -13,14 +13,11 @@ slot, and an ungrouped workout behaves exactly as it does today.
 
 ## Why this is a model change
 
-A slot (`template_exercises`) carries its own `order_index`, `target_sets`,
-and `rest_seconds`, and nothing ties two slots together. The runner keeps one
-`exerciseIndex`, performs every set of that slot, and calls `startRest` after
-each one (`SyncModel.swift`). There is no superset, circuit, or grouping
-concept in the schema, the service layer, the MCP tools, or either iOS
-editor. A warm-up of alternating push-ups and squats therefore cannot be
-expressed by anyone, and the closest workaround (two slots with
-`rest_seconds = 0`) still performs all push-up sets before the first squat.
+Before delivery, each slot carried its own order, count and ordinary rest,
+so zero rest still ran all push-up sets before the first squat. P0 adds explicit
+group identity and shared round/transition rests; P1 derives round execution
+from per-slot set UUIDs; P2 authors those same groups through the existing
+routine editor. Ordinary rests remain stored and return on ungrouping.
 
 This plan is separate from the workout library and the multi-session work:
 those decide which workouts exist and when they run; this decides how one
@@ -28,7 +25,7 @@ workout is sequenced inside the runner.
 
 ## Phases
 
-- [ ] **P0 — Group model, serialization, and coach authoring**
+- [x] **P0 — Group model, serialization, and coach authoring**
   - Use prescription-integrity's runtime validation and atomic version/audit
     boundary. Group create/rewrite/clear take the current expected plan version;
     concurrent membership or reorder edits conflict explicitly. Creation-key
@@ -102,7 +99,7 @@ workout is sequenced inside the runner.
     above rejecting or normalizing; a client-view test for a non-group-aware
     request; and MCP authoring of the push-up/squat warm-up with
     `is_warmup = 1` on both members.
-- [ ] **P1 — Round-based runner**
+- [x] **P1 — Round-based runner**
   - The runner iterates a group by rounds: after logging a set of a
     non-last member it cues `group_transition_seconds` (`0` means no cue)
     and advances to the next member; after logging the last member's set it
@@ -119,7 +116,7 @@ workout is sequenced inside the runner.
   - Correcting or deleting a just-logged set inside a group keeps the runner
     on the right member and round; add this case to the runner recovery
     tests beside the existing background/resume coverage.
-- [ ] **P2 — Editor support in iOS**
+- [x] **P2 — Editor support in iOS**
   - In `EditWorkoutSheet`, multi-select adjacent slots and choose "Group as
     superset"; a group renders as one card listing its members with the
     round rest and transition rest as two labeled fields; "Ungroup" calls
@@ -133,48 +130,82 @@ workout is sequenced inside the runner.
     superset from the routine editor, run it in P1's runner, and see the
     same structure through `get_current_plan`.
 
-## Execution frontier
+## Delivered relationships
 
-- P0
-
-## Dependencies
-
-[Completed Gym Runner Depth](../completed/gym-runner-depth/plan.md) supplies
+[Completed Gym Runner Depth](../gym-runner-depth/plan.md) supplies
 the shared prescription controls, durable corrections and runner presentation.
 Reuse that delivered path when changing the runner.
 
-P0 uses the completed [validated atomic writer](../completed/prescription-integrity/decisions.md). Extend the [canonical snapshot serializer](../completed/reversible-plan-management/decisions.md) to include `group_id` so restoration preserves grouping.
+P0 uses the completed [validated atomic writer](../prescription-integrity/decisions.md) and extends the [canonical snapshot serializer](../reversible-plan-management/decisions.md) with all three group fields so restoration preserves grouping.
 
-[Completed app quality and maintainability](../completed/app-quality-and-maintainability/plan.md)
-supplies the shared history and persistence refactors. Rebase onto their
-integrated main before P1/P2 edits to SyncModel, the runner or editors.
+[Completed app quality and maintainability](../app-quality-and-maintainability/plan.md)
+supplies the shared history and persistence refactors. P1/P2 rebased onto their
+integrated main before editing SyncModel, the runner or editors.
 
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P0 | coordinates_with | plan:workouts-and-multi-session#P0 | Both add or rename columns on the same plan-tree tables; whichever lands second rebases onto the other's migration and serializer. |
-| P2 | coordinates_with | plan:workout-library#P0 | Both edit the routine and slot editors; do not run concurrently on the same iOS files. |
+The separate [workouts and multi-session plan](../../workouts-and-multi-session/plan.md)
+will rebase its schema rename on the delivered group columns and serializers.
+The [workout library](../../workout-library/plan.md) reuses this routine editor
+and its indivisible group cards.
+
+## Completion evidence
+
+P1/P2 deliver group-aware cache certification, durable round rotation, timed
+member identity, correction/retry recovery and member-authored group cards.
+The implementation was rebased onto app-quality PR #156 before shared client
+edits, then onto the documentation-only voice-feedback PR #157. The latter's
+temporary supersets dependencies become completed-foundation links in this
+closeout; its product decisions and activation boundary are preserved.
+
+Local verification passed all 871 backend tests. An isolated iPhone 17 /
+iOS 26.2 simulator passed 392 iOS unit tests. The synthetic UI journeys author a
+push-up/squat warm-up and bench/row working superset, execute eight alternating
+sets with transition/round cues, finish, edit grouped targets and ungroup while
+preserving individual rests. The same JSON prescription drives real-D1
+REST/MCP structure parity, physical-set logging and summary assertions. Runner
+tests additionally cover three-member circuits, timed holds, offline/reversed
+acknowledgements, skip, cold recovery, retries and deletion boundaries, including
+newer manual focus during pending deletions and round rest after uneven-count
+repair. Durable correction evidence and checkpoint deferral also cover process
+termination during a timed hold, snapshot-before-checkpoint recovery, current
+round/order edits and stale-owner handoff.
+
+The required UI scope is current iPhones at normal text size, following the
+completed app-quality plan. An additional maximum Dynamic Type probe did not
+complete: the enlarged selection footer obscured a test target, and a gesture
+confined to the visible list then stopped at the enlarged group-rest form.
+That extreme-size journey remains unverified; this closeout makes no claim
+of physical-device VoiceOver or lock-screen/audio verification.
+
+The completion PR records exact-head independent review and terminal success
+for all three required CI jobs. P1/P2's checked phases and this archive land
+atomically with that implementation.
 
 ## Next step
 
-**Now (@agent):** Complete P0 in parallel with app-quality-and-maintainability,
-then rebase onto its completed iOS foundation and continue P1/P2.
-The September 8 owner instruction authorizes execution through required review
-and verification until human input is necessary.
-P0 is backend and MCP only, so Claude can author supersets before the runner
-change ships; until P1 lands, iOS receives the compatibility view (group
-columns omitted, round rest on every member), which is safe but not useful on
-the gym floor.
+Repository delivery is complete. No executable phase remains in this plan.
+A separately authorized release must apply migration 0044 before Worker
+deployment; app signing/distribution and real training-plan writes also remain
+outside this repository-delivery scope. Clients without the `groups` capability
+retain the sequential compatibility view, with group columns omitted and round
+rest projected onto every member.
 
 ## Notes / open questions
 
+- P0 landed in [PR #155](https://github.com/namarks/tres-fort/pull/155) at
+  `d39214a656532c8f9014f720745c45471adce9a5`. The fetched integration tree exactly
+  matches reviewed head `c3458cbb42456ca1f848293fd9f3ad3b8ed9bec9`; independent
+  local/GitHub reviews, all resolved threads and
+  [required CI](https://github.com/namarks/tres-fort/actions/runs/34314662478)
+  passed. The final retry repair also passed 80 focused group/API/snapshot/MCP/
+  OAuth tests. This is repository delivery; migration, deployment, iOS release
+  and real training-plan changes remain outside the authorized scope.
 - P0 implementation and compatibility choices are described in the
-  [grouping contract](decisions.md). The isolated backend slice owns the group
-  service, serializer, migration, REST/MCP wrappers and focused tests.
-  App-quality-and-maintainability retains iOS runner/editor/persistence ownership
-  until its overlapping refactors merge. P0 remains current until required
-  review, CI and repository delivery are verified.
+  [grouping contract](decisions.md).
+  The overlapping app-quality refactors landed before shared client edits.
+  Runner/recovery, API/cache and editor/presentation slices had explicit file
+  ownership; the lead integrated synthetic journeys and canonical closeout.
 
-- [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
+- [Completed bodyweight support](../bodyweight-training-support/plan.md)
   supplies variation replacement and comparable metrics. Reuse the shared
   `BodyweightProgress.json` contract for bodyweight PR/hold claims; this is a
   delivered repository foundation, not an unresolved dependency.

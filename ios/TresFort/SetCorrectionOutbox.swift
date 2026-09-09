@@ -26,6 +26,11 @@ struct PendingSetCorrection: Codable, Equatable, Identifiable {
     var expectedUpdatedAt: Int?
     /// Nil means delete; non-nil is the immutable corrected value intent.
     let values: SetCorrectionValues?
+    /// Captured with the durable correction; nil on pre-focus-revision intents.
+    var runnerFocusRevision: UInt64? = nil
+    /// Counted group evidence survives a tombstone snapshot written before the
+    /// runner checkpoint. Local only; never part of the correction request.
+    var runnerGroupRepair: RunnerGroupRepair? = nil
     var deliveryState: SetIntentDeliveryState = .queued
     var failedHTTPStatus: Int?
     var isDelete: Bool { values == nil }
@@ -79,6 +84,8 @@ enum SetCorrectionOutboxStore {
                 replacement.sessionID = pending[i].sessionID
                 replacement.slotID = pending[i].slotID
             }
+            replacement.runnerFocusRevision = pending[i].runnerFocusRevision
+            replacement.runnerGroupRepair = pending[i].runnerGroupRepair ?? intent.runnerGroupRepair
             replacement.expectedAttempt = pending[i].expectedAttempt ?? intent.expectedAttempt
             replacement.expectedUpdatedAt = pending[i].expectedUpdatedAt ?? intent.expectedUpdatedAt
             pending[i] = replacement

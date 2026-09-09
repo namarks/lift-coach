@@ -39,6 +39,11 @@ enum StateSnapshotStore {
         /// Request-start server horizon through which the last committed state
         /// pull authoritatively observed set mutations.
         let setsCommittedThrough: Int?
+        /// A current-ticket live response certified this exact stored plan.
+        /// Absent on legacy caches, ACK-only fallbacks and invalidation markers.
+        /// Keep separate from StateResponse's wire claim: decoding cached data
+        /// must never upgrade a former sequential compatibility projection.
+        var planGroupsVersion: Int? = nil
     }
 
     /// One live envelope, shared by models using the same defaults object.
@@ -118,9 +123,11 @@ enum StateSnapshotStore {
                 mutationGeneration: 0,
                 watermarks: nil,
                 setsCommittedThrough: nil)
-        let watermarks = current.invalidated == true || current.state == nil
+        let storedWatermarks: StateSyncWatermarks = current.invalidated == true || current.state == nil
             ? .fullReload
             : current.watermarks ?? .fullReload
+        let watermarks = groupAwareWatermarks(
+            storedWatermarks, certifiedVersion: current.planGroupsVersion)
         return reserveStateRequest(
             userID: userID,
             current: current,
@@ -163,7 +170,8 @@ enum StateSnapshotStore {
             latestFullRequestRevision: current.revision + 1,
             mutationGeneration: current.mutationGeneration ?? 0,
             watermarks: current.watermarks,
-            setsCommittedThrough: current.setsCommittedThrough)
+            setsCommittedThrough: current.setsCommittedThrough,
+            planGroupsVersion: current.planGroupsVersion)
         guard write(reserved, userID: userID, defaults: defaults) else {
             return nil
         }
@@ -241,7 +249,11 @@ enum StateSnapshotStore {
                   response: response,
                   watermarks: ticket.watermarks)
         else { return nil }
-        let nextWatermarks = StateSyncWatermarks.next(after: response)
+        let planGroupsVersion = committedPlanGroupsVersion(
+            response: response, current: current, ticket: ticket)
+        let nextWatermarks = groupAwareWatermarks(
+            StateSyncWatermarks.next(after: response),
+            certifiedVersion: planGroupsVersion)
         let stored = StoredStateSnapshot(
             revision: ticket.revision,
             state: state,
@@ -249,7 +261,8 @@ enum StateSnapshotStore {
             latestFullRequestRevision: ticket.revision,
             mutationGeneration: ticket.mutationGeneration,
             watermarks: nextWatermarks,
-            setsCommittedThrough: response.server_time)
+            setsCommittedThrough: response.server_time,
+            planGroupsVersion: planGroupsVersion)
         guard write(stored, userID: ticket.userID, defaults: defaults) else { return nil }
         return load(userID: ticket.userID, defaults: defaults)
     }
@@ -284,14 +297,20 @@ enum StateSnapshotStore {
               mutationGeneration < UInt64.max
         else { return nil }
         let state = transform(current.state ?? fallback)
+        let samePlan = current.state?.plan == state.plan
+            && current.state?.plan_version == state.plan_version
+        let planGroupsVersion = samePlan ? current.planGroupsVersion : nil
         let stored = StoredStateSnapshot(
             revision: current.revision + 1,
             state: state,
             invalidated: false,
             latestFullRequestRevision: current.latestFullRequestRevision,
             mutationGeneration: mutationGeneration + 1,
-            watermarks: current.watermarks,
-            setsCommittedThrough: current.setsCommittedThrough)
+            watermarks: current.watermarks.map {
+                groupAwareWatermarks($0, certifiedVersion: planGroupsVersion)
+            },
+            setsCommittedThrough: current.setsCommittedThrough,
+            planGroupsVersion: planGroupsVersion)
         guard write(stored, userID: userID, defaults: defaults) else {
             return nil
         }
@@ -401,8 +420,14 @@ enum StateSnapshotStore {
     ) -> StateResponse? {
         let isComplete = watermarks == .fullReload
         guard isComplete || current != nil else { return nil }
+        // A requested full plan must include its tree or explicitly report no
+        // active plan. Do not erase the offline baseline or advance cursors on
+        // a thin response that cannot satisfy a representation upgrade.
+        guard watermarks.planVersion != 0 || response.plan != nil
+            || response.plan_version == 0
+        else { return nil }
         let baseline = current ?? response
-        let plan = watermarks.planVersion == 0
+        let plan = watermarks.planVersion == 0 || response.plan_version == 0
             ? response.plan
             : response.plan ?? baseline.plan
         let sessions = watermarks.setsSince == 0
@@ -442,7 +467,46 @@ enum StateSnapshotStore {
             manualActivityCursorCapable:
                 response.manualActivityCursorCapable,
             externalSyncCursorsVersion:
-                response.externalSyncCursorsVersion)
+                response.externalSyncCursorsVersion,
+            planGroupsVersion: response.planGroupsVersion)
+    }
+
+    /// A representation upgrade resets only the plan cursor. Other collections
+    /// keep their independently committed cursors and overlap semantics.
+    private static func groupAwareWatermarks(
+        _ watermarks: StateSyncWatermarks, certifiedVersion: Int?
+    ) -> StateSyncWatermarks {
+        guard certifiedVersion == StateResponse.planGroupsCapabilityVersion else {
+            return StateSyncWatermarks(
+                planVersion: 0, setsSince: watermarks.setsSince,
+                eventsSince: watermarks.eventsSince,
+                activitiesSince: watermarks.activitiesSince,
+                logSince: watermarks.logSince)
+        }
+        return watermarks
+    }
+
+    private static func committedPlanGroupsVersion(
+        response: StateResponse,
+        current: StoredStateSnapshot,
+        ticket: StateSnapshotTicket
+    ) -> Int? {
+        let supported = StateResponse.planGroupsCapabilityVersion
+        // Version zero is the server's authoritative absence of an active plan.
+        if response.plan == nil && response.plan_version == 0 { return supported }
+        if let plan = response.plan {
+            guard (response.planGroupsVersion ?? 0) >= supported,
+                  plan.version == response.plan_version,
+                  response.plan_version > 0
+            else { return nil }
+            return supported
+        }
+        // A proof on a plan-less delta cannot bless an older flat cache. It may
+        // only retain a certificate already attached to this unchanged plan.
+        guard ticket.watermarks.planVersion != 0,
+              response.plan_version == current.state?.plan_version
+        else { return nil }
+        return current.planGroupsVersion
     }
 
     /// Stable id-based upsert. Replaying an overlap response replaces the same
@@ -522,7 +586,8 @@ enum StateSnapshotStore {
                 invalidated: stored.invalidated,
                 latestFullRequestRevision: stored.latestFullRequestRevision,
                 mutationGeneration: stored.mutationGeneration,
-                watermarks: nil, setsCommittedThrough: stored.setsCommittedThrough)
+                watermarks: nil, setsCommittedThrough: stored.setsCommittedThrough,
+                planGroupsVersion: stored.planGroupsVersion)
         }
         defaults.set(data, forKey: scopedKey(userID: userID))
         decodedCache = DecodedCache(defaults: defaults, userID: userID, data: data, stored: live)

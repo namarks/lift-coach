@@ -1,5 +1,34 @@
 import Foundation
 
+struct RunnerFocusState: Codable, Equatable {
+    var revision: UInt64 = 0
+    var isExplicit: Bool = false
+}
+
+/// The counted group a local deletion can reopen. The containing correction
+/// or checkpoint supplies its account, civil date, session and attempt scope.
+struct RunnerGroupRepair: Codable, Equatable {
+    struct Member: Codable, Equatable {
+        let slotID: String
+        let exerciseID: String
+        let warmup: Bool
+        let timed: Bool
+    }
+    let dayID: String
+    let groupID: String
+    let members: [Member]
+
+    init?(groupID: String, day: DayTemplate) {
+        let slots = day.exercises.filter { $0.group_id == groupID }
+        guard slots.count >= 2 else { return nil }
+        dayID = day.id
+        self.groupID = groupID
+        // Order and round targets come from current progress, not this proof.
+        members = slots.sorted { $0.id < $1.id }.map { .init(slotID: $0.id, exerciseID: $0.exercise_id,
+            warmup: $0.isWarmup, timed: $0.isTimed) }
+    }
+}
+
 /// The smallest piece of runner UI state needed to recover after process
 /// death. Server state remains authoritative: SyncModel exposes this as a
 /// resume option only after a live pull confirms that this civil-date session
@@ -19,6 +48,12 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
     let workoutStartedAtMS: Int
     let finished: Bool
     let input: RunnerInputState?
+    /// Progress observed when this exact focus was chosen; nil on legacy checkpoints.
+    let groupProgress: GroupRunnerProgress?
+    /// A newer explicit selection supersedes older pending correction actions.
+    let focus: RunnerFocusState?
+    /// An acknowledged repair waiting for the active physical hold's boundary.
+    let deferredGroupRepair: RunnerGroupRepair?
 
     init(
         date: String,
@@ -30,7 +65,10 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         finished: Bool,
         sessionAttempt: Int? = nil,
         restartDiscardedAttempt: Int? = nil,
-        input: RunnerInputState? = nil
+        input: RunnerInputState? = nil,
+        groupProgress: GroupRunnerProgress? = nil,
+        focus: RunnerFocusState? = nil,
+        deferredGroupRepair: RunnerGroupRepair? = nil
     ) {
         self.date = date
         self.sessionID = sessionID
@@ -42,6 +80,9 @@ struct WorkoutRunnerCheckpoint: Codable, Equatable {
         self.workoutStartedAtMS = workoutStartedAtMS
         self.finished = finished
         self.input = input
+        self.groupProgress = groupProgress
+        self.focus = focus
+        self.deferredGroupRepair = deferredGroupRepair
     }
 }
 

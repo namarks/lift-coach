@@ -1,6 +1,6 @@
 # Gym-Floor Experience
 
-Slug: gym-floor-experience · Status: planned · Updated: 2026-09-08
+Slug: gym-floor-experience · Status: planned · Updated: 2026-09-09
 
 ## Objective
 
@@ -13,9 +13,13 @@ the next scheduled session.
 
 - plan:member-activation-and-adherence
 - plan:workout-library#P0
-- plan:supersets-and-circuits
 
 ## Priority policy
+
+[Completed supersets and circuits](../plans/completed/supersets-and-circuits/plan.md)
+provide shared group authoring, alternating execution and recovery. Future
+routine/runner changes reuse that foundation; production/app release remains
+separate from repository completion.
 
 [Completed app quality and maintainability](../plans/completed/app-quality-and-maintainability/plan.md)
 provides current-iPhone CI, basic usability and measured history performance.

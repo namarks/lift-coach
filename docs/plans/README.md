@@ -112,10 +112,11 @@ AI coaching.
   compatibility window, then allow an ordered list of sessions per date so a
   member can record two strength workouts in one day without changing any
   single-session guarantee.
-- [Supersets and circuits](supersets-and-circuits/plan.md) — **planned**;
-  let adjacent slots form a group the runner performs in rotation with rest
-  only after the round, authored by the member or Claude, without changing
-  how sets log or roll up.
+[Supersets and circuits](completed/supersets-and-circuits/plan.md) are retained
+as completed repository history: shared coach/member authoring, alternating
+round execution and recovery, separate transition/round rests, and compatible
+client-cache refresh are delivered. Backend migration and app/Worker releases
+require separate authority.
 
 [Bodyweight training support](completed/bodyweight-training-support/plan.md) is
 retained as completed repository history: holds/catalog, signed load,

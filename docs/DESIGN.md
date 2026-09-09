@@ -232,7 +232,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | Method · Path | Purpose |
 |---|---|
 | `POST /auth/apple` | Body `{identityToken, authorizationCode?, fullName?}` → `{jwt, user}`. Verifies Apple JWT and resolves the caller. When the native client supplies Apple's single-use code, the route reserves that caller against concurrent deletion, exchanges the code, verifies the returned `id_token` has the same Apple subject, and stores only the caller-scoped refresh token before issuing the app JWT. Storage retains the exact reservation until a second acknowledgement, so a D1 commit whose response is lost can still become sticky revocation uncertainty. Code omission remains compatible with older clients. |
-| `GET /api/state?since=<planVersion>&sets_since=<epochMs>&events_since=<epochMs>&activities_since=<epochMs>&log_since=<epochMs>` | **The sync pull.** Returns `{plan: tree|null, plan_version, external_sync_cursors_version, sessions[], sets[], external_events[], external_activities[], activities[], server_time}`. `plan` is null when `version <= since`; otherwise the full small tree. A zero collection cursor requests a complete current snapshot; an active cursor returns changes plus tombstones. P2 Workers return `external_sync_cursors_version: 2`; compatible clients activate the external cursors only for version 2 or later. `server_time` is captured at request start. Called on launch/foreground/post-write. |
+| `GET /api/state?since=<planVersion>&sets_since=<epochMs>&events_since=<epochMs>&activities_since=<epochMs>&log_since=<epochMs>` | **The sync pull.** Returns `{plan: tree|null, plan_version, plan_groups_version?, external_sync_cursors_version, sessions[], sets[], external_events[], external_activities[], activities[], server_time}`. `plan` is null when `version <= since`; otherwise the full small tree. A zero collection cursor requests a complete current snapshot; an active cursor returns changes plus tombstones. P2 Workers return `external_sync_cursors_version: 2`; compatible clients activate the external cursors only for version 2 or later. `server_time` is captured at request start. Called on launch/foreground/post-write. |
 | `GET /api/today` | Today's session (created from today's template if absent) + its sets + per-exercise last-time actuals + suggested weight. |
 | `POST /api/sessions` | `{date, day_template_id?}` → create/start session. |
 | `PATCH /api/sessions/{id}` | `{status?, perceived_fatigue?, notes?}` plus the existing attempt guard. A completed acknowledgement includes an optional persisted `summary`; a summary failure cannot revoke completion. |
@@ -278,10 +278,13 @@ a member dissolves a remaining singleton. The common validator also covers
 rebuilds, swaps, recurring adjustments and snapshot restore. Grouping leaves
 ordinary `rest_seconds` intact, and snapshots preserve all three nullable fields.
 Clients declare `groups` in `X-TresFort-Capabilities` to receive stored plan
-values. Without it, state/active-plan reads and the embedded restore plan omit
+values. Group-capable state responses advertise `plan_groups_version: 1` so
+an upgraded app can distinguish a full canonical plan from its old sequential
+cache even when the plan version has not changed. Without the request capability,
+state/active-plan reads and the embedded restore plan omit
 group fields and project round rest onto every member's ordinary rest. MCP
 receives canonical values with A1/A2 annotations and both rests in coach reads.
-See the [grouping contract](plans/supersets-and-circuits/decisions.md) for the
+See the [grouping contract](plans/completed/supersets-and-circuits/decisions.md) for the
 versioned write and retry details.
 
 Migration `0040` adds `plan_snapshots`. A legacy plan's first accepted edit
@@ -420,7 +423,25 @@ last accepted response advertised `external_sync_cursors_version >= 2`; an
 absent or lower capability keeps both external cursors at zero. A changed plan
 returns the full small tree. Set/session, external-cache, and manual-activity
 deltas merge by stable id, including tombstones; complete reloads replace their
-collections.
+collections. The app declares `groups` and certifies the stored plan only from
+a current live full-tree response with `plan_groups_version >= 1` (or explicit
+no-plan version zero). A legacy plan cache forces only the plan cursor to zero;
+other collection cursors survive. ACKs and cached wire flags cannot create this
+certificate, and a durable oversized-cache invalidation marker cannot retain it.
+
+Grouped slots rotate by rounds using acknowledged plus durable queued set UUIDs,
+excluding failed intents. The displayed round is separate from the physical
+per-slot set number used to bind a tap or timed hold. A newly queued set cues
+round rest when it completes the derived round, including a repaired round with
+uneven member counts; otherwise it cues transition rest, where zero skips the
+cue. Rest and Live Activity point to the resulting next member. Selection
+revisions preserve newer manual focus across older pending deletions and cold
+recovery. Repairs deferred by a timed hold survive process termination, and a
+later manual choice cancels them durably. Acknowledgements never restart a rest
+timer.
+The workout editor selects adjacent slots and moves each group as one card,
+with rounds, round rest and transition rest edited together. Ordinary slot rest
+stays intact and inactive until ungrouping.
 
 Runner inputs keep an intentional draft only while its slot and prescription
 still match. An explicit load/RPE/rep/duration target takes precedence over
