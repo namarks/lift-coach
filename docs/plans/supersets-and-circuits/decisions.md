@@ -60,9 +60,10 @@ or the request explicitly supplies group fields, including explicit nulls.
 Legacy ungrouped replacements retain their optional-version contract.
 
 Clients declare `groups` in the comma-separated `X-TresFort-Capabilities` header.
-Without it, `/api/state` and `/api/plan/active` omit all group columns and return
-the round rest as each grouped member's ordinary rest. This projection never
-writes to storage. Other capabilities compose in the same header.
+Without it, `/api/state`, `/api/plan/active`, and a successful snapshot restore's
+embedded plan omit all group columns and return the round rest as each grouped
+member's ordinary rest. This projection never writes to storage. Other
+capabilities compose in the same header.
 
 ## Delivery boundary
 

@@ -89,6 +89,26 @@ describe('group authoring API and released-client projection', () => {
     expect(stored!.days[0]!.exercises.map((slot) => slot.rest_seconds)).toEqual([45, 90, 120]);
   });
 
+  it.each([undefined, 'groups'])('projects a restored grouped plan for capability %s without changing stored rests', async (capability) => {
+    const grouped = await api(`/days/${day().id}/groups`, 'PUT', grouping());
+    await api(`/days/${day().id}/groups`, 'PUT', {
+      group_id: groupId, exercises: [], expected_version: grouped.body.version,
+    });
+    const restored = await api(`/plan/history/${grouped.body.version}/restore`, 'POST', {
+      expected_plan_id: plan.id, expected_version: grouped.body.version + 1,
+    }, capability);
+    expect(restored.status).toBe(200);
+    expect(restored.body.plan.days[0].exercises.map((slot: any) => slot.rest_seconds))
+      .toEqual(capability === 'groups' ? [45, 90, 120] : [30, 30, 120]);
+    if (capability === 'groups') {
+      expect(restored.body.plan.days[0].exercises[0]).toMatchObject({ group_id: groupId, group_rest_seconds: 30 });
+    } else {
+      expect(restored.body.plan.days[0].exercises[0]).not.toHaveProperty('group_id');
+    }
+    const stored = await getPlanTree(env.DB, userId);
+    expect(stored!.days[0]!.exercises.map((slot) => slot.rest_seconds)).toEqual([45, 90, 120]);
+  });
+
   it('honors groups among other comma-separated capabilities and preserves ungrouped slots', async () => {
     await api(`/days/${day().id}/groups`, 'PUT', grouping());
     for (const path of ['/state', '/plan/active']) {

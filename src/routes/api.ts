@@ -282,7 +282,12 @@ apiRoutes.post('/plan/history/:version/restore', async (c) => {
     return c.json(result, 409);
   }
   if ('error' in result && result.error === 'invalid_fields') return c.json(result, 400);
-  return 'error' in result ? c.json(result, 404) : c.json(result);
+  if ('error' in result) return c.json(result, 404);
+  if ('plan' in result) {
+    return c.json({ ...result, plan: planForCapabilities(result.plan,
+      readCapabilities(c.req.header('X-TresFort-Capabilities'))) });
+  }
+  return c.json(result);
 });
 
 // Idempotent manual-authoring bootstrap. This route deliberately does not use

@@ -12106,4 +12106,3 @@ export async function clearGroup(
   if (!changed.length) return { ...result, unchanged: true };
   return commitExerciseGroup(db, plan, changed, result, key, attribution);
 }
-
