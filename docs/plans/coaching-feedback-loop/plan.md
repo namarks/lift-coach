@@ -1,6 +1,6 @@
 # Coaching Feedback Loop
 
-Slug: coaching-feedback-loop · Status: planned · Updated: 2026-09-07 · Theme: coaching
+Slug: coaching-feedback-loop · Status: planned · Updated: 2026-09-08 · Theme: coaching
 
 ## Goal
 
@@ -16,6 +16,28 @@ surfaces without adding AI to the Worker or creating a second coaching record.
   - Add an optional, quick finish flow for perceived fatigue and a short note;
     pain can be described in the note, and completing a workout must not
     require a questionnaire.
+  - Make speaking an obvious input choice with **Talk about your workout**.
+    The member starts and stops recording, reviews an editable transcript,
+    then explicitly saves it as the session note. Keep **Type instead** and
+    **Skip** available; keyboard dictation alone does not satisfy the visible
+    voice-entry requirement. Do not infer fatigue or rewrite the member's
+    words from the recording.
+  - Use on-device transcription for the initial voice path. Request microphone
+    and any required speech permission only after the member chooses to talk.
+    If permission is denied or recognition is unavailable, preserve any text
+    draft and offer typing or skipping. No cloud transcription fallback or
+    audio upload is included in this scope.
+  - Keep audio in memory only for recording and transcription; release it on
+    completion, cancellation, interruption, or leaving the flow. Persist
+    only the member-approved transcript through the existing private session
+    note path; do not add stored voice messages or an audio retention system.
+    A late recognition result must not overwrite a typed correction, restore a
+    canceled draft, or submit feedback without the member's save action.
+  - Verify voice-to-editable-text-to-MCP, typing, skip, denied permission,
+    unavailable recognition, cancellation and interruption with synthetic
+    recognition outcomes. Use current iPhones at normal text sizes. Neither
+    a failed recording nor empty recognition output may block workout
+    completion or erase existing feedback.
   - Persist those existing session fields and expose them through the relevant
     history, current-state, and coaching-brief reads so the next coaching
     conversation receives the member's words and the recorded workout without
@@ -69,14 +91,25 @@ P1 reuses the completed [shared snapshot/history projection](../completed/revers
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P0 | coordinates_with | plan:supersets-and-circuits#P1 | Voice/typed finish input and durable feedback share the runner and recovery files; implement that client slice after the superset runner lands. Coach-facing read projections can proceed independently. |
+| P0 | coordinates_with | plan:supersets-and-circuits#P2 | The supersets task also owns shared client models, API/cache handling and synthetic UI fixtures; finish its client integration before editing those same files for feedback. |
 | P2 | coordinates_with | plan:activity-integration-integrity#P0 | Identity/civil-date fixes and unknown-load labels need consistent source context. |
 
 ## Next step
 
 **Now (@owner):** Activate P0 when member-to-coach feedback should enter the
 executable backlog; it does not require the later change-history work to start.
+The approved scope includes voice input with transcript review. On activation,
+start with coach-facing read projections; implement the shared iOS finish-flow
+changes after the supersets runner/editor integration lands.
 
 ## Notes / open questions
+
+- Owner decision (2026-09-08): offer spoken feedback because talking after
+  training may be easier than typing. This is an adoption hypothesis to check
+  through use, not a measured usage claim. Save the approved transcript as the
+  existing session note and discard the recording. Cloud transcription or
+  retained audio would require a separate product/privacy decision.
 
 - [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
   supplies variation replacement and comparable metrics. Reuse the shared
