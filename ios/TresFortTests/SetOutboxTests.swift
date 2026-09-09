@@ -169,6 +169,14 @@ private final class SetWriteAPIStub: SetWriteAPI {
 
 @MainActor
 private final class SetTerminalAPIStub: WorkoutTerminalAPI {
+    var feedbackHandler: ((WorkoutFeedback?) async throws -> SessionRow)?
+    private(set) var feedbackCalls: [WorkoutFeedback?] = []
+    func completeSession(sessionId: String, expectedAttempt: Int?, feedback: WorkoutFeedback?, jwt: String) async throws -> SessionRow {
+        feedbackCalls.append(feedback)
+        if let feedbackHandler { return try await feedbackHandler(feedback) }
+        return try await completeSession(sessionId: sessionId, expectedAttempt: expectedAttempt, jwt: jwt)
+    }
+
     var completeHandler: ((String, String) async throws -> SessionRow)?
     var discardHandler: ((String, String) async throws -> SessionRow)?
     private(set) var completeCalls: [(sessionID: String, jwt: String)] = []
@@ -12101,5 +12109,294 @@ extension SetOutboxTests {
         await newer.drainWorkoutWriteOutboxes()
         XCTAssertTrue(newer.setCorrections.isEmpty)
         XCTAssertEqual(newer.resumableCheckpoint?.currentSlotID, a.id)
+    }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testFeedbackEditsSurviveFinalSetReviewCheckpointRelaunchAndRetry() async throws {
+        let defaults = defaults()
+        let ex = exercise(targetSets: 1)
+        let s = session(attempt: 2)
+        let api = SetWriteAPIStub()
+        configureSuccess(api, exercise: ex, session: s)
+        let terminal = SetTerminalAPIStub()
+        terminal.feedbackHandler = { _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            terminalAPI: terminal, defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: s, sets: [], exercise: ex))
+        prepare(model, exercise: ex, session: s, running: true)
+        let target = try XCTUnwrap(model.terminalActionTarget)
+        let first = WorkoutFeedback(notes: "Speech draft", perceivedFatigue: 7, expected: .init(notes: nil, perceivedFatigue: nil))
+        let edited = WorkoutFeedback(notes: "Typed correction before finishing", perceivedFatigue: 6, expected: .init(notes: nil, perceivedFatigue: nil))
+        XCTAssertTrue(model.saveWorkoutFeedback(first, expected: target, previous: nil))
+        XCTAssertTrue(model.saveWorkoutFeedback(edited, expected: target, previous: first))
+        XCTAssertFalse(model.saveWorkoutFeedback(first, expected: target, previous: first))
+        // Actual final-set delivery updates runner focus/checkpoint.
+        _ = await model.logSet(ex, weight: 135, reps: 5)
+        model.skipRest()
+        XCTAssertTrue(model.running)
+        XCTAssertTrue(model.finished)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.feedback, edited)
+        await model.finishWorkout()
+        XCTAssertEqual(terminal.feedbackCalls.last!, edited)
+        XCTAssertEqual(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).intents.first?.feedback, edited)
+        // A submitted finish is immutable while its acknowledgement is pending.
+        XCTAssertFalse(model.saveWorkoutFeedback(first, expected: target, previous: edited))
+        let recoveryAPI = SetWriteAPIStub()
+        recoveryAPI.stateHandler = { _ in throw URLError(.notConnectedToInternet) }
+        let recoveryTerminal = SetTerminalAPIStub()
+        recoveryTerminal.feedbackHandler = { [self] feedback in
+            var complete = session(status: "completed", updatedAt: 2_000_000_000_010, attempt: 2)
+            complete.notes = feedback?.notes
+            complete.perceived_fatigue = feedback?.perceivedFatigue
+            return complete
+        }
+        let recovered = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: recoveryAPI,
+            terminalAPI: recoveryTerminal, defaults: defaults, now: { self.fixedDate })
+        await recovered.drainWorkoutWriteOutboxes()
+        XCTAssertEqual(recoveryTerminal.feedbackCalls.last!, edited)
+        XCTAssertTrue(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+        let saved = StateSnapshotStore.load(userID: "user-a", defaults: defaults)?.state.sessions.first
+        XCTAssertEqual(saved?.notes, edited.notes)
+        XCTAssertEqual(saved?.perceived_fatigue, 6)
+    }
+
+    func testDelayedFinishAcknowledgementCannotEraseNewerRecoveredFeedback() async throws {
+        let defaults = defaults()
+        let ex = exercise()
+        let s = session(attempt: 2)
+        let terminal = SetTerminalAPIStub()
+        var acknowledgement: CheckedContinuation<SessionRow, Never>?
+        terminal.feedbackHandler = { _ in await withCheckedContinuation { acknowledgement = $0 } }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), terminalAPI: terminal,
+            defaults: defaults, now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+        let first = WorkoutFeedback(notes: "First finish", perceivedFatigue: 5)
+        XCTAssertTrue(model.saveWorkoutFeedback(first, expected: try XCTUnwrap(model.terminalActionTarget), previous: nil))
+        let send = Task { await model.finishWorkout() }
+        while acknowledgement == nil { await Task.yield() }
+        let old = try XCTUnwrap(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).intents.first)
+        // A recovered model owns a newer explicit choice, with another id.
+        WorkoutTerminalOutboxStore.remove(id: old.id, userID: "user-a", defaults: defaults)
+        let newer = WorkoutFeedback(notes: "Newer approved correction", perceivedFatigue: 7)
+        let replacement = WorkoutTerminalIntent(id: "newer-choice", action: .finish, date: s.date,
+            workoutID: s.workout_id, resolvedSessionID: s.id, deliveryState: .queued,
+            failedHTTPStatus: nil, expectedAttempt: 2, feedback: newer)
+        WorkoutTerminalOutboxStore.enqueue(replacement, userID: "user-a", defaults: defaults)
+        var response = session(status: "completed", updatedAt: 2_000_000_000_010, attempt: 2)
+        response.notes = first.notes; response.perceived_fatigue = 5
+        acknowledgement?.resume(returning: response)
+        await send.value
+        XCTAssertEqual(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).intents.first, replacement)
+    }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testSkippingInheritedFeedbackLeavesNewerServerWordsUntouched() async throws {
+        let defaults = defaults(), terminal = SetTerminalAPIStub()
+        let ex = exercise()
+        var old = session(attempt: 2)
+        old.notes = "Already saved"; old.perceived_fatigue = 3
+        terminal.feedbackHandler = { [self] feedback in
+            XCTAssertNil(feedback, "Skip must omit feedback even when the read model has existing words")
+            var newer = session(status: "completed", updatedAt: 2_000_000_000_010, attempt: 2)
+            newer.notes = "Newer server words"; newer.perceived_fatigue = 6
+            return newer
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), terminalAPI: terminal,
+            defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: old, sets: [], exercise: ex))
+        prepare(model, exercise: ex, session: old, running: true)
+        XCTAssertEqual(model.currentWorkoutFeedback?.notes, "Already saved")
+        await model.finishWorkout()
+        XCTAssertEqual(terminal.feedbackCalls.count, 1)
+        XCTAssertEqual(model.todaySession?.notes, "Newer server words")
+        XCTAssertEqual(model.todaySession?.perceived_fatigue, 6)
+        XCTAssertTrue(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+    }
+
+    func testAliasedFeedbackConflictSurvivesRelaunchAndRequiresExplicitChoice() async throws {
+        for useMine in [false, true] {
+            let defaults = defaults(), terminal = SetTerminalAPIStub(), ex = exercise()
+            let old = session(id: "old-alias", attempt: 2)
+            var server = session(id: "canonical-session", updatedAt: 2_000_000_000_010, attempt: 2)
+            server.notes = "Saved elsewhere"; server.perceived_fatigue = 8
+            let serverJSON = try JSONSerialization.jsonObject(with: JSONEncoder().encode(server))
+            let body = String(data: try JSONSerialization.data(withJSONObject: [
+                "error": "session_feedback_conflict", "current_session": serverJSON]), encoding: .utf8)!
+            terminal.feedbackHandler = { _ in throw APIError.http(409, body) }
+            let auth = retainedAuth(defaults: defaults)
+            let model = SyncModel(auth: auth, terminalAPI: terminal, defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: old, sets: [], exercise: ex))
+            prepare(model, exercise: ex, session: old, running: true)
+            XCTAssertTrue(model.saveWorkoutFeedback(.init(notes: "My approved words", perceivedFatigue: 4),
+                expected: try XCTUnwrap(model.terminalActionTarget), previous: nil))
+            await model.finishWorkout()
+            let conflict = try XCTUnwrap(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).intents.first)
+            XCTAssertEqual(conflict.deliveryState, .failed)
+            XCTAssertEqual(conflict.resolvedSessionID, "canonical-session")
+            XCTAssertEqual(conflict.feedbackConflict, .init(notes: server.notes, perceivedFatigue: 8))
+            XCTAssertEqual(conflict.feedback?.notes, "My approved words")
+            await model.retryTerminalIntent(id: conflict.id)
+            XCTAssertEqual(terminal.feedbackCalls.count, 1, "Generic Retry cannot bypass the explicit choice")
+
+            let recovery = SetTerminalAPIStub()
+            recovery.feedbackHandler = { [self] feedback in
+                if useMine {
+                    XCTAssertEqual(feedback?.expected, conflict.feedbackConflict)
+                    XCTAssertEqual(feedback?.notes, "My approved words")
+                } else { XCTAssertNil(feedback) }
+                var response = session(id: server.id, status: "completed", updatedAt: 2_000_000_000_020, attempt: 2)
+                response.notes = server.notes; response.perceived_fatigue = server.perceived_fatigue
+                if let feedback { response.notes = feedback.notes; response.perceived_fatigue = feedback.perceivedFatigue }
+                return response
+            }
+            let recovered = SyncModel(auth: auth, terminalAPI: recovery, defaults: defaults, now: { self.fixedDate })
+            await recovered.drainWorkoutWriteOutboxes()
+            XCTAssertTrue(recovery.feedbackCalls.isEmpty)
+            await recovered.resolveWorkoutFeedbackConflict(id: conflict.id,
+                expected: .init(notes: "An older displayed version", perceivedFatigue: 1), useMine: useMine)
+            XCTAssertTrue(recovery.feedbackCalls.isEmpty, "A stale review cannot authorize replacing unseen feedback")
+            await recovered.resolveWorkoutFeedbackConflict(id: conflict.id, expected: try XCTUnwrap(conflict.feedbackConflict), useMine: useMine)
+            XCTAssertEqual(recovery.feedbackCalls.count, 1)
+            XCTAssertTrue(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+            XCTAssertEqual(recovered.todaySession?.notes, useMine ? "My approved words" : "Saved elsewhere")
+        }
+    }
+
+    func testSavingBeforeFirstSetRefreshesFinishTargetAndPersistsFeedback() async throws {
+        let defaults = defaults(), terminal = SetTerminalAPIStub(), api = SetWriteAPIStub(), ex = exercise()
+        let created = session(status: "planned", attempt: 0)
+        api.createHandler = { _, _, _ in created }
+        terminal.feedbackHandler = { [self] feedback in
+            var complete = session(status: "completed", updatedAt: 2_000_000_000_010, attempt: 0)
+            complete.notes = feedback?.notes
+            return complete
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            terminalAPI: terminal, defaults: defaults, now: { self.fixedDate })
+        prepare(model, exercise: ex, running: true)
+        let opened = try XCTUnwrap(model.terminalActionTarget)
+        XCTAssertTrue(model.saveWorkoutFeedback(.init(notes: "Ended early", perceivedFatigue: nil),
+            expected: opened, previous: nil))
+        await model.finishWorkout(expected: try XCTUnwrap(model.terminalActionTarget))
+        XCTAssertEqual(terminal.feedbackCalls.count, 1)
+        XCTAssertEqual(model.todaySession?.notes, "Ended early")
+        XCTAssertFalse(model.running)
+    }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testApprovedFeedbackWithoutSetsSurvivesRelaunchAndRemoteTerminalStillWins() async throws {
+        for status in ["absent", "planned", "skipped", "discarded", "completed"] {
+            let suite = "FeedbackBeforeFirstSet.\(UUID().uuidString)"
+            let defaults = UserDefaults(suiteName: suite)!, ex = exercise(targetSets: 1)
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let auth = retainedAuth(defaults: defaults)
+            let model = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate })
+            prepare(model, exercise: ex, running: true)
+            model.skip()
+            XCTAssertTrue(model.saveWorkoutFeedback(.init(notes: "Stopped before any set", perceivedFatigue: 8),
+                expected: try XCTUnwrap(model.terminalActionTarget), previous: nil))
+            // Process-local runner ownership does not survive process death.
+            let coldDefaults = UserDefaults(suiteName: suite)!
+            let cold = SyncModel(auth: retainedAuth(defaults: coldDefaults), defaults: coldDefaults, now: { self.fixedDate })
+            let server = session(status: status, attempt: 0)
+            let live = StateResponse(plan: model.plan, plan_version: 1,
+                sessions: status == "absent" ? [] : [server], sets: [], external_events: [],
+                external_activities: [], activities: [], server_time: 2_000_000_000_000, planGroupsVersion: 1)
+            cold.replaceState(with: live)
+            if ["absent", "planned"].contains(status) {
+                XCTAssertEqual(cold.resumableCheckpoint?.feedback?.notes, "Stopped before any set", status)
+                XCTAssertEqual(cold.todayResolvedDay?.id, "day-a", status)
+                cold.resumeWorkout()
+                XCTAssertTrue(cold.running, status)
+                XCTAssertEqual(cold.currentWorkoutFeedback?.notes, "Stopped before any set", status)
+                XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.feedback?.notes,
+                    "Stopped before any set", status)
+            } else {
+                XCTAssertFalse(cold.hasResumableWorkout, status)
+                XCTAssertNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults), status)
+            }
+        }
+    }
+
+    func testStaleViewCannotFinishOverNewerLocallyApprovedFeedback() async throws {
+        let defaults = defaults(), auth = retainedAuth(defaults: defaults), ex = exercise(), s = session(attempt: 2)
+        let terminal = SetTerminalAPIStub()
+        terminal.feedbackHandler = { _ in XCTFail("Stale view must not send"); throw URLError(.badServerResponse) }
+        let old = SyncModel(auth: auth, terminalAPI: terminal, defaults: defaults, now: { self.fixedDate })
+        old.replaceState(with: state(session: s, sets: [], exercise: ex))
+        prepare(old, exercise: ex, session: s, running: true)
+        XCTAssertTrue(old.saveWorkoutFeedback(.init(notes: "First words", perceivedFatigue: 4),
+            expected: try XCTUnwrap(old.terminalActionTarget), previous: nil))
+        let oldTarget = try XCTUnwrap(old.terminalActionTarget)
+        let newer = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate })
+        newer.replaceState(with: state(session: s, sets: [], exercise: ex))
+        newer.resumeWorkout()
+        XCTAssertTrue(newer.running)
+        XCTAssertTrue(newer.saveWorkoutFeedback(.init(notes: "Newer local words", perceivedFatigue: 5),
+            expected: try XCTUnwrap(newer.terminalActionTarget), previous: newer.currentWorkoutFeedback))
+        let checkpoint = WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)
+        await old.finishWorkout(expected: oldTarget)
+        XCTAssertTrue(terminal.feedbackCalls.isEmpty)
+        XCTAssertTrue(WorkoutTerminalOutboxStore.load(userID: "user-a", defaults: defaults).isEmpty)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults), checkpoint)
+        XCTAssertEqual(checkpoint?.feedback?.notes, "Newer local words")
+    }
+
+    func testOpenFeedbackEditorSurvivesFirstSessionAcknowledgement() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), ex = exercise(targetSets: 1)
+        let entered = SetAsyncLatch(), release = SetAsyncLatch(), created = session(attempt: 0)
+        configureSuccess(api, exercise: ex, session: created)
+        api.createHandler = { _, _, _ in
+            await entered.open(); await release.wait(); return created
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            defaults: defaults, now: { self.fixedDate })
+        prepare(model, exercise: ex, running: true)
+        let write = Task { await model.logSet(ex, weight: 135, reps: 5) }
+        await entered.wait()
+        let opened = try XCTUnwrap(model.terminalActionTarget)
+        XCTAssertNil(opened.sessionID)
+        await release.open(); _ = await write.value
+        XCTAssertEqual(model.todaySession?.id, created.id)
+        XCTAssertTrue(model.saveWorkoutFeedback(.init(notes: "Edited while the set was syncing", perceivedFatigue: 6),
+            expected: opened, previous: nil))
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.feedback?.notes,
+            "Edited while the set was syncing")
+    }
+}
+
+@MainActor
+extension SetOutboxTests {
+    func testSkippingFeedbackAfterFirstSessionAcknowledgementStillFinishes() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub(), terminal = SetTerminalAPIStub(), ex = exercise(targetSets: 1)
+        let entered = SetAsyncLatch(), release = SetAsyncLatch(), created = session(attempt: 0)
+        configureSuccess(api, exercise: ex, session: created)
+        api.createHandler = { _, _, _ in
+            await entered.open(); await release.wait(); return created
+        }
+        terminal.feedbackHandler = { [self] feedback in
+            XCTAssertNil(feedback)
+            return session(status: "completed", updatedAt: 2_000_000_000_010, attempt: 0)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+            terminalAPI: terminal, defaults: defaults, now: { self.fixedDate })
+        prepare(model, exercise: ex, running: true)
+        let write = Task { await model.logSet(ex, weight: 135, reps: 5) }
+        await entered.wait()
+        let opened = try XCTUnwrap(model.terminalActionTarget)
+        XCTAssertNil(opened.sessionID)
+        await release.open(); _ = await write.value
+        // End-workout sheet Skip deliberately submits no draft, using the
+        // target captured before its pending first set received a session ID.
+        await model.finishWorkout(expected: opened)
+        XCTAssertEqual(terminal.feedbackCalls.count, 1)
+        XCTAssertEqual(model.todaySession?.status, "completed")
+        XCTAssertFalse(model.running)
     }
 }

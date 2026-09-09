@@ -180,6 +180,7 @@ final class SyncModel: ObservableObject {
     // Guided workout runner.
     @Published var running = false
     @Published var finished = false
+    @Published private(set) var workoutFeedback: WorkoutFeedback?
     @Published var exerciseIndex = 0
     @Published var weight: Double = 0
     @Published var reps: Int = 0
@@ -370,6 +371,7 @@ final class SyncModel: ObservableObject {
         let persistedCheckpoint = WorkoutRunnerCheckpointStore.load(
             userID: auth.userID, defaults: defaults)
         self.persistedRunnerCheckpoint = persistedCheckpoint
+        self.workoutFeedback = persistedCheckpoint?.feedback
         self.runnerFocus = persistedCheckpoint?.focus ?? RunnerFocusState()
         self.deferredGroupRepair = persistedCheckpoint?.deferredGroupRepair
         self.runnerRestartDiscardedAttempt =
@@ -1141,6 +1143,7 @@ final class SyncModel: ObservableObject {
             return submittedSession
         }
         return SessionRow(
+            notes: submittedSession.notes, perceived_fatigue: submittedSession.perceived_fatigue,
             id: result.set.session_id,
             date: submittedSession.date,
             status: "in_progress",
@@ -1184,6 +1187,7 @@ final class SyncModel: ObservableObject {
         aliasIDs.insert(acknowledgedSession.id)
         aliasIDs.insert(acceptedSet.session_id)
         let canonical = SessionRow(
+            notes: source.notes, perceived_fatigue: source.perceived_fatigue,
             id: acceptedSet.session_id,
             date: acknowledgedSession.date,
             status: source.status,
@@ -1384,6 +1388,7 @@ final class SyncModel: ObservableObject {
                 current!, with: response, kind: .resolution)
         let source = advancesAttempt || responseWins ? response : current!
         let canonical = SessionRow(
+            notes: source.notes, perceived_fatigue: source.perceived_fatigue,
             id: response.id,
             date: response.date,
             status: source.status,
@@ -1470,7 +1475,8 @@ final class SyncModel: ObservableObject {
             } ?? serverSessions.first { $0.date == intent.date }
             switch intent.action {
             case .finish:
-                guard row?.status == "completed" else { continue }
+                guard let row, row.status == "completed",
+                      intent.feedback?.matches(row) != false else { continue }
                 terminalOutbox.remove(id: intent.id)
                 persistRemovedTerminalIntent(id: intent.id)
                 if intent.date == todayString { stopRunnerAfterTerminalAck() }
@@ -1556,6 +1562,7 @@ final class SyncModel: ObservableObject {
         deferredGroupRepair = nil
         running = false
         finished = false
+        workoutFeedback = nil
         workoutStart = nil
         clearTimedSet()
         skipped = []
@@ -1658,10 +1665,11 @@ final class SyncModel: ObservableObject {
             resumableCheckpoint = nil
             return
         }
+        let unstartedFeedback = canResumeUnstartedFeedback(checkpoint, session: checkpointSession)
+        let serverSession = checkpointSession?.status == "discarded" ? nil : checkpointSession
         guard checkpoint.date == todayString,
               terminalOutbox.intent(for: checkpoint.date) == nil,
-              let serverSession = checkpointSession,
-              serverSession.status == "in_progress",
+              serverSession?.status == "in_progress" || unstartedFeedback,
               let day = plan?.workouts.first(where: {
                   $0.id == checkpoint.selectedDayID
               }),
@@ -1682,7 +1690,9 @@ final class SyncModel: ObservableObject {
             .sorted()
         let skippedIDs = Set(normalizedSkipped)
         func checkpointSetIDs(_ slot: TemplateExercise) -> Set<String> {
-            let accepted = Set(slotSets(slot, sessionID: serverSession.id, dayExercises: day.exercises).map(\.id))
+            let accepted = serverSession.map {
+                Set(slotSets(slot, sessionID: $0.id, dayExercises: day.exercises).map(\.id))
+            } ?? []
             guard slot.group_id != nil else { return accepted }
             return accepted.union(setOutbox.pending.filter {
                 $0.deliveryState == .queued && setIntent($0, matches: slot, on: checkpoint.date)
@@ -1731,16 +1741,16 @@ final class SyncModel: ObservableObject {
         }
         let normalized = WorkoutRunnerCheckpoint(
             date: checkpoint.date,
-            sessionID: serverSession.id,
+            sessionID: serverSession?.id,
             selectedDayID: checkpoint.selectedDayID,
             currentSlotID: normalizedCurrentSlotID,
             skippedSlotIDs: normalizedSkipped,
             workoutStartedAtMS: checkpoint.workoutStartedAtMS,
             finished: normalizedFinished,
-            sessionAttempt: serverSession.attempt ?? checkpoint.sessionAttempt,
-            restartDiscardedAttempt: nil,
+            sessionAttempt: serverSession?.attempt ?? checkpoint.sessionAttempt,
+            restartDiscardedAttempt: serverSession == nil ? checkpoint.restartDiscardedAttempt : nil,
             input: checkpoint.input, groupProgress: day.exercises.first(where: { $0.id == normalizedCurrentSlotID }).flatMap(checkpointGroup),
-            focus: normalizedFocus)
+            focus: normalizedFocus, feedback: checkpoint.feedback)
         if normalized != checkpoint {
             guard replaceRunnerCheckpoint(
                 normalized, ifCurrent: checkpoint)
@@ -1752,12 +1762,23 @@ final class SyncModel: ObservableObject {
         persistedRunnerCheckpoint = normalized
         deferredGroupRepair = nil
         runnerFocus = normalized.focus ?? RunnerFocusState()
-        runnerRestartDiscardedAttempt = nil
+        runnerRestartDiscardedAttempt = normalized.restartDiscardedAttempt
         // A recovered explicit override can legitimately differ from the
         // server session's immutable day pin. Align Today and its Resume CTA to
         // the validated checkpoint before mounting the runner.
         selectedDayID = normalized.selectedDayID
         resumableCheckpoint = normalized
+    }
+
+    /// An explicit feedback save is durable even before the first set creates
+    /// a session. A live read must still prove the original attempt is safe.
+    private func canResumeUnstartedFeedback(_ checkpoint: WorkoutRunnerCheckpoint, session: SessionRow?) -> Bool {
+        guard checkpoint.feedback != nil else { return false }
+        guard let session else { return checkpoint.sessionID == nil }
+        guard checkpointAttemptMatches(checkpoint, serverSession: session) else { return false }
+        return session.status == "planned" || (checkpoint.sessionID == nil
+            && session.status == "discarded" && checkpoint.restartDiscardedAttempt == session.attempt
+            && checkpoint.restartDiscardedAttempt != nil)
     }
 
     @discardableResult
@@ -1780,7 +1801,7 @@ final class SyncModel: ObservableObject {
             finished: finished,
             sessionAttempt: todaySession?.attempt,
             restartDiscardedAttempt: runnerRestartDiscardedAttempt,
-            input: currentInputState, groupProgress: currentExercise.flatMap { groupProgress(for: $0) }, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair)
+            input: currentInputState, groupProgress: currentExercise.flatMap { groupProgress(for: $0) }, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: workoutFeedback)
         let expected = persistedRunnerCheckpoint
         guard replaceRunnerCheckpoint(checkpoint, ifCurrent: expected) else {
             relinquishStaleRunnerCheckpoint()
@@ -1819,7 +1840,7 @@ final class SyncModel: ObservableObject {
             finished: checkpoint.finished,
             sessionAttempt: session.attempt ?? checkpoint.sessionAttempt,
             restartDiscardedAttempt: nil,
-            input: checkpoint.input, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair)
+            input: checkpoint.input, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback)
         guard replaceRunnerCheckpoint(bound, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -2028,7 +2049,7 @@ final class SyncModel: ObservableObject {
             finished: checkpoint.finished,
             sessionAttempt: checkpoint.sessionAttempt,
             restartDiscardedAttempt: checkpoint.restartDiscardedAttempt,
-            input: checkpoint.input, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair)
+            input: checkpoint.input, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus, deferredGroupRepair: checkpoint.deferredGroupRepair, feedback: checkpoint.feedback)
         guard replaceRunnerCheckpoint(normalized, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -2126,6 +2147,7 @@ final class SyncModel: ObservableObject {
             sessions.filter { $0.date == staleSession.date }.map(\.id))
         aliasedSessionIDs.insert(staleSession.id)
         let canonicalSession = SessionRow(
+            notes: staleSession.notes, perceived_fatigue: staleSession.perceived_fatigue,
             id: committedSet.session_id,
             date: staleSession.date,
             status: staleSession.status,
@@ -3265,6 +3287,7 @@ final class SyncModel: ObservableObject {
                 response = try await terminalAPI.completeSession(
                     sessionId: sessionID,
                     expectedAttempt: intent.expectedAttempt,
+                    feedback: intent.feedback,
                     jwt: jwt)
             case .discard:
                 response = try await terminalAPI.discardSession(
@@ -3299,6 +3322,7 @@ final class SyncModel: ObservableObject {
             let expectedStatus = intent.action == .finish ? "completed" : "discarded"
             guard response.date == intent.date,
                   response.status == expectedStatus,
+                  intent.action != .finish || intent.feedback?.matches(response) != false,
                   intent.expectedAttempt == nil
                     || response.attempt == nil
                     || response.attempt == intent.expectedAttempt
@@ -3375,6 +3399,25 @@ final class SyncModel: ObservableObject {
         guard var current = terminalOutbox.intent(for: attempted.date),
               current.id == attempted.id
         else { return false }
+        if let apiError = error as? APIError, apiError.httpStatus == 409,
+           let data = apiError.httpBody?.data(using: .utf8),
+           let conflict = try? JSONDecoder().decode(SessionWriteConflictPayload.self, from: data),
+           conflict.error == "session_feedback_conflict", current.action == .finish,
+           conflict.current_session.date == current.date,
+           conflict.current_session.attempt == current.expectedAttempt {
+            // The authenticated Worker can resolve the submitted alias to
+            // its canonical session. Date and attempt bind the same workout.
+            current.resolvedSessionID = conflict.current_session.id
+            current.deliveryState = .failed
+            current.failedHTTPStatus = 409
+            current.feedbackConflict = WorkoutFeedbackBaseline(notes: conflict.current_session.notes,
+                perceivedFatigue: conflict.current_session.perceived_fatigue)
+            terminalOutbox.replace(current)
+            persistReplacedTerminalIntent(current)
+            adoptSessionWriteConflict(conflict.current_session)
+            loadError = "Feedback changed elsewhere. Review both versions before finishing."
+            return false
+        }
         if let conflict = sessionWriteConflict(from: error),
            conflict.current_session.date == attempted.date
         {
@@ -4093,7 +4136,7 @@ final class SyncModel: ObservableObject {
             skippedSlotIDs: checkpoint.skippedSlotIDs, workoutStartedAtMS: checkpoint.workoutStartedAtMS,
             finished: slotID == nil ? checkpoint.finished : false, sessionAttempt: checkpoint.sessionAttempt,
             restartDiscardedAttempt: checkpoint.restartDiscardedAttempt,
-            input: checkpoint.input, groupProgress: progress, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair)
+            input: checkpoint.input, groupProgress: progress, focus: runnerFocus, deferredGroupRepair: deferredGroupRepair, feedback: checkpoint.feedback)
         guard replaceRunnerCheckpoint(replacement, ifCurrent: checkpoint) else { return false }
         persistedRunnerCheckpoint = replacement
         if resumableCheckpoint == checkpoint { resumableCheckpoint = replacement }
@@ -4314,6 +4357,7 @@ final class SyncModel: ObservableObject {
             return
         }
         runnerRestartDiscardedAttempt = restartDiscardedAttempt
+        workoutFeedback = nil
         runnerFocus = RunnerFocusState()
         deferredGroupRepair = nil
         running = true
@@ -4373,13 +4417,13 @@ final class SyncModel: ObservableObject {
     /// current slot restarts from its stable boundary.
     func resumeWorkout() {
         guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
+        let candidate = resumableCheckpoint.flatMap { checkpoint in
+            sessions.first { $0.date == checkpoint.date }
+        }
         guard !running,
               let checkpoint = resumableCheckpoint,
-              let session = sessions.first(where: {
-                  $0.id == checkpoint.sessionID
-                      && $0.date == checkpoint.date
-                      && $0.status == "in_progress"
-              }),
+              (candidate?.id == checkpoint.sessionID && candidate?.status == "in_progress")
+                || canResumeUnstartedFeedback(checkpoint, session: candidate),
               let day = plan?.workouts.first(where: {
                   $0.id == checkpoint.selectedDayID
               }),
@@ -4393,8 +4437,8 @@ final class SyncModel: ObservableObject {
         }
 
         let liveSlotIDs = Set(day.exercises.map(\.id))
-        todaySession = session
-        runnerRestartDiscardedAttempt = nil
+        todaySession = candidate?.status == "discarded" ? nil : candidate
+        runnerRestartDiscardedAttempt = checkpoint.restartDiscardedAttempt
         selectedDayID = day.id
         exerciseIndex = index
         skipped = Set(checkpoint.skippedSlotIDs.filter {
@@ -4405,6 +4449,7 @@ final class SyncModel: ObservableObject {
                 TimeInterval(checkpoint.workoutStartedAtMS) / 1_000)
         running = true
         finished = checkpoint.finished
+        workoutFeedback = checkpoint.feedback
         runnerFocus = checkpoint.focus ?? RunnerFocusState()
         deferredGroupRepair = checkpoint.deferredGroupRepair
         seedInputs()
@@ -4782,11 +4827,62 @@ final class SyncModel: ObservableObject {
         jump(to: exerciseIndex + 1)
     }
 
+    var currentWorkoutFeedback: WorkoutFeedback? {
+        if let workoutFeedback { return workoutFeedback }
+        guard let session = todaySession else { return nil }
+        let value = WorkoutFeedback(notes: session.notes, perceivedFatigue: session.perceived_fatigue)
+        return value.isEmpty ? nil : value
+    }
+
+    /// Explicit save is local and synchronous, before the member finishes.
+    /// The checkpoint CAS and editor baseline prevent a stale view from
+    /// replacing a newer approved edit. Queued finish choices are immutable.
+    @discardableResult
+    func saveWorkoutFeedback(_ feedback: WorkoutFeedback,
+                             expected target: WorkoutTerminalActionTarget,
+                             previous: WorkoutFeedback?) -> Bool {
+        guard (matchesTerminalActionTarget(target) || matchesFeedbackSessionBinding(target)), running,
+              !hasPendingTerminalIntentForCurrentWorkout,
+              currentWorkoutFeedback == previous,
+              feedback.perceivedFatigue.map({ (1...10).contains($0) }) ?? true else { return false }
+        let old = workoutFeedback
+        var approved = feedback
+        approved.expected = previous?.expected ?? WorkoutFeedbackBaseline(
+            notes: todaySession?.notes, perceivedFatigue: todaySession?.perceived_fatigue)
+        workoutFeedback = approved
+        guard persistRunnerCheckpoint() else {
+            workoutFeedback = old
+            return false
+        }
+        return true
+    }
+
+    /// A first-set ACK may establish the session while this editor is open.
+    /// Accept only that proven binding of the same checkpoint and attempt.
+    private func matchesFeedbackSessionBinding(_ target: WorkoutTerminalActionTarget) -> Bool {
+        guard canInitiateBoundFeatureAction, target.featureSessionEpoch == featureSessionEpoch,
+              target.sessionID == nil, let original = target.nilBoundRunnerCheckpoint,
+              original.sessionID == nil, let current = persistedRunnerCheckpoint,
+              let session = todaySession, target.date == session.date,
+              current.sessionID == session.id, current.date == original.date,
+              current.workoutStartedAtMS == original.workoutStartedAtMS,
+              current.selectedDayID == original.selectedDayID,
+              session.attempt == (original.restartDiscardedAttempt.map { $0 + 1 } ?? 0),
+              current.sessionAttempt == session.attempt,
+              original.feedback == current.feedback else { return false }
+        return true
+    }
+
     func finishWorkout() async {
         guard canInitiateBoundFeatureAction, currentJWT != nil else { return }
-        persistRunnerCheckpoint()
         let date = todaySession?.date ?? todayString
         if terminalOutbox.intent(for: date) == nil {
+            // A newer view can own a more recent approved edit. Refusing its
+            // checkpoint must also refuse a new finish from this stale view.
+            guard !runnerArtifactsOwnedByOther else { return }
+            if running || workoutFeedback != nil {
+                guard persistRunnerCheckpoint() else { return }
+            }
             let intent = WorkoutTerminalIntent(
                 id: uuidFactory().uuidString,
                 action: .finish,
@@ -4796,7 +4892,8 @@ final class SyncModel: ObservableObject {
                 deliveryState: .queued,
                 failedHTTPStatus: nil,
                 expectedAttempt: todaySession?.attempt,
-                restartDiscardedAttempt: runnerRestartDiscardedAttempt)
+                restartDiscardedAttempt: runnerRestartDiscardedAttempt,
+                feedback: workoutFeedback)
             // The complete user choice is durable before the coordinator can
             // await set delivery, session resolution, or the terminal PATCH.
             terminalOutbox.enqueue(intent)
@@ -4806,7 +4903,7 @@ final class SyncModel: ObservableObject {
     }
 
     func finishWorkout(expected target: WorkoutTerminalActionTarget) async {
-        guard matchesTerminalActionTarget(target) else { return }
+        guard matchesTerminalActionTarget(target) || matchesFeedbackSessionBinding(target) else { return }
         await finishWorkout()
     }
 
@@ -4865,10 +4962,31 @@ final class SyncModel: ObservableObject {
         await discardWorkout()
     }
 
+    func resolveWorkoutFeedbackConflict(id: String, expected: WorkoutFeedbackBaseline, useMine: Bool) async {
+        guard canInitiateBoundFeatureAction,
+              let current = terminalOutbox.intents.first(where: { $0.id == id }),
+              let conflict = current.feedbackConflict, conflict == expected,
+              let durable = durableTerminalIntent(matching: current), durable.feedbackConflict == expected else { return }
+        var feedback = useMine ? current.feedback : nil
+        feedback?.expected = conflict
+        let replacement = WorkoutTerminalIntent(id: uuidFactory().uuidString, action: .finish,
+            date: current.date, workoutID: current.workoutID, resolvedSessionID: current.resolvedSessionID,
+            deliveryState: .queued, failedHTTPStatus: nil, expectedAttempt: current.expectedAttempt,
+            restartDiscardedAttempt: current.restartDiscardedAttempt, feedback: feedback)
+        WorkoutTerminalOutboxStore.resolveFeedbackConflict(id: id, replacement: replacement,
+            userID: accountID, defaults: defaults)
+        guard WorkoutTerminalOutboxStore.load(userID: accountID, defaults: defaults).intent(for: current.date)?.id == replacement.id else { return }
+        terminalOutbox.resolveFeedbackConflict(id: id, replacement: replacement)
+        ownedTerminalIntentIDs.remove(id)
+        ownedTerminalIntentIDs.insert(replacement.id)
+        await drainWorkoutWriteOutboxes()
+    }
+
     func retryTerminalIntent(id: String) async {
         guard canInitiateBoundFeatureAction,
               var intent = terminalOutbox.intents.first(where: { $0.id == id }),
-              intent.deliveryState == .failed
+              intent.deliveryState == .failed,
+              intent.feedbackConflict == nil
         else { return }
         intent.deliveryState = .queued
         intent.failedHTTPStatus = nil
@@ -4881,7 +4999,7 @@ final class SyncModel: ObservableObject {
         guard canInitiateBoundFeatureAction else { return }
         var changed = false
         for var intent in terminalOutbox.intents
-        where intent.deliveryState == .failed {
+        where intent.deliveryState == .failed && intent.feedbackConflict == nil {
             intent.deliveryState = .queued
             intent.failedHTTPStatus = nil
             terminalOutbox.replace(intent)
@@ -5702,6 +5820,13 @@ final class SyncModel: ObservableObject {
         // different civil days within this one property evaluation (the
         // workout-guard sees day N, the template switch day N+1, etc.).
         let today = todayString
+        // Live validation can recover approved feedback before the first set
+        // creates a session, including an explicit workout on a rest day.
+        if let checkpoint = resumableCheckpoint,
+           checkpoint.date == today,
+           let checkpointDay = workout(id: checkpoint.selectedDayID) {
+            return checkpointDay
+        }
         let proj = projection(for: today, today: today)
         // The workout-vs-rest test, evaluated ONCE against the SAME local
         // projection. This is the ONLY copy of this switch (no separate
@@ -5717,12 +5842,6 @@ final class SyncModel: ObservableObject {
         case .rest, .none, .unavailable, .light: isWorkout = false
         }
         guard isWorkout else { return nil }
-        if let checkpoint = resumableCheckpoint,
-           checkpoint.date == today,
-           let checkpointDay = workout(id: checkpoint.selectedDayID)
-        {
-            return checkpointDay
-        }
         switch proj {
         case .projected(let tid):
             // Schedule projection: the template id IS the schedule's.

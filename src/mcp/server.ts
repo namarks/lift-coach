@@ -1750,6 +1750,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
           date: last.date,
           status: last.status,
           perceived_fatigue: last.perceived_fatigue,
+          notes: last.notes,
           key_sets: lastSets
             .filter((s) => !s.is_warmup)
             .map((s) => `ex:${s.exercise_id} ${s.weight}x${s.reps}${s.rpe ? `@${s.rpe}` : ''}`),
@@ -1761,6 +1762,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
             date: lastCompleted.date,
             status: lastCompleted.status,
             perceived_fatigue: lastCompleted.perceived_fatigue,
+            notes: lastCompleted.notes,
             key_sets: lastCompletedSets
               .filter((s) => !s.is_warmup)
               .map((s) => `ex:${s.exercise_id} ${s.weight}x${s.reps}${s.rpe ? `@${s.rpe}` : ''}`),

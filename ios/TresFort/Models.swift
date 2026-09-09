@@ -333,6 +333,8 @@ struct PlanComparisonResponse: Codable, Equatable {
 }
 
 struct SessionRow: Codable, Identifiable {
+    var notes: String? = nil
+    var perceived_fatigue: Int? = nil
     var summary: WorkoutSummary? = nil
     let id: String
     let date: String
@@ -829,11 +831,14 @@ extension PlanTree {
 
 extension SessionRow {
     private enum CodingKeys: String, CodingKey {
+        case notes, perceived_fatigue
         case id, date, status, workout_id, day_template_id, summary, updated_at, attempt, write_protocol
     }
 
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
+        notes = try c.decodeIfPresent(String.self, forKey: .notes)
+        perceived_fatigue = try c.decodeIfPresent(Int.self, forKey: .perceived_fatigue)
         id = try c.decode(String.self, forKey: .id)
         date = try c.decode(String.self, forKey: .date)
         status = try c.decode(String.self, forKey: .status)
@@ -853,6 +858,8 @@ extension SessionRow {
 
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(notes, forKey: .notes)
+        try c.encodeIfPresent(perceived_fatigue, forKey: .perceived_fatigue)
         try c.encode(id, forKey: .id)
         try c.encode(date, forKey: .date)
         try c.encode(status, forKey: .status)
@@ -861,5 +868,11 @@ extension SessionRow {
         try c.encodeIfPresent(updated_at, forKey: .updated_at)
         try c.encodeIfPresent(attempt, forKey: .attempt)
         try c.encodeIfPresent(write_protocol, forKey: .write_protocol)
+    }
+}
+
+extension WorkoutFeedback {
+    func matches(_ session: SessionRow) -> Bool {
+        notes == session.notes && perceivedFatigue == session.perceived_fatigue
     }
 }

@@ -137,6 +137,10 @@ private struct ExerciseDetailView: View {
                             if let volume = session.volume {
                                 Text("\(fmtW(volume)) lb external-load volume")
                             }
+                            if let row = sync.sessions.first(where: { $0.id == session.id }) {
+                                let feedback = WorkoutFeedback(notes: row.notes, perceivedFatigue: row.perceived_fatigue)
+                                if !feedback.isEmpty { SavedWorkoutFeedbackView(feedback: feedback) }
+                            }
                             ForEach(sessionSets(session.id)) { set in
                                 Text(set.valueLabel(timed: sync.isTimedSet(set),
                                     bodyweight: sync.isBodyweightExercise(exerciseID)))

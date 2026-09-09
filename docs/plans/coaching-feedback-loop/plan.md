@@ -1,6 +1,6 @@
 # Coaching Feedback Loop
 
-Slug: coaching-feedback-loop · Status: planned · Updated: 2026-09-09 · Theme: coaching
+Slug: coaching-feedback-loop · Status: active · Updated: 2026-09-09 · Theme: coaching
 
 ## Goal
 
@@ -13,7 +13,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 ## Phases
 
 - [ ] **P0 — Workout feedback reaches the coach**
-  - [ ] **(a) Coach-facing feedback reads**
+  - [x] **(a) Coach-facing feedback reads**
     - Expose the existing session fatigue and note fields through the relevant
       history, current-state, and coaching-brief reads so the next coaching
       conversation receives the member's words and the recorded workout without
@@ -91,7 +91,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 
 ## Execution frontier
 
-- P0(a)
+- P0(b)
 
 ## Dependencies
 
@@ -105,14 +105,40 @@ P0(b) reuses the completed [superset runner/editor integration](../completed/sup
 
 ## Next step
 
-**Now (@owner):** Activate P0(a) when member-to-coach feedback should enter the
-executable backlog; it does not require the later change-history work to start.
-The approved scope includes voice input with transcript review. P0(a) is the
-independent coach-facing read slice. After it completes, advance the frontier
-to P0(b), reusing the completed supersets runner/editor foundation for shared
-iOS finish-flow edits.
+**Now (@agent):** Complete the authorized P0 from main `ff51282`: first
+private history/brief reads, then optional typed and on-device spoken feedback
+through the durable finish path. Verify, independently review, open a focused
+PR, merge after all exact-head gates pass, and verify integration. P1/P2,
+production deployment and TestFlight distribution are outside this goal.
 
 ## Notes / open questions
+
+- P0(a) implementation milestone (2026-09-09): session notes/fatigue now travel
+  through private exercise history and both brief paths. Focused real-D1/MCP
+  checks passed 20/20, including skipped/in-progress latest sessions and group
+  privacy. Repository delivery still awaits the coherent P0 PR and merge.
+- P0(b) uses a local approved-feedback checkpoint and immutable terminal
+  envelope. Explicitly saved empty fields clear feedback; Skip omits feedback.
+  Finish requests compare the original note/rating in the same atomic write,
+  so retries cannot overwrite different newer feedback. A conflict retains the
+  local words and requires an explicit choice. No schema migration is needed.
+- Recording Stop finalizes on-device transcription with a bounded wait;
+  cancellation, editing and leaving immediately invalidate callbacks and release
+  capture resources. The draft comparison baseline belongs to the editor's
+  lifetime. Only explicitly approved text is persisted.
+- Verification milestone (2026-09-09): typecheck, plan graph, and the full
+  backend suite passed (62 files / 906 tests). Synthetic iPhone journeys passed
+  voice editing, fatigue, denial/typing, cancellation, unavailability, Skip and
+  acknowledged finish. Recovery/ownership fixes and the full iOS suite remain
+  under verification; independent review must be repeated at the final head.
+- The owner authorized a separate local-only physical iPhone permission check.
+  Its [reproducible checker](device-verification.md) links the production
+  transcriber/editor without the account/API stack. A development archive and
+  installer were signed with existing assets; no provisioning updates or
+  TestFlight upload ran. The remote phone answers Tailscale, but Xcode cannot
+  connect. Automatic approval review requires explicit owner approval before
+  temporarily exposing the installer to the broader private tailnet. Physical
+  fresh-permission evidence remains pending.
 
 - Owner decision (2026-09-08): offer spoken feedback because talking after
   training may be easier than typing. This is an adoption hypothesis to check

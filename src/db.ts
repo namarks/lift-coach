@@ -4427,8 +4427,9 @@ export async function patchSession(
   // honestly forces the type-guard below.
   patch: {
     status?: unknown;
-    perceived_fatigue?: number;
-    notes?: string;
+    perceived_fatigue?: number | null;
+    notes?: string | null;
+    expected_feedback?: { notes: string | null; perceived_fatigue: number | null };
     workout_id?: string | null;
   },
   expectedAttempt?: number,
@@ -4442,6 +4443,7 @@ export async function patchSession(
       status: 'discarded';
       current_session: SessionRow;
     }
+  | { error: 'session_feedback_conflict'; current_session: SessionRow }
   | { error: 'invalid_status'; status: unknown }
   | SessionAttemptConflict
   | SessionProtocolConflict
@@ -4524,8 +4526,10 @@ export async function patchSession(
   }
   const ts = now();
   const status = normalizedStatus ?? s.status;
-  const fatigue = patch.perceived_fatigue ?? s.perceived_fatigue;
-  const notes = patch.notes ?? s.notes;
+  const fatigue = Object.prototype.hasOwnProperty.call(patch, 'perceived_fatigue')
+    ? patch.perceived_fatigue ?? null : s.perceived_fatigue;
+  const notes = Object.prototype.hasOwnProperty.call(patch, 'notes')
+    ? patch.notes ?? null : s.notes;
   const completedAt = status === 'completed' ? s.completed_at ?? ts : s.completed_at;
   const startedAt = status === 'in_progress' ? s.started_at ?? ts : s.started_at;
   const statusPredicate =
@@ -4538,6 +4542,9 @@ export async function patchSession(
           : normalizedStatus === 'planned'
             ? "status IN ('planned','skipped')"
             : "status != 'discarded'";
+  // Feedback CAS compares the original private fields, independently of set
+  // writes that also advance sessions.updated_at. An exact retry is accepted;
+  // a newer different note/rating is never overwritten by a delayed finish.
   // Attempt plus a transition-specific current-state predicate form the
   // read/write CAS. Completion is allowed to linearize on either side of a
   // final logSet in the same generation, and SQL COALESCE preserves the
@@ -4590,7 +4597,10 @@ export async function patchSession(
         WHERE id = ?1
           AND attempt = ?9
           AND (?15 = 1 OR write_protocol = 'legacy')
-          AND ${statusPredicate}`,
+          AND ${statusPredicate}
+          AND (?16 = 0
+            OR (notes IS ?17 AND perceived_fatigue IS ?18)
+            OR (notes IS ?4 AND perceived_fatigue IS ?3))`,
     )
     .bind(
       canonicalSessionId,
@@ -4611,6 +4621,9 @@ export async function patchSession(
       patch.workout_id ?? null,
       claimAttemptProtocol ? 1 : 0,
       attemptScoped ? 1 : 0,
+      patch.expected_feedback ? 1 : 0,
+      patch.expected_feedback?.notes ?? null,
+      patch.expected_feedback?.perceived_fatigue ?? null,
     ),
   );
   if (updated.meta.changes === 0) {
@@ -4640,6 +4653,12 @@ export async function patchSession(
         error: 'session_already_started',
         status: current.status,
       };
+    }
+    if (current && patch.expected_feedback
+        && !(current.notes === patch.expected_feedback.notes
+          && current.perceived_fatigue === patch.expected_feedback.perceived_fatigue)
+        && !(current.notes === notes && current.perceived_fatigue === fatigue)) {
+      return { error: 'session_feedback_conflict', current_session: current };
     }
     if (current) return sessionStateConflict(s.status, current);
     return null;
@@ -7016,7 +7035,8 @@ export async function getHistory(
     };
   const sets = await workoutDB(db)
     .prepare(
-      `SELECT sl.*, s.date as session_date FROM set_logs sl
+      `SELECT sl.*, s.date as session_date, s.notes AS session_notes,
+         s.perceived_fatigue AS session_perceived_fatigue FROM set_logs sl
        JOIN sessions s ON s.id = sl.session_id
        WHERE sl.user_id = ?1 AND s.user_id = ?1
          AND sl.exercise_id = ?2 AND sl.deleted_at IS NULL
@@ -7024,8 +7044,8 @@ export async function getHistory(
        ORDER BY sl.logged_at`,
     )
     .bind(userId, exerciseId, from, to)
-    .all<SetLogRow & { session_date: string }>();
-  const rowsBySession = new Map<string, SetLogRow[]>();
+    .all<SetLogRow & { session_date: string; session_notes: string | null; session_perceived_fatigue: number | null }>();
+  const rowsBySession = new Map<string, (typeof sets.results)>();
   for (const s of sets.results) {
     const rows = rowsBySession.get(s.session_date) ?? [];
     rows.push(s);
@@ -7046,6 +7066,8 @@ export async function getHistory(
       .filter((value): value is number => value != null);
     return {
       date, top,
+      notes: rows[0]!.session_notes,
+      perceived_fatigue: rows[0]!.session_perceived_fatigue,
       metric: top == null ? 'mixed' : estimatedTop ? 'load' : cohorts[0]!.metric,
       est_1rm: estimatedTop ? estimatedOneRepMax(estimatedTop, exercise) : null,
       best_reps: exercise.modality === 'bw' && repCohorts.length === 1
