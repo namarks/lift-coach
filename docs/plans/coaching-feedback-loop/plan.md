@@ -34,6 +34,9 @@ surfaces without adding AI to the Worker or creating a second coaching record.
       words from the recording.
     - Use on-device transcription for the initial voice path. Request microphone
       and any required speech permission only after the member chooses to talk.
+      Add `NSMicrophoneUsageDescription` and `NSSpeechRecognitionUsageDescription`
+      purpose strings in `ios/TresFort/Info.plist` before requesting permission,
+      and verify fresh-install grant and denial paths on the supported iPhone.
       If permission is denied or recognition is unavailable, preserve any text
       draft and offer typing or skipping. No cloud transcription fallback or
       audio upload is included in this scope.
