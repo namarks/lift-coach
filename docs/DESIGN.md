@@ -116,6 +116,9 @@ CREATE TABLE template_exercises (
   target_reps_max  INTEGER,                     -- top of range (double progression); NULL = fixed
   target_rpe       REAL,
   rest_seconds     INTEGER NOT NULL DEFAULT 120,
+  group_id         TEXT,                        -- migration 0044; caller-generated UUID shared by adjacent members
+  group_rest_seconds INTEGER,                   -- rest after a round; ordinary rest_seconds stays intact
+  group_transition_seconds INTEGER,             -- rest between members, normally 0
   target_weight    REAL,                        -- current working weight; Claude advances this
   progression      TEXT,                        -- JSON, see below
   cues             TEXT,                        -- form-cue reminders Claude sets
@@ -247,6 +250,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `PATCH /api/days/{id}/exercises/{teId}` | Edit one slot in place (targets / rest / warm-up flag / order). |
 | `POST /api/days/{id}/exercises/{teId}/swap` | `{to_exercise, expected_version}` — replace the exact caller-owned active slot, preserving its saved prescription, position, warm-up flag, and identity. Invalid carried targets return 400; a stale plan version returns 409. Historical sets retain their original exercise and values. |
 | `DELETE /api/days/{id}/exercises/{teId}` | Remove a slot; detaches (NULLs) historical `set_logs.template_exercise_id`. |
+| `PUT /api/days/{id}/groups` | `{group_id, exercises:[slot IDs], expected_version, round_rest, transition_rest?, target_sets?, order_index?}` creates or rewrites a group; optional `order_index` moves the complete block. Send `exercises:[]` with only `group_id` and `expected_version` to ungroup. Uses the same atomic, audited service as MCP. An exact acknowledged retry returns the original result before stale-version rejection, without reapplying a superseded grouping. |
 | `PUT /api/plan/schedule` | Replace the recurring weekday → day/rest map with optimistic concurrency on both `expected_plan_id` and `expected_version`. |
 | `PUT /api/calendar/{date}` | Assign one concrete date to a day (`day_template_id`) or rest (`null`) without changing the recurring schedule or plan version. `expected_attempt=0` represents no observed assignment; the first assignment and every changed choice advance the session attempt, while an identical retry is idempotent. Started/completed sessions cannot be reassigned, and iOS also fences the mutation against a locally running workout before its first set creates the server session or a hard travel blackout. |
 
@@ -265,6 +269,19 @@ patches retain their existing input shape: they retry a bounded version
 conflict against fresh state and validate the merged prescription. Explicitly versioned edits return
 a conflict for the caller to review. See the
 [prescription contract](plans/completed/prescription-integrity/decisions.md).
+
+Supersets and circuits have at least two contiguous members in one day, sharing
+one set count and both group rest values. Group fields, set count and ordering
+are group-owned; single-slot writes cannot change them while grouped. Removing
+a member dissolves a remaining singleton. The common validator also covers
+rebuilds, swaps, recurring adjustments and snapshot restore. Grouping leaves
+ordinary `rest_seconds` intact, and snapshots preserve all three nullable fields.
+Clients declare `groups` in `X-TresFort-Capabilities` to receive stored plan
+values. Without it, state/active-plan reads and the embedded restore plan omit
+group fields and project round rest onto every member's ordinary rest. MCP
+receives canonical values with A1/A2 annotations and both rests in coach reads.
+See the [grouping contract](plans/supersets-and-circuits/decisions.md) for the
+versioned write and retry details.
 
 Migration `0040` adds `plan_snapshots`. A legacy plan's first accepted edit
 captures its actual previous version and the resulting version; earlier history
@@ -313,8 +330,10 @@ Claude context-aware with zero tool calls.
   to today, creates a session, or substitutes completion. A stale attempt is
   rejected, and an identical retry adds no second discard audit.
 - `add_note({scope, ref_id?, body})`
-- `update_plan({plan:<full tree>, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies).
+- `update_plan({plan:<full tree>, expected_version?})` → transactional upsert; a version mismatch returns structured `{conflict:true,current_version}` data in a normal JSON-RPC HTTP 200 response (Claude refetches + reapplies). The version is required when the current tree contains groups or the request explicitly supplies group fields, including nulls.
 - `update_exercise({target, patch})` → one slot (`target` = template_exercise_id or {day, exercise}).
+- `group_exercises({day, group_id, expected_version, exercises, round_rest, transition_rest?, target_sets?, order_index?})` → create/rewrite or move a group atomically. Use a caller-generated UUID and slot IDs for durable retries; unambiguous exercise names/aliases are also accepted.
+- `ungroup_exercises({group_id, expected_version})` → clear every member's group fields while preserving ordinary rests, through the same version and exact-retry boundary.
 - `swap_exercise({day, from_exercise, to_exercise})` — always preserves saved targets; validates them against the destination modality. The formerly ignored `carry_targets` option is no longer advertised.
 - `add_exercise({day, exercise, target_sets, target_reps, target_reps_max?, rest_seconds?, target_rpe?, progression?, order_index?})`
 - `add_day({name, day_label, order_index?, exercises?})`  ← "add a deadlift day"
