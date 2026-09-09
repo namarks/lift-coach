@@ -11016,8 +11016,8 @@ extension SetOutboxTests {
 
     private func verifyEarlierGroupMemberDeletion(boundary: String) async throws {
         let defaults = defaults(), api = SetWriteAPIStub()
-        let a = exercise(targetSets: 2, groupID: "group-a")
-        let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 2, groupID: "group-a")
+        let a = exercise(targetSets: 2, groupID: "group-a", transitionRest: 0)
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 2, groupID: "group-a", transitionRest: 0)
         let c = exercise(id: "slot-c", exerciseID: "exercise-c", timed: true, targetSets: 2)
         let d = exercise(id: "slot-d", exerciseID: "exercise-d", timed: true, targetSets: 2)
         let active = session(updatedAt: 100, attempt: 0)
@@ -11048,7 +11048,7 @@ extension SetOutboxTests {
         // Remove A's first-round set after B's second-round set completed the
         // group. Recovery belongs to the group, not only its final logged UUID.
         let earlier = try XCTUnwrap(accepted.first)
-        if boundary != "immediate" {
+        if boundary != "immediate" && boundary != "replacement" {
             model.startTimedSet(expected: c, expectedSetNumber: 1, at: fixedDate)
         }
         let rest = model.restEndDate
@@ -11057,10 +11057,28 @@ extension SetOutboxTests {
         XCTAssertEqual(model.runnerSetsDone(a), 1)
         XCTAssertEqual(model.runnerSetsDone(b), 2)
         XCTAssertEqual(model.restEndDate, rest)
-        if boundary == "immediate" {
+        if boundary == "immediate" || boundary == "replacement" {
             XCTAssertEqual(model.currentExercise?.id, a.id)
             XCTAssertEqual(model.currentSetNumber, 2)
             XCTAssertFalse(model.finished)
+            if boundary == "replacement" {
+                for _ in 0..<50 {
+                    if !model.isSetEntryBlocked(a) { break }
+                    await Task.yield()
+                }
+                XCTAssertFalse(model.isSetEntryBlocked(a))
+                model.skipRest()
+                XCTAssertNil(model.restEndDate)
+                await model.logCurrentSet(expected: a, expectedSetNumber: model.currentPhysicalSetNumber)
+                XCTAssertEqual(model.runnerSetsDone(a), 2)
+                XCTAssertEqual(model.currentExercise?.id, c.id)
+                XCTAssertEqual(model.restTotal, 75)
+                XCTAssertNotNil(model.restEndDate)
+                let replacementRest = model.restEndDate
+                await model.drainSetOutbox()
+                XCTAssertEqual(accepted.count, 5)
+                XCTAssertEqual(model.restEndDate, replacementRest)
+            }
         } else {
             XCTAssertEqual(model.currentExercise?.id, c.id)
             XCTAssertTrue(model.timedActive)
@@ -11135,5 +11153,337 @@ extension SetOutboxTests {
                 XCTAssertEqual(model.restEndDate, rest)
             }
         }
+    }
+}
+
+extension SetOutboxTests {
+    func testGroupNewerSameGroupFocusSurvivesDelayedDeletionAndUnchangedRefresh() async throws {
+        for navigation in ["previous", "jump"] {
+            for liveReadFirst in [false, true] {
+                try await verifyGroupDeletionFocusOrder(navigation: navigation,
+                    liveReadFirst: liveReadFirst, deletionAfterSelection: false)
+            }
+        }
+    }
+
+    func testGroupDeletionInitiatedAfterSameGroupSelectionStillRepairs() async throws {
+        for liveReadFirst in [false, true] {
+            try await verifyGroupDeletionFocusOrder(navigation: "jump",
+                liveReadFirst: liveReadFirst, deletionAfterSelection: true)
+        }
+    }
+
+    func testGroupNewerFocusSurvivesFinishedWorkoutReopeningBeforeDeletionACK() async throws {
+        for liveReadFirst in [false, true] {
+            try await verifyGroupDeletionFocusOrder(navigation: "jump", liveReadFirst: liveReadFirst,
+                deletionAfterSelection: false, includesFollowingSlot: false)
+        }
+    }
+
+    private func verifyGroupDeletionFocusOrder(navigation: String, liveReadFirst: Bool,
+                                               deletionAfterSelection: Bool,
+                                               includesFollowingSlot: Bool = true) async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(targetSets: 1, groupID: "group-a")
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1, groupID: "group-a")
+        let c = exercise(id: "slot-c", exerciseID: "exercise-c", targetSets: 2)
+        let slots = includesFollowingSlot ? [a, b, c] : [a, b]
+        let active = session(updatedAt: 100, attempt: 0)
+        var accepted: [SetLog] = []
+        api.logHandler = { [self] id, body, _ in
+            let row = setLog(body: body, sessionID: id)
+            accepted.append(row)
+            return .init(set: row, deduped: false, session: active)
+        }
+        let entered = SetAsyncLatch(), release = SetAsyncLatch()
+        var deleted: SetLog?
+        api.correctionHandler = { [self] intent, _ in
+            let result = corrected(try XCTUnwrap(accepted.first { $0.id == intent.setID }), intent: intent, session: active)
+            deleted = result.set
+            await entered.open()
+            await release.wait()
+            return result
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [], exercises: slots))
+        model.startWorkout()
+        await model.logCurrentSet(expected: a, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        await model.logCurrentSet(expected: b, expectedSetNumber: 1)
+        await model.drainSetOutbox()
+        XCTAssertEqual(model.currentExercise?.id, includesFollowingSlot ? c.id : b.id)
+        XCTAssertEqual(model.finished, !includesFollowingSlot)
+        if deletionAfterSelection { model.jump(to: 1) }
+        XCTAssertTrue(model.enqueueCorrection(set: try XCTUnwrap(accepted.first), values: nil))
+        let capturedRevision = try XCTUnwrap(model.setCorrections.first?.runnerFocusRevision)
+        let drain = Task { await model.drainWorkoutWriteOutboxes() }
+        await entered.wait()
+        if !deletionAfterSelection {
+            if navigation == "previous" { model.previous() } else { model.jump(to: 1) }
+        }
+        let checkpoint = try XCTUnwrap(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults))
+        XCTAssertEqual(checkpoint.focus?.isExplicit, true)
+        if deletionAfterSelection { XCTAssertEqual(checkpoint.focus?.revision, capturedRevision) }
+        else { XCTAssertGreaterThan(try XCTUnwrap(checkpoint.focus?.revision), capturedRevision) }
+        let rest = model.restEndDate
+        if liveReadFirst {
+            model.replaceState(with: state(session: active,
+                sets: [try XCTUnwrap(deleted), accepted[1]], exercises: slots))
+            XCTAssertEqual(model.currentExercise?.id, deletionAfterSelection ? a.id : b.id)
+            XCTAssertFalse(model.finished)
+            XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.focus?.isExplicit,
+                           !deletionAfterSelection)
+        }
+        await release.open()
+        await drain.value
+        XCTAssertTrue(model.setCorrections.isEmpty)
+        XCTAssertEqual(model.currentExercise?.id, deletionAfterSelection ? a.id : b.id)
+        XCTAssertEqual(model.restEndDate, rest)
+        model.replaceState(with: state(session: active, sets: [accepted[1]], exercises: slots))
+        XCTAssertEqual(model.currentExercise?.id, deletionAfterSelection ? a.id : b.id)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.focus?.isExplicit,
+                       !deletionAfterSelection)
+        if !deletionAfterSelection {
+            // Skip ends manual focus and resumes the derived group sequence.
+            model.skip()
+            XCTAssertEqual(model.currentExercise?.id, a.id)
+            XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.focus?.isExplicit, false)
+        }
+    }
+
+    func testGroupPendingDeletionPreservesNewerTimedFocusUntilPhysicalCommit() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(targetSets: 2, groupID: "group-a", transitionRest: 0)
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", timed: true, targetSets: 2,
+                         groupID: "group-a", transitionRest: 0)
+        let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(a)
+        let entered = SetAsyncLatch(), release = SetAsyncLatch()
+        api.correctionHandler = { [self] intent, _ in
+            await entered.open()
+            await release.wait()
+            return corrected(original, intent: intent, session: active)
+        }
+        api.logHandler = { [self] id, body, _ in .init(set: setLog(body: body, sessionID: id), deduped: false, session: active) }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [original], exercises: [a, b]))
+        model.startWorkout()
+        XCTAssertTrue(model.enqueueCorrection(set: original, values: nil))
+        let drain = Task { await model.drainWorkoutWriteOutboxes() }
+        await entered.wait()
+        model.jump(to: 1)
+        model.startTimedSet(expected: b, expectedSetNumber: 1, at: fixedDate)
+        await release.open()
+        await drain.value
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertTrue(model.timedActive)
+        model.replaceState(with: state(session: active, sets: [], exercises: [a, b]))
+        XCTAssertTrue(model.timedActive)
+        await model.finishTimedSetIfDue(at: fixedDate.addingTimeInterval(30))
+        XCTAssertEqual(model.currentExercise?.id, a.id)
+        XCTAssertEqual(model.runnerSetsDone(b), 1)
+        XCTAssertNil(model.restEndDate)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.focus?.isExplicit, false)
+        await model.drainSetOutbox()
+    }
+
+    func testGroupColdPendingDeletionHonorsPersistedSelectionRevisionInBothObservationOrders() async throws {
+        for olderDeletion in [false, true] {
+            for liveReadFirst in [false, true] {
+                try await verifyColdGroupDeletionFocusOrder(olderDeletion: olderDeletion,
+                    liveReadFirst: liveReadFirst, includesFollowingSlot: true)
+            }
+        }
+    }
+
+    func testGroupColdNewerFocusSurvivesFinishedWorkoutReopeningBeforeDeletionACK() async throws {
+        for liveReadFirst in [false, true] {
+            try await verifyColdGroupDeletionFocusOrder(olderDeletion: true,
+                liveReadFirst: liveReadFirst, includesFollowingSlot: false)
+        }
+    }
+
+    private func verifyColdGroupDeletionFocusOrder(olderDeletion: Bool, liveReadFirst: Bool,
+                                                   includesFollowingSlot: Bool) async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(targetSets: 1, groupID: "group-a")
+        let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1, groupID: "group-a")
+        let c = exercise(id: "slot-c", exerciseID: "exercise-c", targetSets: 2)
+        let slots = includesFollowingSlot ? [a, b, c] : [a, b]
+        let active = session(updatedAt: 100, attempt: 0)
+        let originalA = correctionFixture(a, id: "original-a"), originalB = correctionFixture(b, id: "original-b")
+        let baseline = state(session: active, sets: [originalA, originalB], exercises: slots)
+        StateSnapshotStore.save(baseline, userID: "user-a", defaults: defaults)
+        let progress = GroupRunnerProgress(id: "group-a", members: [
+            .init(id: a.id, target: 1, completedIDs: [originalA.id], skipped: false),
+            .init(id: b.id, target: 1, completedIDs: [originalB.id], skipped: false),
+        ])
+        WorkoutRunnerCheckpointStore.save(.init(date: fixedCivilDate, sessionID: active.id,
+            selectedDayID: "day-a", currentSlotID: b.id, skippedSlotIDs: [],
+            workoutStartedAtMS: originalA.logged_at, finished: !includesFollowingSlot, sessionAttempt: 0,
+            groupProgress: progress, focus: .init(revision: 1, isExplicit: true)),
+            userID: "user-a", defaults: defaults)
+        let intent = PendingSetCorrection(id: "correction-a", setID: originalA.id, date: fixedCivilDate,
+            slotID: a.id, exerciseID: a.exercise_id, sessionID: active.id, expectedAttempt: 0,
+            expectedUpdatedAt: originalA.updated_at, values: nil, runnerFocusRevision: olderDeletion ? 0 : 1)
+        SetCorrectionOutboxStore.enqueue(intent, userID: "user-a", defaults: defaults)
+        let deleted = corrected(originalA, intent: intent, session: active)
+        let entered = SetAsyncLatch(), release = SetAsyncLatch()
+        api.correctionHandler = { _, _ in
+            if liveReadFirst { await entered.open(); await release.wait() }
+            return deleted
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        let drain = Task { await model.drainWorkoutWriteOutboxes() }
+        if liveReadFirst {
+            await entered.wait()
+            model.replaceState(with: state(session: active, sets: [deleted.set, originalB], exercises: slots))
+            XCTAssertEqual(model.resumableCheckpoint?.currentSlotID, olderDeletion ? b.id : a.id)
+            XCTAssertEqual(model.resumableCheckpoint?.finished, false)
+            XCTAssertEqual(model.resumableCheckpoint?.focus?.isExplicit, olderDeletion)
+            await release.open()
+        }
+        await drain.value
+        XCTAssertTrue(model.setCorrections.isEmpty)
+        model.replaceState(with: state(session: active, sets: [originalB], exercises: slots))
+        XCTAssertEqual(model.resumableCheckpoint?.currentSlotID, olderDeletion ? b.id : a.id)
+        XCTAssertEqual(model.resumableCheckpoint?.focus?.isExplicit, olderDeletion)
+        model.resumeWorkout()
+        XCTAssertEqual(model.currentExercise?.id, olderDeletion ? b.id : a.id)
+        XCTAssertEqual(model.currentSetNumber, 1)
+    }
+
+    func testGroupManualAheadMembersUseTransitionUntilTheCompletedRoundFloorAdvances() async {
+        for transition in [0, 7] {
+            let defaults = defaults(), api = SetWriteAPIStub()
+            let a = exercise(targetSets: 2, groupID: "group-a", transitionRest: transition)
+            let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 2,
+                             groupID: "group-a", transitionRest: transition)
+            let c = exercise(id: "slot-c", exerciseID: "exercise-c")
+            api.logHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+            let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                                  defaults: defaults, now: { self.fixedDate })
+            model.replaceState(with: state(session: session(attempt: 0), sets: [], exercises: [a, b, c]))
+            model.startWorkout()
+            for member in [b, b, a, a] {
+                if member.id == b.id { model.jump(to: 1) }
+                else if model.runnerSetsDone(a) == 0 { model.jump(to: 0) }
+                for _ in 0..<50 {
+                    if !model.isSetEntryBlocked(member) { break }
+                    await Task.yield()
+                }
+                XCTAssertFalse(model.isSetEntryBlocked(member))
+                await model.logCurrentSet(expected: member, expectedSetNumber: model.currentPhysicalSetNumber)
+                XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.focus?.isExplicit, false)
+                if member.id == b.id {
+                    XCTAssertEqual(model.currentSetNumber, 1)
+                    if transition == 0 { XCTAssertNil(model.restEndDate) }
+                    else { XCTAssertEqual(model.restTotal, transition) }
+                } else {
+                    // A0/B2 -> A1/B2 and A1/B2 -> A2/B2 each finish a
+                    // previously incomplete round, despite A's first position.
+                    XCTAssertEqual(model.restTotal, 75)
+                    XCTAssertNotNil(model.restEndDate)
+                }
+                await model.drainSetOutbox()
+            }
+            XCTAssertEqual(model.currentExercise?.id, c.id)
+            XCTAssertEqual(model.setOutbox.count, 4)
+        }
+    }
+
+    func testGroupReplacementSetCompletesRoundWithZeroTransitionRest() async throws {
+        try await verifyEarlierGroupMemberDeletion(boundary: "replacement")
+    }
+}
+
+extension SetOutboxTests {
+    func testGroupAutomaticSelectionChangeEndsEarlierManualFocusOwnership() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(groupID: "group-a"), b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+        let changedA = exercise(targetSets: 4, groupID: "group-a")
+        let changedB = exercise(id: b.id, exerciseID: b.exercise_id, targetSets: 4, groupID: "group-a")
+        let active = session(updatedAt: 100, attempt: 0)
+        let a1 = correctionFixture(a, id: "a1"), a2 = correctionFixture(a, id: "a2"), b1 = correctionFixture(b, id: "b1")
+        let entered = SetAsyncLatch(), release = SetAsyncLatch()
+        api.correctionHandler = { [self] intent, _ in
+            await entered.open()
+            await release.wait()
+            return corrected(a1, intent: intent, session: active)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        model.replaceState(with: state(session: active, sets: [a1, a2, b1], exercises: [a, b]))
+        model.startWorkout()
+        XCTAssertTrue(model.enqueueCorrection(set: a1, values: nil))
+        let drain = Task { await model.drainWorkoutWriteOutboxes() }
+        await entered.wait()
+        model.jump(to: 0)
+        model.replaceState(with: state(session: active, sets: [a1, a2, b1],
+            days: [day(with: [changedA, changedB])], planVersion: 2))
+        XCTAssertEqual(model.currentExercise?.id, b.id)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.focus?.isExplicit, false)
+        await release.open()
+        await drain.value
+        XCTAssertEqual(model.currentExercise?.id, a.id)
+        XCTAssertEqual(model.currentSetNumber, 2)
+    }
+
+    func testGroupColdEligibleDeletionEndsFocusEvenWhenTheCursorStaysOnSameMember() async throws {
+        let defaults = defaults(), api = SetWriteAPIStub()
+        let a = exercise(groupID: "group-a"), b = exercise(id: "slot-b", exerciseID: "exercise-b", groupID: "group-a")
+        let active = session(updatedAt: 100, attempt: 0)
+        let a1 = correctionFixture(a, id: "a1"), a2 = correctionFixture(a, id: "a2"), b1 = correctionFixture(b, id: "b1")
+        StateSnapshotStore.save(state(session: active, sets: [a1, a2, b1], exercises: [a, b]),
+                                userID: "user-a", defaults: defaults)
+        WorkoutRunnerCheckpointStore.save(.init(date: fixedCivilDate, sessionID: active.id,
+            selectedDayID: "day-a", currentSlotID: a.id, skippedSlotIDs: [],
+            workoutStartedAtMS: a1.logged_at, finished: false, sessionAttempt: 0,
+            groupProgress: .init(id: "group-a", members: [
+                .init(id: a.id, target: 3, completedIDs: [a1.id, a2.id], skipped: false),
+                .init(id: b.id, target: 3, completedIDs: [b1.id], skipped: false),
+            ]), focus: .init(revision: 1, isExplicit: true)), userID: "user-a", defaults: defaults)
+        let older = PendingSetCorrection(id: "delete-b", setID: b1.id, date: fixedCivilDate,
+            slotID: b.id, exerciseID: b.exercise_id, sessionID: active.id, expectedAttempt: 0,
+            expectedUpdatedAt: b1.updated_at, values: nil, runnerFocusRevision: 0,
+            deliveryState: .failed, failedHTTPStatus: 409)
+        let newer = PendingSetCorrection(id: "delete-a", setID: a1.id, date: fixedCivilDate,
+            slotID: a.id, exerciseID: a.exercise_id, sessionID: active.id, expectedAttempt: 0,
+            expectedUpdatedAt: a1.updated_at, values: nil, runnerFocusRevision: 1)
+        SetCorrectionOutboxStore.enqueue(older, userID: "user-a", defaults: defaults)
+        SetCorrectionOutboxStore.enqueue(newer, userID: "user-a", defaults: defaults)
+        api.correctionHandler = { [self] intent, _ in
+            corrected(intent.setID == a1.id ? a1 : b1, intent: intent, session: active)
+        }
+        let model = SyncModel(auth: retainedAuth(defaults: defaults), setWriteAPI: api,
+                              defaults: defaults, now: { self.fixedDate })
+        await model.drainWorkoutWriteOutboxes()
+        XCTAssertEqual(model.setCorrections.map(\.id), [older.id])
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.focus?.isExplicit, false)
+        model.replaceState(with: state(session: active, sets: [a2, b1], exercises: [a, b]))
+        XCTAssertEqual(model.resumableCheckpoint?.currentSlotID, a.id)
+        await model.retryCorrection(id: older.id)
+        model.replaceState(with: state(session: active, sets: [a2], exercises: [a, b]))
+        XCTAssertEqual(model.resumableCheckpoint?.currentSlotID, b.id)
+    }
+
+    func testCorrectionFocusRevisionIsLocalDurableMetadataAndLegacyIntentDecodes() throws {
+        let defaults = defaults()
+        let intent = PendingSetCorrection(id: "delete-a", setID: "set-a", date: fixedCivilDate,
+            slotID: "slot-a", exerciseID: "exercise-a", sessionID: "session-a", expectedAttempt: 0,
+            expectedUpdatedAt: 100, values: nil, runnerFocusRevision: 7)
+        SetCorrectionOutboxStore.enqueue(intent, userID: "user-a", defaults: defaults)
+        XCTAssertEqual(SetCorrectionOutboxStore.load(userID: "user-a", defaults: defaults).first?.runnerFocusRevision, 7)
+        XCTAssertNil(intent.requestBody?["runnerFocusRevision"])
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(intent)) as? [String: Any])
+        json.removeValue(forKey: "runnerFocusRevision")
+        let legacy = try JSONDecoder().decode(PendingSetCorrection.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(legacy.runnerFocusRevision)
+        var attemptedRebind = intent
+        attemptedRebind.runnerFocusRevision = 9
+        SetCorrectionOutboxStore.replace(attemptedRebind, userID: "user-a", defaults: defaults)
+        XCTAssertEqual(SetCorrectionOutboxStore.load(userID: "user-a", defaults: defaults).first?.runnerFocusRevision, 7)
     }
 }

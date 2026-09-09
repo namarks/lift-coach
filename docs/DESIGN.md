@@ -432,9 +432,11 @@ certificate, and a durable oversized-cache invalidation marker cannot retain it.
 Grouped slots rotate by rounds using acknowledged plus durable queued set UUIDs,
 excluding failed intents. The displayed round is separate from the physical
 per-slot set number used to bind a tap or timed hold. A newly queued set cues
-transition rest, or round rest after the last unskipped member; zero transition
-skips the cue. Rest and Live Activity point to the resulting next member.
-Unchanged acknowledgements preserve manual focus and never restart a rest timer.
+round rest when it completes the derived round, including a repaired round with
+uneven member counts; otherwise it cues transition rest, where zero skips the
+cue. Rest and Live Activity point to the resulting next member. Selection
+revisions preserve newer manual focus across older pending deletions and cold
+recovery. Acknowledgements never restart a rest timer.
 The workout editor selects adjacent slots and moves each group as one card,
 with rounds, round rest and transition rest edited together. Ordinary slot rest
 stays intact and inactive until ungrouping.

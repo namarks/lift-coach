@@ -157,13 +157,15 @@ temporary supersets dependencies become completed-foundation links in this
 closeout; its product decisions and activation boundary are preserved.
 
 Local verification passed all 871 backend tests. An isolated iPhone 17 /
-iOS 26.2 simulator passed 364 iOS unit tests. The synthetic UI journeys author a
+iOS 26.2 simulator passed 376 iOS unit tests. The synthetic UI journeys author a
 push-up/squat warm-up and bench/row working superset, execute eight alternating
 sets with transition/round cues, finish, edit grouped targets and ungroup while
 preserving individual rests. The same JSON prescription drives real-D1
 REST/MCP structure parity, physical-set logging and summary assertions. Runner
 tests additionally cover three-member circuits, timed holds, offline/reversed
-acknowledgements, skip, cold recovery, retries and deletion boundaries.
+acknowledgements, skip, cold recovery, retries and deletion boundaries, including
+newer manual focus during pending deletions and round rest after uneven-count
+repair.
 
 The required UI scope is current iPhones at normal text size, following the
 completed app-quality plan. An additional maximum Dynamic Type probe did not

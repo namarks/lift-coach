@@ -89,14 +89,21 @@ member at the lowest completed count. The displayed set number is the group
 round; rendered actions and timed holds use a separate per-slot physical-set
 number so a duplicate tap cannot log another set in that same round.
 
-Only a newly queued physical set starts a rest cue. A non-last executable
-member uses transition rest, where zero produces no cue; the last uses round
-rest. Rest and Live Activity labels follow the resulting current member.
-Acknowledgements, refreshes and retries do not restart a deadline. Manual
-navigation survives unchanged progress, and checkpoints retain enough group
-progress provenance to distinguish that choice from interrupted local advance.
-Acknowledged deletions repair the affected group at a stable runner boundary;
-value-only corrections preserve focus and rest.
+Only a newly queued physical set starts a rest cue. A round ends when the
+minimum completed set count among unskipped members increases; that commit uses
+round rest. Other commits use transition rest, where zero produces no cue.
+This also handles uneven counts after a correction: replacing A's missing set
+completes the round if B has already completed it. Rest and Live Activity labels
+follow the resulting current member. Acknowledgements, refreshes and retries do
+not restart a deadline.
+
+Manual navigation records a selection revision; a pending correction captures
+the revision at durable enqueue. Checkpoints preserve explicit focus and its
+revision so an older deletion acknowledgement or live tombstone cannot override
+a newer choice, including one within the same group. Deletions requested after
+the selection remain eligible to repair their group at a stable runner boundary.
+New local execution and skip resume automatic sequencing. Value-only corrections
+preserve focus and rest.
 
 The editor renders contiguous groups as single movable cards. Selection accepts
 adjacent ordinary slots only. Group editing submits a stable group UUID and

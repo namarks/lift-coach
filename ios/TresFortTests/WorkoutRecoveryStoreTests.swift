@@ -977,3 +977,20 @@ extension WorkoutRecoveryStoreTests {
         XCTAssertNil(StateSnapshotStore.encodedEnvelope(noise))
     }
 }
+
+extension WorkoutRecoveryStoreTests {
+    func testCheckpointFocusRevisionRoundTripsAndLegacyCheckpointRemainsReadable() throws {
+        let checkpoint = WorkoutRunnerCheckpoint(date: "2033-05-18", sessionID: "session-a",
+            selectedDayID: "day-a", currentSlotID: "slot-b", skippedSlotIDs: [],
+            workoutStartedAtMS: 2_000_000_000_000, finished: false,
+            focus: .init(revision: 9, isExplicit: true))
+        let encoded = try JSONEncoder().encode(checkpoint)
+        XCTAssertEqual(try JSONDecoder().decode(WorkoutRunnerCheckpoint.self, from: encoded), checkpoint)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        json.removeValue(forKey: "focus")
+        let legacy = try JSONDecoder().decode(WorkoutRunnerCheckpoint.self,
+            from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertNil(legacy.focus)
+        XCTAssertEqual(legacy.currentSlotID, "slot-b")
+    }
+}

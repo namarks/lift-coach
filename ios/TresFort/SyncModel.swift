@@ -246,6 +246,7 @@ final class SyncModel: ObservableObject {
         let transitionRest: Int?
     }
     private var observedGroupProgress: [String: GroupRunnerProgress] = [:]
+    private var runnerFocus = RunnerFocusState()
     private var deferredGroupRepairID: String?
     private var lastRunnerGroupCommit: (groupID: String, dayID: String?, date: String)?
     private var timedSetAttempt: TimedSetAttempt?
@@ -365,6 +366,7 @@ final class SyncModel: ObservableObject {
         let persistedCheckpoint = WorkoutRunnerCheckpointStore.load(
             userID: auth.userID, defaults: defaults)
         self.persistedRunnerCheckpoint = persistedCheckpoint
+        self.runnerFocus = persistedCheckpoint?.focus ?? RunnerFocusState()
         self.runnerRestartDiscardedAttempt =
             persistedCheckpoint?.restartDiscardedAttempt
         var persistedSets = SetOutboxStore.load(
@@ -745,6 +747,10 @@ final class SyncModel: ObservableObject {
         let previousExecutionIdentity = activeRunnerExecutionIdentity()
         let previousPrescription = currentExercise.map(RunnerPrescription.init)
         let previousGroupProgress = observedGroupProgress
+        let previousGroupID = currentExercise?.group_id
+        let previousDeletionGroups: [String: String] = Dictionary(uniqueKeysWithValues: setCorrections.compactMap { intent in
+            groupDeletionObservation(intent).map { (intent.id, $0) }
+        })
         let runnerCheckpointBeforeState = persistedRunnerCheckpoint
         let previousSkippedExecutionState =
             skippedExecutionStateForCurrentPlan()
@@ -814,25 +820,33 @@ final class SyncModel: ObservableObject {
             if executionIdentityChanged {
                 clearTimedSet()
             }
+            if runnerWasActive && (executionIdentityChanged || previousGroupID != currentExercise?.group_id) {
+                runnerFocus.isExplicit = false
+            }
+            let preservedFocusGroups = Set(setCorrections.compactMap { intent -> String? in
+                guard provenDeletedSetIDs.contains(intent.setID),
+                      !state.sets.contains(where: { $0.id == intent.setID && $0.deleted_at == nil }) else { return nil }
+                return supersededDeletionGroupID(intent)
+            })
             normalizeMountedRunnerProgress(
                 for: todaySession?.date ?? todayString,
                 reseedCurrent: executionIdentityChanged
-                    || (runnerWasActive && previousPrescription != currentExercise.map(RunnerPrescription.init)))
+                    || (runnerWasActive && previousPrescription != currentExercise.map(RunnerPrescription.init)),
+                preservingFocusIn: preservedFocusGroups)
             // A live read can prove a queued deletion before its HTTP ACK.
             // Use the progress observed before this read, so normalization
             // cannot erase eligibility. The later ACK then sees no new change.
             for intent in setCorrections where intent.isDelete
                 && provenDeletedSetIDs.contains(intent.setID)
                 && !state.sets.contains(where: { $0.id == intent.setID && $0.deleted_at == nil }) {
-                if let group = previousGroupProgress.values.first(where: {
+                let observedID = previousDeletionGroups[intent.id] ?? previousGroupProgress.values.first(where: {
                     $0.members.contains { $0.completedIDs.contains(intent.setID) }
-                }) {
-                    repairGroupAfterDeletedSet(intent, observedGroupID: group.id)
-                }
+                })?.id
+                if let observedID { repairGroupAfterDeletedSet(intent, observedGroupID: observedID) }
             }
             isUsingCachedState = false
             correctionRefreshNeeded = false
-            validatePersistedRunnerCheckpoint()
+            validatePersistedRunnerCheckpoint(preservingFocusIn: preservedFocusGroups)
         }
     }
 
@@ -1526,6 +1540,7 @@ final class SyncModel: ObservableObject {
 
     private func stopRunnerAfterTerminalAck() {
         observedGroupProgress = [:]
+        runnerFocus = RunnerFocusState()
         deferredGroupRepairID = nil
         lastRunnerGroupCommit = nil
         running = false
@@ -1536,7 +1551,7 @@ final class SyncModel: ObservableObject {
         _ = clearRunnerCheckpointAndSharedRest()
     }
 
-    private func validatePersistedRunnerCheckpoint() {
+    private func validatePersistedRunnerCheckpoint(preservingFocusIn groups: Set<String> = []) {
         guard let checkpoint = persistedRunnerCheckpoint else {
             resumableCheckpoint = nil
             return
@@ -1675,10 +1690,11 @@ final class SyncModel: ObservableObject {
         let normalizedFinished = unresolvedIndices.isEmpty
         let normalizedCurrentSlotID: String
         let currentGroup = checkpointGroup(day.exercises[currentIndex])
+        let preserveFocus = currentGroup.map { groups.contains($0.id) } ?? false
         if !normalizedFinished, let group = currentGroup,
-           group != checkpoint.groupProgress, let nextID = group.nextMemberID {
+           !preserveFocus, group != checkpoint.groupProgress, let nextID = group.nextMemberID {
             normalizedCurrentSlotID = nextID
-        } else if normalizedFinished || unresolvedIndices.contains(currentIndex)
+        } else if preserveFocus || normalizedFinished || unresolvedIndices.contains(currentIndex)
                     || (currentGroup != nil && currentGroup == checkpoint.groupProgress) {
             normalizedCurrentSlotID = currentSlotID
         } else {
@@ -1690,6 +1706,11 @@ final class SyncModel: ObservableObject {
                 .first(where: unresolvedIndices.contains)!
             normalizedCurrentSlotID = checkpointGroup(day.exercises[nextIndex])?.nextMemberID ?? day.exercises[nextIndex].id
         }
+        var normalizedFocus = checkpoint.focus
+        if normalizedCurrentSlotID != currentSlotID
+            || (normalizedFinished && !checkpoint.finished) {
+            normalizedFocus?.isExplicit = false
+        }
         let normalized = WorkoutRunnerCheckpoint(
             date: checkpoint.date,
             sessionID: serverSession.id,
@@ -1700,7 +1721,8 @@ final class SyncModel: ObservableObject {
             finished: normalizedFinished,
             sessionAttempt: serverSession.attempt ?? checkpoint.sessionAttempt,
             restartDiscardedAttempt: nil,
-            input: checkpoint.input, groupProgress: day.exercises.first(where: { $0.id == normalizedCurrentSlotID }).flatMap(checkpointGroup))
+            input: checkpoint.input, groupProgress: day.exercises.first(where: { $0.id == normalizedCurrentSlotID }).flatMap(checkpointGroup),
+            focus: normalizedFocus)
         if normalized != checkpoint {
             guard replaceRunnerCheckpoint(
                 normalized, ifCurrent: checkpoint)
@@ -1710,6 +1732,7 @@ final class SyncModel: ObservableObject {
             }
         }
         persistedRunnerCheckpoint = normalized
+        runnerFocus = normalized.focus ?? RunnerFocusState()
         runnerRestartDiscardedAttempt = nil
         // A recovered explicit override can legitimately differ from the
         // server session's immutable day pin. Align Today and its Resume CTA to
@@ -1737,7 +1760,7 @@ final class SyncModel: ObservableObject {
             finished: finished,
             sessionAttempt: todaySession?.attempt,
             restartDiscardedAttempt: runnerRestartDiscardedAttempt,
-            input: currentInputState, groupProgress: currentExercise.flatMap { groupProgress(for: $0) })
+            input: currentInputState, groupProgress: currentExercise.flatMap { groupProgress(for: $0) }, focus: runnerFocus)
         let expected = persistedRunnerCheckpoint
         guard replaceRunnerCheckpoint(checkpoint, ifCurrent: expected) else {
             relinquishStaleRunnerCheckpoint()
@@ -1775,7 +1798,7 @@ final class SyncModel: ObservableObject {
             finished: checkpoint.finished,
             sessionAttempt: session.attempt ?? checkpoint.sessionAttempt,
             restartDiscardedAttempt: nil,
-            input: checkpoint.input, groupProgress: checkpoint.groupProgress)
+            input: checkpoint.input, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus)
         guard replaceRunnerCheckpoint(bound, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -1892,6 +1915,7 @@ final class SyncModel: ObservableObject {
     /// same-account model owns them now.
     private func relinquishStaleRunnerCheckpoint() {
         observedGroupProgress = [:]
+        runnerFocus = RunnerFocusState()
         deferredGroupRepairID = nil
         lastRunnerGroupCommit = nil
         persistedRunnerCheckpoint = nil
@@ -1984,7 +2008,7 @@ final class SyncModel: ObservableObject {
             finished: checkpoint.finished,
             sessionAttempt: checkpoint.sessionAttempt,
             restartDiscardedAttempt: checkpoint.restartDiscardedAttempt,
-            input: checkpoint.input, groupProgress: checkpoint.groupProgress)
+            input: checkpoint.input, groupProgress: checkpoint.groupProgress, focus: checkpoint.focus)
         guard replaceRunnerCheckpoint(normalized, ifCurrent: checkpoint) else {
             relinquishStaleRunnerCheckpoint()
             return
@@ -2055,6 +2079,7 @@ final class SyncModel: ObservableObject {
     /// Stop only local execution state; the already-logged server data stays.
     private func stopRunnerForStateChange() {
         observedGroupProgress = [:]
+        runnerFocus = RunnerFocusState()
         deferredGroupRepairID = nil
         lastRunnerGroupCommit = nil
         exerciseIndex = 0
@@ -2657,12 +2682,14 @@ final class SyncModel: ObservableObject {
         guard let intent = enqueueSetIntent(
             ex, weight: weight, reps: reps, durationOverride: durationOverride, rpe: rpe
         ) else { return false }
+        runnerFocus.isExplicit = false
         lastRunnerGroupCommit = ex.group_id.map { ($0, selectedDayID, intent.date) }
 
         if running {
             if let group = groupBeforeCommit {
+                let completedRound = (groupProgress(for: ex)?.completedRounds ?? group.completedRounds) > group.completedRounds
                 normalizeMountedRunnerAfterLocalCommit(for: intent.date)
-                let seconds = group.isLastExecutableMember(ex.id)
+                let seconds = completedRound
                     ? ex.group_rest_seconds ?? ex.rest_seconds : ex.group_transition_seconds ?? 0
                 if seconds > 0 { startRest(seconds: seconds, name: ex.exercise_name) }
                 else if restEndDate != nil { skipRest() }
@@ -2670,6 +2697,9 @@ final class SyncModel: ObservableObject {
                 startRest(seconds: ex.rest_seconds, name: ex.exercise_name)
             }
         }
+        // The cursor can stay on the same member with uneven progress. Its
+        // new physical commit still durably ends explicit-focus protection.
+        persistRunnerCheckpoint()
         let slotID = ex.id
         Task { @MainActor [weak self] in
             // Keep the same-turn double-tap guard through the immediate UI
@@ -3833,7 +3863,8 @@ final class SyncModel: ObservableObject {
     private func normalizeMountedRunnerProgress(
         for date: String,
         reseedCurrent: Bool = false,
-        forceGroupSelection: Bool = false
+        forceGroupSelection: Bool = false,
+        preservingFocusIn groups: Set<String> = []
     ) {
         if running {
             preflightMountedRunnerOwnership(
@@ -3845,7 +3876,7 @@ final class SyncModel: ObservableObject {
         // progress. Its selection repair waits for that hold's local commit.
         if timedActive && !reseedCurrent { return }
         let group = currentExercise.flatMap { groupProgress(for: $0) }
-        let groupChanged = group.map { observedGroupProgress[$0.id] != $0 } ?? false
+        let groupChanged = group.map { !groups.contains($0.id) && observedGroupProgress[$0.id] != $0 } ?? false
         var groupSelectionChanged = false
         if let group, forceGroupSelection || groupChanged,
            let nextID = group.nextMemberID,
@@ -3859,6 +3890,7 @@ final class SyncModel: ObservableObject {
         guard !unresolved.isEmpty else {
             if !finished {
                 finished = true
+                runnerFocus.isExplicit = false
                 persistRunnerCheckpoint()
             }
             updateRestActivityAfterRunnerNormalization()
@@ -3881,6 +3913,9 @@ final class SyncModel: ObservableObject {
             selectionChanged = true
         }
         finished = false
+        // Reopening a finished workout is bookkeeping, not a new selection.
+        // This also covers a cold ACK absorbed before its next live read.
+        if selectionChanged { runnerFocus.isExplicit = false }
         if reseedCurrent || selectionChanged || wasFinished {
             seedInputs()
         }
@@ -4002,19 +4037,85 @@ final class SyncModel: ObservableObject {
         updateRestActivityAfterRunnerNormalization()
     }
 
+    /// Correction causality survives enqueue, ACK/live-read reordering, and
+    /// cold recovery. A later manual choice owns focus until a physical commit
+    /// or skip; a new correction initiated after that choice remains eligible.
+    private func supersededDeletionGroupID(_ intent: PendingSetCorrection) -> String? {
+        guard intent.isDelete, runnerFocus.isExplicit,
+              (intent.runnerFocusRevision ?? 0) < runnerFocus.revision,
+              let checkpoint = persistedRunnerCheckpoint,
+              intent.date == checkpoint.date, intent.date == todayString,
+              intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
+              let day = plan?.days.first(where: { $0.id == checkpoint.selectedDayID }),
+              let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID })
+        else { return nil }
+        return slot.group_id
+    }
+
+    private func absorbSupersededDeletion(_ intent: PendingSetCorrection) {
+        if running {
+            rememberGroupProgress()
+            return
+        }
+        // A cold ACK must update the observed UUIDs without certifying a live
+        // resume. Otherwise the next live validation would replay this change.
+        guard let checkpoint = persistedRunnerCheckpoint,
+              let progress = checkpoint.groupProgress else { return }
+        let updated = GroupRunnerProgress(id: progress.id, members: progress.members.map {
+            .init(id: $0.id, target: $0.target, completedIDs: $0.completedIDs.subtracting([intent.setID]), skipped: $0.skipped)
+        })
+        persistRunnerObservation(updated)
+    }
+
+    private func persistRunnerObservation(_ progress: GroupRunnerProgress?) {
+        guard let checkpoint = persistedRunnerCheckpoint else { return }
+        let replacement = WorkoutRunnerCheckpoint(date: checkpoint.date, sessionID: checkpoint.sessionID,
+            selectedDayID: checkpoint.selectedDayID, currentSlotID: checkpoint.currentSlotID,
+            skippedSlotIDs: checkpoint.skippedSlotIDs, workoutStartedAtMS: checkpoint.workoutStartedAtMS,
+            finished: checkpoint.finished, sessionAttempt: checkpoint.sessionAttempt,
+            restartDiscardedAttempt: checkpoint.restartDiscardedAttempt,
+            input: checkpoint.input, groupProgress: progress, focus: runnerFocus)
+        guard replaceRunnerCheckpoint(replacement, ifCurrent: checkpoint) else { return }
+        persistedRunnerCheckpoint = replacement
+        if resumableCheckpoint == checkpoint { resumableCheckpoint = replacement }
+    }
+
+    private func groupDeletionObservation(_ intent: PendingSetCorrection) -> String? {
+        guard intent.isDelete, let checkpoint = persistedRunnerCheckpoint,
+              let day = plan?.days.first(where: { $0.id == checkpoint.selectedDayID }),
+              let sessionID = todaySession?.id ?? checkpoint.sessionID,
+              let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID }),
+              let id = slot.group_id,
+              slotSets(slot, sessionID: sessionID, dayExercises: day.exercises).contains(where: { $0.id == intent.setID })
+                || setOutbox.pending.contains(where: { $0.id == intent.setID && $0.deliveryState == .queued
+                    && setIntent($0, matches: slot, on: intent.date) })
+        else { return nil }
+        return id
+    }
+
     private func repairGroupAfterDeletedSet(_ intent: PendingSetCorrection, observedGroupID: String? = nil) {
-        guard running, intent.date == todayString,
-              intent.expectedAttempt == (todaySession?.attempt ?? 0),
-              let slotID = intent.slotID,
-              let slot = exercises.first(where: { $0.id == slotID && $0.exercise_id == intent.exerciseID }),
+        guard supersededDeletionGroupID(intent) == nil,
+              intent.date == todayString,
+              let checkpoint = persistedRunnerCheckpoint, checkpoint.date == intent.date,
+              intent.expectedAttempt == (todaySession?.attempt ?? checkpoint.sessionAttempt ?? 0),
+              let day = plan?.days.first(where: { $0.id == checkpoint.selectedDayID }),
+              let slot = day.exercises.first(where: { $0.id == intent.slotID && $0.exercise_id == intent.exerciseID }),
               let id = slot.group_id,
               observedGroupID == id || observedGroupProgress[id]?.members.contains(where: { $0.completedIDs.contains(intent.setID) }) == true,
-              groupProgress(for: slot)?.members.contains(where: { $0.completedIDs.contains(intent.setID) }) == false,
+              !sets.contains(where: { $0.id == intent.setID && $0.deleted_at == nil }),
               currentExercise?.group_id == id
+                || (!running && checkpoint.groupProgress?.id == id)
                 || (lastRunnerGroupCommit?.groupID == id
                     && lastRunnerGroupCommit?.dayID == selectedDayID
                     && lastRunnerGroupCommit?.date == intent.date)
         else { return }
+        runnerFocus.isExplicit = false
+        if !running {
+            // Consume an eligible correction's focus authority even if a
+            // later cold normalization will keep the same selected member.
+            persistRunnerObservation(checkpoint.groupProgress)
+            return
+        }
         deferredGroupRepairID = id
         repairDeferredGroupSelection()
     }
@@ -4056,6 +4157,7 @@ final class SyncModel: ObservableObject {
         // soon as that in-progress timer reaches its stable commit boundary.
         guard !timedActive else { return }
         finished = false
+        if exerciseIndex != index { runnerFocus.isExplicit = false }
         exerciseIndex = index
         seedInputs()
         weight = failedIntent.body.weight
@@ -4145,6 +4247,7 @@ final class SyncModel: ObservableObject {
             return
         }
         runnerRestartDiscardedAttempt = restartDiscardedAttempt
+        runnerFocus = RunnerFocusState()
         deferredGroupRepairID = nil
         lastRunnerGroupCommit = nil
         running = true
@@ -4236,6 +4339,7 @@ final class SyncModel: ObservableObject {
                 TimeInterval(checkpoint.workoutStartedAtMS) / 1_000)
         running = true
         finished = checkpoint.finished
+        runnerFocus = checkpoint.focus ?? RunnerFocusState()
         seedInputs()
         rememberGroupProgress()
         // Resume is the explicit same-epoch ownership handoff. A second model
@@ -4538,6 +4642,8 @@ final class SyncModel: ObservableObject {
         // a completed group's eligibility for a still-pending deletion ACK.
         deferredGroupRepairID = nil
         lastRunnerGroupCommit = nil
+        runnerFocus.revision &+= 1
+        runnerFocus.isExplicit = true
         selectRunnerExercise(at: index)
     }
 
@@ -4584,6 +4690,7 @@ final class SyncModel: ObservableObject {
         // Skip is a terminal decision for the rendered hold even when there is
         // no next slot and `jump` therefore never calls `seedInputs`.
         clearTimedSet()
+        runnerFocus.isExplicit = false
         let wasGrouped = currentExercise?.group_id != nil
         if let ex = currentExercise { skipped.insert(ex.id) }
         if wasGrouped {
@@ -5895,6 +6002,8 @@ extension SyncModel {
         guard !setCorrections.contains(where: { $0.setID == intent.setID }),
               terminalOutbox.intent(for: intent.date) == nil
         else { return false }
+        var intent = intent
+        intent.runnerFocusRevision = runnerFocus.revision
         SetCorrectionOutboxStore.enqueue(intent, userID: accountID, defaults: defaults)
         ownedCorrectionIDs.insert(intent.id)
         adoptDurableWorkoutWriteOutboxes()
@@ -5982,6 +6091,7 @@ extension SyncModel {
                       result.session.attempt == intent.expectedAttempt
                 else { throw APIError.decoding("Correction acknowledgement changed its identity") }
                 summaryRevision &+= 1
+                let observedDeletionGroupID = groupDeletionObservation(intent)
                 let merged = StateSnapshotStore.mergeAcknowledgement(
                     userID: accountID, fallback: currentStateResponse(), defaults: defaults
                 ) { state in
@@ -6006,7 +6116,10 @@ extension SyncModel {
                     // Value-only corrections preserve focus/review/rest. An
                     // accepted group deletion repairs the derived round at a
                     // stable physical-set boundary without emitting another rest.
-                    if result.set.deleted_at != nil { repairGroupAfterDeletedSet(intent) }
+                    if result.set.deleted_at != nil {
+                        if supersededDeletionGroupID(intent) != nil { absorbSupersededDeletion(intent) }
+                        else { repairGroupAfterDeletedSet(intent, observedGroupID: observedDeletionGroupID) }
+                    }
                     persistRunnerCheckpoint()
                     correctionRefreshNeeded = merged == nil
                     if merged == nil {

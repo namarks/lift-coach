@@ -18,6 +18,6 @@ struct GroupRunnerProgress: Codable, Equatable {
         guard let minimum = incomplete.map({ $0.completedIDs.count }).min() else { return nil }
         return incomplete.first { $0.completedIDs.count == minimum }?.id
     }
-    var round: Int { (executable.map { min($0.completedIDs.count, $0.target) }.min() ?? 0) + 1 }
-    func isLastExecutableMember(_ slotID: String) -> Bool { executable.last?.id == slotID }
+    var completedRounds: Int { executable.map { min($0.completedIDs.count, $0.target) }.min() ?? 0 }
+    var round: Int { completedRounds + 1 }
 }
