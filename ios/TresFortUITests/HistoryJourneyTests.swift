@@ -6,6 +6,46 @@ final class HistoryJourneyTests: XCTestCase {
     func testSmallCachedHistoryJourney() throws { try run("history-small") }
     func testFiveYearCachedHistoryJourney() throws { try run("history-large") }
 
+    func testOneProgressPanelSwitchesBetweenTrendAndSingleDaySummary() throws {
+        let app = XCUIApplication()
+        app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "history-progress"
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"]
+        app.launch()
+        XCTAssertTrue(app.segmentedControls.buttons["Exercises"].waitForExistence(timeout: 15))
+        app.segmentedControls.buttons["Exercises"].tap()
+        app.buttons["history.exercise.exercise-0"].tap()
+        let chart = app.descendants(matching: .any).matching(identifier: "history.progress.chart")
+        XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(chart.count, 1)
+        XCTAssertTrue(app.buttons.matching(NSPredicate(format: "label BEGINSWITH 'SESSION · 2026-07-01'")).firstMatch.isHittable)
+        let overall = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        overall.name = "history-single-progress-panel"
+        overall.lifetime = .keepAlways
+        add(overall)
+
+        let selector = app.buttons["history.progress.selector"]
+        selector.tap()
+        app.buttons["33 lb · Best reps"].tap()
+        XCTAssertTrue(app.staticTexts["history.progress.summary"].waitForExistence(timeout: 5))
+        XCTAssertEqual(app.staticTexts["history.progress.summary"].label, "8 reps · 2026-06-14")
+        XCTAssertFalse(chart.firstMatch.exists)
+        let sparse = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        sparse.name = "history-single-day-summary"
+        sparse.lifetime = .keepAlways
+        add(sparse)
+
+        selector.tap()
+        app.buttons["35 lb · Best reps"].tap()
+        XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(chart.count, 1)
+        XCTAssertFalse(app.staticTexts["history.progress.summary"].exists)
+        selector.tap()
+        app.buttons["Estimated 1RM"].tap()
+        XCTAssertTrue(chart.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertEqual(chart.count, 1)
+        app.terminate()
+    }
+
     private func run(_ fixture: String) throws {
         let app = XCUIApplication()
         app.launchEnvironment["TRESFORT_UI_FIXTURE"] = fixture

@@ -3537,6 +3537,26 @@ final class SetOutboxTests: XCTestCase {
         await deletion.value
     }
 
+    func testExpiredRestArtifactOwnerDoesNotFenceANewDefaultsNamespace() {
+        weak var expiredDefaults: UserDefaults?
+        let owner = autoreleasepool { () -> RunnerArtifactOwnership.Owner in
+            let oldDefaults = defaults()
+            expiredDefaults = oldDefaults
+            return RunnerArtifactOwnership.Owner(defaults: oldDefaults, id: UUID(), featureSessionEpoch: 9)
+        }
+        XCTAssertNil(expiredDefaults)
+        XCTAssertTrue(owner.permitsClaim(featureSessionEpoch: 0, defaults: defaults()))
+    }
+
+    func testLiveRestArtifactOwnerRetainsItsEpochFence() {
+        let namespace = defaults()
+        let owner = RunnerArtifactOwnership.Owner(defaults: namespace, id: UUID(), featureSessionEpoch: 9)
+        XCTAssertFalse(owner.permitsClaim(featureSessionEpoch: 8, defaults: namespace))
+        XCTAssertTrue(owner.permitsClaim(featureSessionEpoch: 9, defaults: namespace))
+        XCTAssertTrue(owner.permitsClaim(featureSessionEpoch: 10, defaults: namespace))
+        XCTAssertFalse(owner.permitsClaim(featureSessionEpoch: 10, defaults: defaults()))
+    }
+
     func testSignOutEndsOwnedRestArtifactsAndPreservesRunnerCheckpoint() {
         let defaults = defaults()
         let ex = exercise()
