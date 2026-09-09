@@ -127,10 +127,64 @@ describe('POST /api/days/:id/exercises scopes the day to the active plan', () =>
 });
 
 describe('REST session and set bodies are runtime-validated before writes', () => {
-  it('rejects malformed fields and keeps later /api/state rows decodable', async () => {
-    const headers = auth(await devJwt());
+  let headers: Record<string, string>;
+  let session: { id: string };
+  let validSetId: string;
+
+  // isolatedStorage gives each test a fresh copy of this valid baseline.
+  beforeAll(async () => {
+    headers = auth(await devJwt());
     await createPlanAndDay(headers, 'Validation plan');
 
+    const sessionResponse = await SELF.fetch(`${BASE}/api/sessions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ date: '2026-12-20' }),
+    });
+    expect(sessionResponse.status).toBe(201);
+    session = await sessionResponse.json<{ id: string }>();
+
+    validSetId = crypto.randomUUID();
+    const validSet = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        id: validSetId,
+        exercise_id: 'ex_bench',
+        set_index: 1,
+        weight: 225,
+        reps: 5,
+      }),
+    });
+    expect(validSet.status).toBe(201);
+  });
+
+  async function expectDecodableSets() {
+    const stateResponse = await SELF.fetch(`${BASE}/api/state?since=0&sets_since=0`, {
+      headers,
+    });
+    expect(stateResponse.status).toBe(200);
+    const state = await stateResponse.json<{
+      sets: Array<{
+        id: string;
+        set_index: unknown;
+        weight: unknown;
+        reps: unknown;
+        logged_at: unknown;
+        duration_s: unknown;
+      }>;
+    }>();
+    const returned = state.sets.find((set) => set.id === validSetId);
+    expect(returned).toBeDefined();
+    expect(Number.isInteger(returned?.set_index)).toBe(true);
+    expect(typeof returned?.weight).toBe('number');
+    expect(Number.isInteger(returned?.reps)).toBe(true);
+    expect(Number.isInteger(returned?.logged_at)).toBe(true);
+    expect(returned?.duration_s).toBeNull();
+    return state.sets;
+  }
+
+  it('rejects a malformed session date without inserting it', async () => {
     const badSession = await SELF.fetch(`${BASE}/api/sessions`, {
       method: 'POST',
       headers,
@@ -142,15 +196,10 @@ describe('REST session and set bodies are runtime-validated before writes', () =
       .prepare("SELECT COUNT(*) AS count FROM sessions WHERE date = '123'")
       .first<{ count: number }>();
     expect(numericDateRows?.count).toBe(0);
+    await expectDecodableSets();
+  });
 
-    const sessionResponse = await SELF.fetch(`${BASE}/api/sessions`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ date: '2026-12-20' }),
-    });
-    expect(sessionResponse.status).toBe(201);
-    const session = await sessionResponse.json<{ id: string }>();
-
+  it('rejects malformed session changes without updating the row', async () => {
     const badSessionPatch = await SELF.fetch(`${BASE}/api/sessions/${session.id}`, {
       method: 'PATCH',
       headers,
@@ -166,7 +215,10 @@ describe('REST session and set bodies are runtime-validated before writes', () =
       .bind(session.id)
       .first<{ perceived_fatigue: number | null; notes: string | null }>();
     expect(unchangedSession).toEqual({ perceived_fatigue: null, notes: null });
+    await expectDecodableSets();
+  });
 
+  it('rejects malformed and oversized sets and keeps /api/state rows decodable', async () => {
     const malformedSetId = crypto.randomUUID();
     const malformedSet = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
       method: 'POST',
@@ -215,20 +267,12 @@ describe('REST session and set bodies are runtime-validated before writes', () =
       await env.DB.prepare('SELECT id FROM set_logs WHERE id = ?1').bind(oversizedSetId).first(),
     ).toBeNull();
 
-    const validSetId = crypto.randomUUID();
-    const validSet = await SELF.fetch(`${BASE}/api/sessions/${session.id}/sets`, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        id: validSetId,
-        exercise_id: 'ex_bench',
-        set_index: 1,
-        weight: 225,
-        reps: 5,
-      }),
-    });
-    expect(validSet.status).toBe(201);
+    const sets = await expectDecodableSets();
+    expect(sets.some((set) => set.id === malformedSetId)).toBe(false);
+    expect(sets.some((set) => set.id === oversizedSetId)).toBe(false);
+  });
 
+  it('rejects invalid, unknown, and empty set corrections without changing the row', async () => {
     const badSetPatch = await SELF.fetch(`${BASE}/api/sets/${validSetId}`, {
       method: 'PATCH',
       headers,
@@ -269,7 +313,10 @@ describe('REST session and set bodies are runtime-validated before writes', () =
     });
     expect(emptySetPatch.status).toBe(400);
     expect(await emptySetPatch.json()).toEqual({ error: 'no_corrections' });
+    await expectDecodableSets();
+  });
 
+  it('updates and clears a set duration while keeping /api/state rows decodable', async () => {
     const durationUpdate = await SELF.fetch(`${BASE}/api/sets/${validSetId}`, {
       method: 'PATCH',
       headers,
@@ -296,28 +343,6 @@ describe('REST session and set bodies are runtime-validated before writes', () =
       duration_s: null,
     });
 
-    const stateResponse = await SELF.fetch(`${BASE}/api/state?since=0&sets_since=0`, {
-      headers,
-    });
-    expect(stateResponse.status).toBe(200);
-    const state = await stateResponse.json<{
-      sets: Array<{
-        id: string;
-        set_index: unknown;
-        weight: unknown;
-        reps: unknown;
-        logged_at: unknown;
-        duration_s: unknown;
-      }>;
-    }>();
-    expect(state.sets.some((set) => set.id === malformedSetId)).toBe(false);
-    expect(state.sets.some((set) => set.id === oversizedSetId)).toBe(false);
-    const returned = state.sets.find((set) => set.id === validSetId);
-    expect(returned).toBeDefined();
-    expect(Number.isInteger(returned?.set_index)).toBe(true);
-    expect(typeof returned?.weight).toBe('number');
-    expect(Number.isInteger(returned?.reps)).toBe(true);
-    expect(Number.isInteger(returned?.logged_at)).toBe(true);
-    expect(returned?.duration_s).toBeNull();
+    await expectDecodableSets();
   });
 });
