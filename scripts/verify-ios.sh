@@ -3,22 +3,24 @@
 set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
-  echo 'Usage: npm run ios:verify -- --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 --device com.apple.CoreSimulator.SimDeviceType.iPhone-17 [--only-testing Target[/Class[/method]] | --ci-shard 1|2] [--content-size accessibility-extra-extra-extra-large]'
+  echo 'Usage: npm run ios:verify -- --runtime RUNTIME --device DEVICE [--ui-suite full|smoke] [--ci-shard 1|2] [--only-testing Target[/Class[/method]]] [--content-size SIZE]'
 }
 runtime=''
 device=''
 content_size=''
 ci_shard=''
+ui_suite='full'
 test_args=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --runtime|--device|--only-testing|--content-size|--ci-shard)
+    --runtime|--device|--only-testing|--content-size|--ci-shard|--ui-suite)
       [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || { usage >&2; exit 2; }
       case "$1" in
         --runtime) runtime="$2" ;;
         --device) device="$2" ;;
         --content-size) content_size="$2" ;;
         --ci-shard) ci_shard="$2" ;;
+        --ui-suite) ui_suite="$2" ;;
         --only-testing) test_args+=("-only-testing:$2") ;;
       esac
       shift 2 ;;
@@ -27,9 +29,26 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 [[ -n "$runtime" && -n "$device" ]] || { usage >&2; exit 2; }
+[[ "$ui_suite" == full || "$ui_suite" == smoke ]] || { usage >&2; exit 2; }
 if [[ -n "$ci_shard" ]]; then
   [[ "$ci_shard" == 1 || "$ci_shard" == 2 ]] || { usage >&2; exit 2; }
-  [[ ${#test_args[@]} -eq 0 ]] || { echo '--ci-shard cannot be combined with --only-testing' >&2; exit 2; }
+fi
+if [[ -n "$ci_shard" || "$ui_suite" == smoke ]]; then
+  [[ ${#test_args[@]} -eq 0 ]] || { echo 'CI selection cannot be combined with --only-testing' >&2; exit 2; }
+fi
+if [[ "$ui_suite" == smoke ]]; then
+  if [[ "$ci_shard" != 2 ]]; then
+    test_args+=("-only-testing:TresFortTests")
+    for method in testVerifiedEmptyPlanCanCreateRoutineAndFirstWorkout \
+      testOrdinarySetLogsAndCompletesThroughAcknowledgement \
+      testCorrectionRecoveryRemainsReachable testWeightEntryAndKeyboardCanSaveExactLoad; do
+      test_args+=("-only-testing:TresFortUITests/TrainingJourneyTests/$method")
+    done
+  fi
+  if [[ "$ci_shard" != 1 ]]; then
+    test_args+=("-only-testing:TresFortUITests/ExerciseGroupJourneyTests/testAuthorWarmupAndWorkingSupersetThenRunAlternatingRounds")
+  fi
+elif [[ -n "$ci_shard" ]]; then
   # Shard 1 runs the complement, so new tests automatically remain covered.
   for suite in HistoryJourneyTests ExerciseGroupJourneyTests; do
     if [[ "$ci_shard" == 1 ]]; then
@@ -105,6 +124,7 @@ PY
   echo "Runtime: $runtime"
   echo "Device type: $device"
   echo "CI shard: ${ci_shard:-full or focused}"
+  echo "UI suite: $ui_suite"
   printf 'Test selection: %s\n' ${test_args[@]+"${test_args[@]}"}
   git -C "$repo_root" rev-parse HEAD
   git -C "$repo_root" status --short
@@ -118,11 +138,13 @@ xcrun simctl boot "$simulator" >"$scratch/boot.log" 2>&1
 build_args=(-project "$scratch/ios/TresFort.xcodeproj" -scheme TresFort -configuration Debug
   -destination "platform=iOS Simulator,id=$simulator" -derivedDataPath "$scratch/DerivedData"
   -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO)
+echo 'Building app and test bundles while the simulator starts...'
 if ! xcodebuild build-for-testing "${build_args[@]}" \
     -resultBundlePath "$scratch/Build.xcresult" >"$scratch/build.log" 2>&1; then
   tail -n 100 "$scratch/build.log" >&2
   exit 1
 fi
+echo 'Build complete; waiting for simulator boot readiness...'
 if ! xcrun simctl bootstatus "$simulator" -b >>"$scratch/boot.log" 2>&1; then
   tail -n 100 "$scratch/boot.log" >&2
   exit 1
@@ -134,6 +156,7 @@ if [[ -n "$content_size" ]]; then
   xcrun simctl ui "$simulator" content_size >>"$scratch/ui-settings.log" 2>&1
 fi
 # Disable test cloning so every simulator this command creates has one owner.
+echo "Running $ui_suite tests (shard ${ci_shard:-all})..."
 if ! xcodebuild test-without-building "${build_args[@]}" \
     -resultBundlePath "$scratch/Tests.xcresult" \
     ${test_args[@]+"${test_args[@]}"} >"$scratch/xcodebuild.log" 2>&1; then

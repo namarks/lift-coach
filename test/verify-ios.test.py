@@ -2,6 +2,7 @@
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -125,6 +126,29 @@ else: print('synthetic-tool-version')
                 selection=[arg for arg in args if arg.startswith(('-only-testing:', '-skip-testing:'))]
                 self.assertEqual(selection,[prefix+'TresFortUITests/HistoryJourneyTests',prefix+'TresFortUITests/ExerciseGroupJourneyTests'])
         for extra in [['--ci-shard','3'],['--ci-shard','1','--only-testing','TresFortTests']]:
+            calls_before=self.calls()
+            self.assertEqual(self.run_script(['--runtime','runtime','--device','device',*extra]).returncode,2)
+            self.assertEqual(self.calls(),calls_before)
+
+    def test_smoke_shards_keep_all_unit_tests_and_existing_critical_ui_flows(self):
+        selections=[]
+        for shard in ['1','2']:
+            result=self.run_script(['--runtime','runtime','--device','device',
+                                    '--ui-suite','smoke','--ci-shard',shard])
+            self.assertEqual(result.returncode,0,result.stderr)
+            args=[args for name,args in self.calls() if name=='xcodebuild' and args[0]=='test-without-building'][-1]
+            selections.extend(arg.removeprefix('-only-testing:') for arg in args if arg.startswith('-only-testing:'))
+        self.assertEqual(len(selections),6)
+        self.assertEqual(len(set(selections)),6)
+        self.assertIn('TresFortTests',selections)
+        root=SCRIPT.parents[1]/'ios'
+        for selection in selections:
+            if selection=='TresFortTests': continue
+            target,suite,method=selection.split('/')
+            source=(root/target/(suite+'.swift')).read_text()
+            self.assertRegex(source,rf'func\s+{re.escape(method)}\s*\(')
+        for extra in [['--ui-suite','invalid'],
+                      ['--ui-suite','smoke','--only-testing','TresFortTests']]:
             calls_before=self.calls()
             self.assertEqual(self.run_script(['--runtime','runtime','--device','device',*extra]).returncode,2)
             self.assertEqual(self.calls(),calls_before)

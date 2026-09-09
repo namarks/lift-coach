@@ -29,12 +29,26 @@ For a focused check, append `--only-testing TresFortTests/CalendarProjectionTest
 or `--only-testing TresFortUITests/TrainingJourneyTests`. A focused result does
 not substitute for the full suite before merging an iOS change.
 
-CI uses `--ci-shard 1` and `--ci-shard 2` on separate standard runners. Shard 2
-runs `HistoryJourneyTests` and `ExerciseGroupJourneyTests`; shard 1 runs everything
-else, including all unit tests and `TrainingJourneyTests`. The selectors are
-complements, so newly added tests join shard 1 automatically. Sharding cannot be
-combined with `--only-testing`. Without either argument the command still runs
-the full suite locally.
+CI uses `--ui-suite smoke` for iOS changes on pull requests and pushes to main.
+The smoke suite includes every `TresFortTests` unit test and five UI journeys:
+routine creation, logging/finishing a workout, correction recovery, exact weight
+entry with the keyboard, and authoring/running a superset. New critical journeys
+should join this smoke list; a regression verifies its selectors still exist.
+
+Full UI runs are periodic, rather than required on every merge. The nightly
+GitHub Actions schedule runs at 11:17 UTC on main (early morning Pacific time).
+Use the CI workflow's **Run workflow** action for an additional full run. Both
+select `--ui-suite full`, including history measurements, accessibility audits,
+and the broader UI journeys. Schedules run only after the workflow lands on
+main and may be delayed by GitHub; inspect the Actions result for actual evidence.
+
+Both modes use `--ci-shard 1` and `--ci-shard 2` on separate standard runners.
+For full runs, shard 2 runs `HistoryJourneyTests` and `ExerciseGroupJourneyTests`;
+shard 1 runs everything else. Those selectors are complements, so newly added
+tests remain covered by the full suite automatically. In smoke mode, shard 1
+runs unit tests and the four training journeys; shard 2 runs the superset journey.
+Sharding or smoke mode cannot be combined with `--only-testing`. Without these
+arguments the command still runs the full suite locally.
 
 CI prioritizes the current iPhone 17 layout and normal text sizes. The optional
 `--content-size` argument can set a simulator system preference for a focused
@@ -118,8 +132,8 @@ expectations for reps, timed holds, assistance, unilateral, and loaded metrics.
 ## CI and merge evidence
 
 CI retains the `plan graph`, `iOS build + tests`, and `typecheck + tests` check
-names. The latter two aggregate every shard and fail for failed, cancelled, or
-unexpectedly skipped shard jobs. Both matrices use `fail-fast: false` so a
+names. The latter two aggregate every required shard and fail for failed,
+cancelled, or unexpectedly skipped jobs. Both matrices use `fail-fast: false` so a
 failure in one shard does not cancel coverage in another. The iOS jobs
 use the public repository's standard `macos-15` runner, Xcode 26.3, iOS 26.2,
 and checksum-pinned XcodeGen 2.45.3. They do not use paid large runners. The jobs
@@ -129,7 +143,16 @@ the workflow together. A missing pinned toolchain must fail, not silently select
 another runtime. The source image can evolve, so the environment log records
 what actually ran.
 
-CI uploads `ios-verification-1` and `ios-verification-2` synthetic results with a
+Changes confined to backend source, migrations, backend TypeScript tests, or
+documentation skip iOS jobs. Shared fixtures under `ios/`, verification scripts,
+workflow files, package configuration, and unknown paths trigger smoke coverage.
+`scripts/ci-ios-scope.py` compares the tested PR merge with its base or the entire
+push range, including deletions and both sides of renames. A missing Git base or
+failed scope job fails the aggregate; only an explicit `skip` decision permits
+skipped iOS jobs. Nightly and manual runs always request full coverage regardless
+of changed paths. Full runs have separate concurrency groups from push/PR runs.
+
+CI uploads `ios-smoke-1` / `ios-smoke-2` or `ios-full-1` / `ios-full-2` results with a
 seven-day artifact retention. No production credentials or account data are
 supplied to these jobs. Dependency installation
 and GitHub action permissions follow the existing repository workflow.
@@ -141,12 +164,15 @@ script checks, and query-plan checks. `singleWorker: true` and
 per-test rollback retain the same semantics. Plain `npm test` still runs all
 backend tests locally. CI sharding increases concurrent standard runner use
 and duplicates iOS compilation; it reduces elapsed wait rather than total
-build work. No test timeout, assertion, or production behavior changes.
+build work. Existing test assertions, timeouts, and production behavior are
+unchanged; broader UI regression detection moves to the periodic full runs.
 
 As verified September 8, 2026, GitHub branch protection requires only
 `typecheck + tests`. This change does not modify branch protection. For work
-changing iOS, every shard, aggregate check, the plan graph, and the current-head independent review must pass
-before merge; backend green alone is insufficient. Making the additional check
+changing iOS, the smoke shards, aggregate checks, plan graph, and current-head
+independent review must pass before merge; backend green alone is insufficient.
+Full UI coverage is a periodic check under the September 9 owner decision.
+Making the additional check
 names enforced repository settings requires separate repository authority.
 
 A compile, screenshot, or automated smoke test does not establish VoiceOver
