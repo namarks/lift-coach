@@ -1,13 +1,13 @@
 # tres-fort
 
-An AI-coached lifting system. **Claude is the coach** — it owns and adapts your
-training plan through conversation (via MCP). A **native iOS app** is the gym
+An AI-coached lifting system. **Claude is the coach** — it adapts your training plan
+through conversation (via MCP). A **native iOS app** is the gym
 executor: you run the workout and log sets there. A **Cloudflare Worker + D1**
 is the single source of truth that both Claude and the app read and write.
 
-The app deliberately has no in-app chat and is read-mostly for the plan. You
-talk to Claude (in the Claude app, desktop, or Claude Code) to build, adjust,
-and analyze training; the app just reflects the current plan and logs work.
+The app has no in-app chat. Members can create routines, edit workouts and
+assign workout/rest dates directly; Claude can also build, adjust and analyze
+training through MCP. Both clients use the same versioned plan writers.
 
 ```
    Claude (any chat)          iOS app (SwiftUI)
@@ -28,7 +28,8 @@ audit_log, oauth_*, intervals_oauth_states, groups, group_members,
 group_invites, external_activities, activities, external_events,
 session_load_exports. Plan tree is a **versioned document** (optimistic
 concurrency); sets/notes are an **append-only event log** (client-UUID
-idempotent, offline-safe) — so two writers never need merge logic.
+idempotent, offline-safe). Corrections and session attempts have explicit
+concurrency guards; sync merges deltas and tombstones by stable ID.
 
 - REST API for the iOS app (`/api/*`), authenticated with a Worker-issued
   app JWT.
@@ -76,6 +77,9 @@ SwiftUI, iOS 17+, XcodeGen-managed. A guided **workout runner**:
   same versioned plan tree Claude edits.
 - Whole-workout stopwatch + per-set duration; **timed exercises** (planks/
   holds) become a START SET countdown that auto-logs.
+- Account-scoped JSON snapshots and durable outboxes in UserDefaults provide
+  cached browsing and safe retries. SyncModel publishes in-memory state; it
+  does not use SwiftData. Disposable indexes accelerate history queries.
 - History tab with Swift Charts (estimated-1RM and set-duration trends).
 - Type set in Bebas Neue + JetBrains Mono.
 

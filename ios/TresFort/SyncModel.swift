@@ -118,8 +118,8 @@ final class SyncModel: ObservableObject {
     @Published private var completionSummaries: [String: WorkoutSummary] = [:]
     private var completionSummaryRevisions: [String: UInt64] = [:]
     @Published var plan: PlanTree?
-    @Published var sets: [SetLog] = []
-    @Published var sessions: [SessionRow] = []
+    @Published var sets: [SetLog] = [] { didSet { invalidateHistory() } }
+    @Published var sessions: [SessionRow] = [] { didSet { invalidateHistory() } }
     /// Read-only ride overlay (intervals.icu etc). Already filtered to
     /// non-deleted events — the rest of the app never sees tombstones.
     @Published var rides: [ExternalEvent] = []
@@ -131,7 +131,7 @@ final class SyncModel: ObservableObject {
     /// calendar regardless of group membership. Already filtered to
     /// non-deleted at the cache boundary.
     @Published var manualActivities: [ActivityRow] = []
-    @Published var catalog: [ExerciseCatalog] = []
+    @Published var catalog: [ExerciseCatalog] = [] { didSet { invalidateHistory() } }
     @Published var todaySession: SessionRow?
     @Published var selectedDayID: String?
     @Published var loadError: String?
@@ -2062,9 +2062,7 @@ final class SyncModel: ObservableObject {
 
     /// Live (non-deleted) working sets for an exercise.
     private func live(_ exerciseID: String) -> [SetLog] {
-        sets.filter {
-            $0.exercise_id == exerciseID && $0.is_warmup == 0 && $0.deleted_at == nil
-        }
+        historyIndex.workingSetsByExercise[exerciseID] ?? []
     }
 
     func lastWorkingSet(_ exerciseID: String) -> SetLog? {
@@ -2145,14 +2143,14 @@ final class SyncModel: ObservableObject {
     }
 
     func exerciseName(_ id: String) -> String {
-        catalog.first { $0.id == id }?.name ?? id
+        catalogRow(id)?.name ?? id
     }
 
     /// Catalog row for an exercise id, or nil if unknown. Used by the demo
     /// sheet to render the primary muscle/load-mode badges without a second
     /// lookup table.
     func catalogRow(_ id: String) -> ExerciseCatalog? {
-        catalog.first { $0.id == id }
+        historyIndex.catalogByID[id]
     }
 
     /// How many physical sides a logged set covers — 2 for unilateral
@@ -2161,7 +2159,7 @@ final class SyncModel: ObservableObject {
     /// logged-rep-count → physical-rep-count and tonnage → real tonnage.
     /// Defaults to 1 when the catalog row is unknown.
     func sides(for exerciseID: String) -> Int {
-        catalog.first { $0.id == exerciseID }?.laterality == "unilateral" ? 2 : 1
+        catalogRow(exerciseID)?.laterality == "unilateral" ? 2 : 1
     }
 
     /// How many separately loaded implements a logged weight represents — 2
@@ -2169,7 +2167,7 @@ final class SyncModel: ObservableObject {
     /// laterality: a unilateral, per-hand movement counts both dimensions.
     /// Defaults to 1 when the catalog row is unknown.
     func implements(for exerciseID: String) -> Int {
-        catalog.first { $0.id == exerciseID }?.load_mode == "per_hand" ? 2 : 1
+        catalogRow(exerciseID)?.load_mode == "per_hand" ? 2 : 1
     }
 
     /// Physical reps represented by one logged set. Unilateral movements are
@@ -2212,7 +2210,7 @@ final class SyncModel: ObservableObject {
     /// modality, so resolve it from the catalog. Defaults to false (rep set)
     /// when the catalog row is unknown. #30
     func isTimedExercise(_ exerciseID: String) -> Bool {
-        catalog.first { $0.id == exerciseID }?.modality == "timed"
+        catalogRow(exerciseID)?.modality == "timed"
     }
 
     /// Whether a LOGGED set is a timed hold. Prefers the set's own
@@ -2229,68 +2227,44 @@ final class SyncModel: ObservableObject {
     /// logged at 0 load isn't mislabeled as bodyweight. Defaults to false
     /// when the catalog row is unknown. #30
     func isBodyweightExercise(_ exerciseID: String) -> Bool {
-        catalog.first { $0.id == exerciseID }?.modality == "bw"
+        catalogRow(exerciseID)?.modality == "bw"
     }
 
-    // MARK: history aggregation
+    // MARK: history read model
 
-    struct SessionStat: Identifiable {
-        let id: String          // session id
-        let date: String
-        let est1RM: Double?
-        let topWeight: Double
-        let topReps: Int
-        let bestReps: Int?
-        let totalReps: Int
-        let volume: Double?
-        let setCount: Int
-        let bestHoldSeconds: Int?
-        let hasTimedSets: Bool
-        let avgDuration: Int
-        let cohorts: [ExerciseMetricCohort]
+    typealias SessionStat = TrainingHistoryIndex.SessionStat
+    private var cachedHistoryIndex: TrainingHistoryIndex?
+    private var cachedHistory: [String: [SessionStat]] = [:]
+    private var cachedLatestHistory: [String: [SessionStat]] = [:]
+
+    private func invalidateHistory() {
+        cachedHistoryIndex = nil
+        cachedHistory.removeAll(keepingCapacity: true)
+        cachedLatestHistory.removeAll(keepingCapacity: true)
     }
 
-    /// Exercise ids that have any logged set, most-recent first.
-    var loggedExerciseIDs: [String] {
-        let live = sets.filter { $0.is_warmup == 0 && $0.deleted_at == nil }
-        let byId = Dictionary(grouping: live, by: \.exercise_id)
-        return byId.keys.sorted {
-            (byId[$0]?.map(\.logged_at).max() ?? 0) >
-            (byId[$1]?.map(\.logged_at).max() ?? 0)
-        }
+    private var historyIndex: TrainingHistoryIndex {
+        if let cachedHistoryIndex { return cachedHistoryIndex }
+        let index = TrainingHistoryIndex(sessions: sessions, sets: sets, catalog: catalog)
+        cachedHistoryIndex = index
+        return index
     }
+
+    var loggedExerciseIDs: [String] { historyIndex.loggedExerciseIDs }
 
     func history(for exerciseID: String) -> [SessionStat] {
-        let dateBySession = Dictionary(uniqueKeysWithValues: sessions.map { ($0.id, $0.date) })
-        let grouped = Dictionary(grouping: live(exerciseID), by: \.session_id)
-        let bodyweight = isBodyweightExercise(exerciseID)
-        return grouped.compactMap { sid, rows -> SessionStat? in
-            guard let date = dateBySession[sid], !rows.isEmpty else { return nil }
-            let timedRows = rows.filter(isTimedSet)
-            let repRows = rows.filter { !isTimedSet($0) }
-            let cohorts = metricCohorts(for: rows)
-            let repCohorts = cohorts.filter { !$0.key.timed }
-            let holdCohorts = cohorts.filter { $0.key.timed }
-            let estimated = cohorts.compactMap(\.estimatedOneRepMax).max()
-            // These legacy top fields are only descriptive; UI comparisons use
-            // the keyed cohorts so a different assistance level cannot win.
-            let top = cohorts.max {
-                ($0.estimatedOneRepMax ?? 0) < ($1.estimatedOneRepMax ?? 0)
-            }?.top ?? rows[0]
-            let durations = timedRows.map { $0.duration_s ?? $0.reps }
-            return SessionStat(
-                id: sid, date: date, est1RM: estimated,
-                topWeight: top.weight, topReps: top.reps,
-                bestReps: bodyweight && repCohorts.count == 1 ? repCohorts[0].bestReps : nil,
-                totalReps: totalReps(for: repRows), volume: totalTonnage(for: repRows),
-                setCount: rows.count,
-                bestHoldSeconds: holdCohorts.count == 1 ? holdCohorts[0].bestHoldSeconds : nil,
-                hasTimedSets: !timedRows.isEmpty,
-                avgDuration: holdCohorts.count == 1 && !durations.isEmpty
-                    ? durations.reduce(0, +) / durations.count : 0,
-                cohorts: cohorts)
-        }
-        .sorted { $0.date < $1.date }
+        if let cached = cachedHistory[exerciseID] { return cached }
+        let stats = historyIndex.history(for: exerciseID)
+        cachedHistory[exerciseID] = stats
+        return stats
+    }
+
+    /// List rows need one session summary, not every historical cohort/chart.
+    func latestHistory(for exerciseID: String) -> SessionStat? {
+        if let cached = cachedLatestHistory[exerciseID] { return cached.first }
+        let stats = historyIndex.history(for: exerciseID, latestOnly: true)
+        cachedLatestHistory[exerciseID] = stats
+        return stats.first
     }
 
     /// Only sessions with a timed hold duration (including the legacy reps
@@ -5097,21 +5071,7 @@ final class SyncModel: ObservableObject {
     /// a date, prefer the most "advanced" one (completed > in_progress >
     /// planned > skipped) so the calendar shows the strongest signal.
     var sessionsByDate: [String: SessionRow] {
-        func rank(_ s: String) -> Int {
-            switch s {
-            case "completed":   return 4
-            case "in_progress": return 3
-            case "planned":     return 2
-            case "skipped":     return 1
-            default:            return 0
-            }
-        }
-        var out: [String: SessionRow] = [:]
-        for s in sessions {
-            if let cur = out[s.date], rank(cur.status) >= rank(s.status) { continue }
-            out[s.date] = s
-        }
-        return out
+        historyIndex.sessionsByDate
     }
 
     /// Non-deleted external events for a `YYYY-MM-DD` date (read-only).
@@ -5179,7 +5139,7 @@ final class SyncModel: ObservableObject {
     /// an active in-progress one (it records no work).
     func loggedSetCount(forDate ymd: String) -> Int {
         guard let sid = sessionsByDate[ymd]?.id else { return 0 }
-        return setsForSession(sid).count
+        return historyIndex.setsBySession[sid]?.count ?? 0
     }
 
     /// True if this calendar date carries a lift (real session OR a
@@ -5572,7 +5532,7 @@ final class SyncModel: ObservableObject {
 
     /// Logged working + warmup sets for a session (agenda "completed").
     func setsForSession(_ sessionID: String) -> [SetLog] {
-        sets.filter { $0.session_id == sessionID && $0.deleted_at == nil }
+        (historyIndex.setsBySession[sessionID] ?? [])
             .sorted {
                 $0.exercise_id == $1.exercise_id
                     ? $0.set_index < $1.set_index

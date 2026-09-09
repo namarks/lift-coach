@@ -73,11 +73,12 @@ private struct ExerciseHistoryList: View {
             }
         } else {
             ScrollView {
-                VStack(spacing: 10) {
+                LazyVStack(spacing: 10) {
                     ForEach(ids, id: \.self) { id in
                         NavigationLink {
                             ExerciseDetailView(sync: sync, exerciseID: id)
                         } label: { row(id) }
+                        .accessibilityIdentifier("history.exercise." + id)
                     }
                 }
                 .padding(16)
@@ -87,7 +88,7 @@ private struct ExerciseHistoryList: View {
     }
 
     private func row(_ id: String) -> some View {
-        let last = sync.history(for: id).last
+        let last = sync.latestHistory(for: id)
         return HStack(spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(sync.exerciseName(id).uppercased())
@@ -153,7 +154,16 @@ private struct ExerciseDetailView: View {
                                      y: .value("Estimated 1RM", session.est1RM ?? 0))
                             PointMark(x: .value("Date", session.date),
                                       y: .value("Estimated 1RM", session.est1RM ?? 0))
-                        }.frame(height: 180)
+                        }
+                        .chartXAxis {
+                            AxisMarks(values: axisDates(estimated.map(\.date))) { value in
+                                AxisGridLine()
+                                AxisValueLabel(anchor: value.index == 0 ? .topLeading
+                                    : value.index == value.count - 1 ? .topTrailing : .top)
+                                    .foregroundStyle(Theme.muted)
+                            }
+                        }
+                        .frame(height: 180)
                     }.foregroundStyle(Theme.accent)
                 }
                 Text("Compare the same movement, load and rep or hold mode. Total reps describe work logged.")
@@ -205,6 +215,14 @@ private struct ExerciseDetailView: View {
                 PointMark(x: .value("Date", point.date), y: .value(metric, point.value))
                     .foregroundStyle(Theme.accent)
             }
+            .chartXAxis {
+                AxisMarks(values: axisDates(points.map(\.date))) { value in
+                    AxisGridLine()
+                    AxisValueLabel(anchor: value.index == 0 ? .topLeading
+                                    : value.index == value.count - 1 ? .topTrailing : .top)
+                                    .foregroundStyle(Theme.muted)
+                }
+            }
             .chartYAxis { AxisMarks { AxisValueLabel().foregroundStyle(Theme.muted) } }
             .frame(height: 140)
         }
@@ -212,8 +230,16 @@ private struct ExerciseDetailView: View {
         .background(Theme.surface).clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
+    /// Categorical civil dates retain every plotted point; sparse labels keep
+    /// multi-year history readable at ordinary phone widths.
+    private func axisDates(_ dates: [String]) -> [String] {
+        let unique = Array(Set(dates)).sorted()
+        guard unique.count > 3 else { return unique }
+        return [unique[0], unique[unique.count / 2], unique[unique.count - 1]]
+    }
+
     private func sessionSets(_ sid: String) -> [SetLog] {
-        sync.sets.filter { $0.session_id == sid && $0.exercise_id == exerciseID
+        sync.setsForSession(sid).filter { $0.exercise_id == exerciseID
             && $0.is_warmup == 0 && $0.deleted_at == nil }
             .sorted { $0.set_index < $1.set_index }
     }

@@ -923,3 +923,49 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
             userID: "user-b", defaults: defaults)?.first?.name, "user-b")
     }
 }
+
+extension WorkoutRecoveryStoreTests {
+    func testSnapshotReadCacheObservesExternalReplacementCorruptionAndRemoval() throws {
+        let suite = "SnapshotReadCache.\(UUID().uuidString)"
+        let first = UserDefaults(suiteName: suite)!
+        let second = UserDefaults(suiteName: suite)!
+        defer { first.removePersistentDomain(forName: suite) }
+        let key = StateSnapshotStore.scopedKey(userID: "user-a")
+        StateSnapshotStore.save(try state(planName: "First"), userID: "user-a", defaults: first)
+        XCTAssertEqual(StateSnapshotStore.load(userID: "user-a", defaults: first)?.state.plan?.name, "First")
+        // A legacy writer need not use this store or advance its revision.
+        second.set(try JSONEncoder().encode(state(planName: "External")), forKey: key)
+        XCTAssertEqual(StateSnapshotStore.load(userID: "user-a", defaults: first)?.state.plan?.name, "External")
+        second.set(Data("corrupt".utf8), forKey: key)
+        XCTAssertNil(StateSnapshotStore.load(userID: "user-a", defaults: first))
+        StateSnapshotStore.save(try state(planName: "Restored"), userID: "user-a", defaults: first)
+        second.removeObject(forKey: key)
+        XCTAssertNil(StateSnapshotStore.load(userID: "user-a", defaults: first))
+    }
+}
+
+extension WorkoutRecoveryStoreTests {
+    func testSnapshotEnvelopeCodecRetainsLegacyAndRejectsCorruption() throws {
+        let legacy = Data("{\"state\":null}".utf8)
+        XCTAssertEqual(StateSnapshotStore.encodedEnvelope(legacy), legacy)
+        XCTAssertEqual(StateSnapshotStore.decodedEnvelope(legacy), legacy)
+        let large = Data(repeating: 65, count: 5 * 1_024 * 1_024)
+        let packed = try XCTUnwrap(StateSnapshotStore.encodedEnvelope(large))
+        XCTAssertLessThan(packed.count, 4 * 1_024 * 1_024)
+        XCTAssertEqual(StateSnapshotStore.decodedEnvelope(packed), large)
+        XCTAssertNil(StateSnapshotStore.decodedEnvelope(Data("TFSS1\0invalid".utf8)))
+        // Incompressible future envelopes must fail before UserDefaults can
+        // silently retain only their process-local value.
+        var generator: UInt64 = 0x123456789abcdef
+        var noise = Data(count: 5 * 1_024 * 1_024)
+        noise.withUnsafeMutableBytes { (bytes: UnsafeMutableRawBufferPointer) in
+            for index in bytes.indices {
+                generator ^= generator << 13
+                generator ^= generator >> 7
+                generator ^= generator << 17
+                bytes[index] = UInt8(truncatingIfNeeded: generator)
+            }
+        }
+        XCTAssertNil(StateSnapshotStore.encodedEnvelope(noise))
+    }
+}

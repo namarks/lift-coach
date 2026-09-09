@@ -1,0 +1,42 @@
+[
+  {
+    "fixture": "history-large",
+    "iteration": 0,
+    "samples": {
+      "cached_launch_to_calendar_wall_ms": 3899.36101436615,
+      "calendar_swipe_wall_ms": 727.741003036499,
+      "exercise_detail_wall_ms": 2226.598024368286,
+      "exercise_list_and_scroll_wall_ms": 17251.688957214355
+    }
+  },
+  {
+    "fixture": "history-large",
+    "iteration": 1,
+    "samples": {
+      "cached_launch_to_calendar_wall_ms": 3959.257960319519,
+      "calendar_swipe_wall_ms": 501.8810033798218,
+      "exercise_detail_wall_ms": 1677.4169206619263,
+      "exercise_list_and_scroll_wall_ms": 16944.041967391968
+    }
+  },
+  {
+    "fixture": "history-small",
+    "iteration": 0,
+    "samples": {
+      "cached_launch_to_calendar_wall_ms": 3286.2210273742676,
+      "calendar_swipe_wall_ms": 475.96192359924316,
+      "exercise_detail_wall_ms": 1373.9579916000366,
+      "exercise_list_and_scroll_wall_ms": 13476.444959640503
+    }
+  },
+  {
+    "fixture": "history-small",
+    "iteration": 1,
+    "samples": {
+      "cached_launch_to_calendar_wall_ms": 3368.703007698059,
+      "calendar_swipe_wall_ms": 473.363995552063,
+      "exercise_detail_wall_ms": 2298.888921737671,
+      "exercise_list_and_scroll_wall_ms": 13494.639992713928
+    }
+  }
+]

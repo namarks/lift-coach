@@ -1,0 +1,9 @@
+Timestamp               Ty Process[PID:TID]
+2026-09-08 21:44:40.605 F  TresFort[4608:1fb11df] [com.apple.defaults:User Defaults] CFPrefsPlistSource<0x600002c2c980> (Domain: com.nmarkspdx.tresfort.synthetic-ui, User: kCFPreferencesCurrentUser, ByHost: No, Container: (null), Contents Need Refresh: No): Attempting to store >= 4194304 bytes of data in CFPreferences/NSUserDefaults on this platform is invalid. This is a bug in TresFort or a library it uses.
+Description of keys being set:
+com.nmarkspdx.liftcoach.state-snapshot.v1.synthetic-ui-user: data value, size: 4415694
+
+Description of keys already present:
+com.nmarkspdx.liftcoach.state-snapshot.v1.synthetic-ui-user: data value, size: 87
+com.nmarkspdx.liftcoach.onboarded.v1: boolean value
+2026-09-08 21:44:40.605 E  TresFort[4608:1fb11df] [com.apple.defaults:User Defaults] CFPrefsPlistSource<0x600002c2c980> (Domain: com.nmarkspdx.tresfort.synthetic-ui, User: kCFPreferencesCurrentUser, ByHost: No, Container: (null), Contents Need Refresh: No): Transitioning into direct mode

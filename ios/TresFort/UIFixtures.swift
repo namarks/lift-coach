@@ -7,6 +7,9 @@ import SwiftUI
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding
+    case historySmall = "history-small", historyLarge = "history-large"
+
+    var isHistory: Bool { self == .historySmall || self == .historyLarge }
     case correctionFailure = "correction-failure", readyToFinish = "ready-to-finish"
 
     static let selected: Self? = {
@@ -29,7 +32,9 @@ enum UIFixtureModel {
     static let defaults: UserDefaults = {
         let name = "com.nmarkspdx.tresfort.synthetic-ui"
         let value = UserDefaults(suiteName: name)!
-        value.removePersistentDomain(forName: name)
+        if !(UIFixtureScenario.selected?.isHistory == true && ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_HISTORY"] == "1") {
+            value.removePersistentDomain(forName: name)
+        }
         return value
     }()
     static func makeAuth() -> AuthModel {
@@ -39,6 +44,19 @@ enum UIFixtureModel {
             auth.jwt = "synthetic-ui-bearer"
             auth.onboardingComplete = UIFixtureScenario.selected != .onboarding
             auth.phase = .signedIn
+        }
+        if let scenario = UIFixtureScenario.selected, scenario.isHistory,
+           ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_HISTORY"] != "1" {
+            let history = HistoryFixtureData.dataset(sessionCount: scenario == .historySmall ? 12 : 1_040)
+            let state = StateResponse(plan: PlanTree(id: "synthetic-plan", name: "Synthetic history", version: 1, days: [], meta: nil),
+                plan_version: 1, sessions: history.sessions, sets: history.sets,
+                external_events: [], external_activities: [], activities: [], server_time: history.server_time)
+            StateSnapshotStore.save(state, userID: auth.userID, defaults: defaults)
+            let catalog = (0..<40).map { ExerciseCatalog(id: "exercise-\($0)", name: "Exercise \($0)",
+                primary_muscle: "legs", modality: "barbell", unit: "lb", laterality: nil, load_mode: nil, demo_slug: nil) }
+            ExerciseCatalogSnapshotStore.save(catalog, userID: auth.userID, defaults: defaults)
+            _ = StateSyncAccountStore.activate(userID: auth.userID, defaults: defaults)
+
         }
         return auth
     }
@@ -65,10 +83,13 @@ struct UIFixtureView: View {
             Text("SYNTHETIC · \(scenario.rawValue)")
                 .font(.caption).dynamicTypeSize(.large)
                 .accessibilityIdentifier("fixture.scenario")
+                .accessibilityValue(Text(verbatim: scenario.isHistory ? "\(sync.sets.count) sets" : ""))
             if scenario == .signIn {
                 RootView().environmentObject(auth)
             } else if scenario == .onboarding && !auth.onboardingComplete {
                 OnboardingView(auth: auth)
+            } else if scenario.isHistory {
+                HistoryView(sync: sync)
             } else {
                 TodayView(sync: sync, auth: auth)
             }
@@ -78,7 +99,7 @@ struct UIFixtureView: View {
         .environment(\.dynamicTypeSize,
             ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : systemDynamicTypeSize)
         .task {
-            guard scenario != .signIn else { return }
+            guard scenario != .signIn, !scenario.isHistory else { return }
             await sync.load()
             if ![.empty, .loadFailure, .onboarding].contains(scenario) {
                 sync.startWorkout()
@@ -167,6 +188,7 @@ private struct UIFixtureServer {
 
     mutating func respond(_ request: URLRequest) throws -> (Int, Data) {
         guard request.url?.host == "ui-fixture.invalid" else { throw URLError(.unsupportedURL) }
+        guard !scenario.isHistory else { throw URLError(.notConnectedToInternet) }
         let path = request.url!.path
         let method = request.httpMethod ?? "GET"
         var data = request.httpBody

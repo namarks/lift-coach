@@ -146,7 +146,7 @@ warm-up or changed working targets. See [seeding](https://github.com/namarks/tre
 The [runner header](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/ios/TresFort/TodayView.swift#L901)
 does not show prescribed load, RPE or cues beside the entry.
 
-**Closure:** strengthen [gym-runner-depth P0](../../plans/gym-runner-depth/plan.md)
+**Closure:** strengthen [gym-runner-depth P0](../../plans/completed/gym-runner-depth/plan.md)
 with explicit input precedence, prescription/history provenance, duplicate-slot
 and warm-up tests, and preservation of intentional edits during recovery.
 This does not require a new programming engine or session-copy model.
@@ -267,7 +267,7 @@ and fixed load-editor height warrant large-text/keyboard walkthroughs; clipping
 was not observed on a device. See [controls](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/ios/TresFort/TodayView.swift#L1294)
 and [palette](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/ios/TresFort/Theme.swift#L8).
 
-**Closure:** [app-quality P0/P1](../../plans/app-quality-and-maintainability/plan.md)
+**Closure:** [app-quality P0/P1](../../plans/completed/app-quality-and-maintainability/plan.md)
 adds synthetic UI states and VoiceOver/large-text/Reduce Motion evidence, with
 adequate interactive sizing and descriptive values. This follows
 [Apple's control and legibility guidance](https://developer.apple.com/design/tips/).

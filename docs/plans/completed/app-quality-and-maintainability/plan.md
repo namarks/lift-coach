@@ -1,6 +1,6 @@
 # App Quality and Maintainability
 
-Slug: app-quality-and-maintainability · Status: active · Updated: 2026-09-08 · Theme: platform
+Slug: app-quality-and-maintainability · Status: done · Updated: 2026-09-08 · Theme: platform · Archived: completed
 
 ## Goal
 
@@ -42,7 +42,7 @@ durable account/attempt-bound writes remain the foundation.
   - Physical VoiceOver, audio/lock-screen and interruption observations can
     inform future improvements, but are not a delivery gate. Repository
     verification does not claim that those device-specific behaviors were tested.
-- [ ] **P2 — Measured hot paths and bounded module extraction**
+- [x] **P2 — Measured hot paths and bounded module extraction**
   - Measure cached cold launch, calendar open/scroll, exercise history and
     log/acknowledgment with a small history and a synthetic multi-year history.
     Record dataset dimensions, hardware/runtime, main-thread duration, snapshot
@@ -65,43 +65,59 @@ durable account/attempt-bound writes remain the foundation.
     structured conflicts, and the exact atomicity of field edits. Separate
     historical design intent from current implementation claims.
 
-## Execution frontier
+## Delivered relationships
 
-- P2
-
-## Dependencies
-
-[Completed Gym Runner Depth](../completed/gym-runner-depth/plan.md) supplies
+[Completed Gym Runner Depth](../gym-runner-depth/plan.md) supplies
 the shared prescription controls, durable corrections and runner presentation.
 Reuse that delivered path when changing the runner.
 
-P2 preserves the completed [validated atomic prescription writer](../completed/prescription-integrity/decisions.md) during backend extraction.
+P2 preserves the completed [validated atomic prescription writer](../prescription-integrity/decisions.md).
+No backend extraction was needed for the measured client paths.
 
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P1 | coordinates_with | plan:member-activation-and-adherence#P0 | Entry copy, errors and large-text layouts touch the same surfaces. |
+P1 preserves entry/error coordination with the separate
+[member activation plan](../../member-activation-and-adherence/plan.md).
 
+## Completion evidence
+
+P0 is merged in [PR #153](https://github.com/namarks/tres-fort/pull/153)
+at `bd9bf6f3f34903c1c09115f7e68f2f8a2f6642f4`. P1 is merged in
+[PR #154](https://github.com/namarks/tres-fort/pull/154) at
+`69f82cdc4238c930ac6c03eba695eebc19bc263d`; its `b7ee833` head passed independent
+review and all three jobs in [CI run 34310418127](https://github.com/namarks/tres-fort/actions/runs/34310418127).
+Both merge trees matched their reviewed heads.
+
+P2 delivers the measured `TrainingHistoryIndex`, requested summaries, lazy
+exercise rows, sparse chart date labels, and cohesive `StateSnapshotStore`
+extraction. Five-year calendar preparation fell from a 2,899 ms median to a
+30 ms first read; the full losslessly packed cache is 264,174 bytes. Fresh-process
+checks discovered and fixed rejected large preference values that previously
+looked saved only in process. No history is trimmed. Whole-snapshot writes remain
+linear and synchronous; [measurements, budgets, source manifests and limits](evidence/p2/README.md)
+retain that tradeoff.
+
+Local verification passed 326 unit and 18 UI tests on iPhone 17 / iOS 26.2 at
+normal text size, including durable account/attempt writes and shared numerical/
+calendar contracts. The completion PR records independent review and terminal
+required CI for its exact current head. P2's checked phase and archive land
+atomically with that implementation.
 
 ## Next step
 
-**Now (@agent):** Land the basic P1 usability changes through current-head
-independent review and the current-iPhone CI suite, then continue P2 with
-repeatable small-history and multi-year measurements before choosing bounded
-performance changes. P0 is merged in [PR #153](https://github.com/namarks/tres-fort/pull/153)
-(`bd9bf6f3f34903c1c09115f7e68f2f8a2f6642f4`). The September 8 steering prioritizes
-current iPhones and normal text sizes, stops exhaustive older-device/extreme-font
-testing and explicitly removes accessibility walkthroughs as delivery gates.
-Deployment, migration, signing/distribution and production-data authority remain
-separate from this repository work.
+Repository delivery is complete. No executable phase remains in this plan.
+Deployment, migrations, signing/distribution and production-data changes require
+separate owner release authority. The September 8 steering prioritizes current
+iPhones and normal text sizes, stops exhaustive older-device/extreme-font testing
+and removes accessibility walkthroughs as delivery gates. Device observations
+remain optional evidence; repository verification does not claim them.
 
 ## Notes / open questions
 
-- [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
+- [Completed bodyweight support](../bodyweight-training-support/plan.md)
   supplies variation replacement and comparable metrics. Reuse the shared
   `BodyweightProgress.json` contract for bodyweight PR/hold claims; this is a
   delivered repository foundation, not an unresolved dependency.
 
-- Source: [September app review](../../reviews/2026-09-app-review/report.md).
+- Source: [September app review](../../../reviews/2026-09-app-review/report.md).
   The reviewed repository already has substantial XCTest coverage; the gap is
   CI and UI-state evidence, not an absence of iOS unit tests.
 - Static repeated scans and large modules establish investigation targets.
@@ -111,7 +127,7 @@ separate from this repository work.
   control/legibility criteria. A compile, unit test or screenshot alone does
   not establish screen-reader or gym usability.
 
-- P0 implementation: [verification command and CI contract](../../IOS-VERIFICATION.md),
+- P0 implementation: [verification command and CI contract](../../../IOS-VERIFICATION.md),
   simulator-only synthetic UI fixtures and smoke suite, shared calendar cases
   alongside the existing bodyweight numerical fixtures. The
   [synthetic simulator baseline](evidence/p0/README.md) retains the passing
@@ -122,4 +138,4 @@ separate from this repository work.
   before merge; the merge tree matched that reviewed head.
 - P1 retains [verification evidence and its limits](evidence/p1/README.md).
   Device walkthroughs are optional follow-up evidence, not an execution gate.
-  Continue P2 under the existing activation.
+  P2 is included in this completed repository delivery.

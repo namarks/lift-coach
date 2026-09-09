@@ -139,15 +139,6 @@ integration or social breadth.
   **planned**; deliver a correct feed, durable invites, lightweight reactions
   and notifications, and essential group controls.
 
-### Platform (`platform`)
-
-Keep the application verifiable and responsive as its history and feature set
-grow, without changing the product data model.
-
-- [App quality and maintainability](app-quality-and-maintainability/plan.md) —
-  **planned**; make iOS checks repeatable, verify accessible core journeys and
-  improve measured client costs through bounded module extraction.
-
 ### Review-driven ordering
 
 The [September app review](../reviews/2026-09-app-review/report.md) recommends
@@ -159,6 +150,12 @@ and engagement features follow their existing decisions and demonstrated need.
 This order does not activate planned work or replace canonical phase readiness.
 
 ## Completed foundations
+
+[App quality and maintainability](completed/app-quality-and-maintainability/plan.md)
+provides reproducible current-iPhone CI, basic usability improvements, measured
+history indexes and lossless large-cache persistence. Repository completion is
+separate from production or app distribution.
+
 
 [Training Data Trust](../initiatives/completed/training-data-trust.md) is
 complete after reviewed service/TestFlight delivery and the coordinated live

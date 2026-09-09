@@ -23,7 +23,7 @@ preview action when large text uses scrolling instead of swipe-to-minimize.
 
 The required suite uses the current iPhone 17, normal text sizes, Xcode 26.3
 (17C529), XcodeGen 2.45.3 and iOS 26.2 (23C52), through the
-[verification command](../../../../IOS-VERIFICATION.md). It covers the P0
+[verification command](../../../../../IOS-VERIFICATION.md). It covers the P0
 fixtures plus onboarding, decimal keyboard entry, rest completion and correction
 recovery. Native audits check hit regions and descriptions in four
 visible entry/runner viewports. Contrast has the separate policy checks below.
