@@ -113,14 +113,12 @@ if not any(r['identifier'] == runtime and r.get('isAvailable') for r in runtimes
 if not any(d['identifier'] == device for d in devices):
     sys.exit('Selected device type is not installed: ' + device)
 PY
-python3 - "$repo_root/ios" "$scratch/ios" <<'PY'
-import hashlib, json, pathlib, shutil, sys
-shutil.copytree(sys.argv[1], sys.argv[2], ignore=shutil.ignore_patterns(
-    '*.xcodeproj', 'DerivedData', 'build', '.bundle', 'vendor', 'fastlane',
-    '*.xcuserstate', '.DS_Store', '.api_key.json'))
+python3 -B - "$repo_root/ios" "$scratch/ios" <<'PY'
+import json, pathlib, sys
+sys.path.insert(0, str(pathlib.Path(sys.argv[1]).parent / 'scripts'))
+from ios_sources import copy_sources
 root = pathlib.Path(sys.argv[2])
-manifest = {str(p.relative_to(root)): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in sorted(root.rglob('*')) if p.is_file()}
+manifest = copy_sources(sys.argv[1], root)
 (root.parent / 'sources.json').write_text(json.dumps(manifest, indent=2) + '\n')
 PY
 {

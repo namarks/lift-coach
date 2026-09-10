@@ -155,7 +155,13 @@ disconnect or storage recovery. Ordinary disconnect keeps the current screen;
 recovering a failed anchor remounts feature models. Other accounts and unreadable
 workout queues remain intact. All 96 focused authentication/storage tests passed
 with one explicit simulator protection skip, and all 268 iOS source hashes
-matched. This follow-up requires fresh independent review and CI before merge.
+matched. [PR #172](https://github.com/namarks/tres-fort/pull/172) subsequently
+passed exact-head independent review and all eight configured checks at
+`9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, then merged as
+`310327b7a0d779b8a905e7b18588bda30f1bd808` at 19:31:29 UTC. The reviewed and
+merged tree is `c7dcfecfe6fddc69aee93a6e92532d6d0eb529e3`; remote-main ancestry
+and tree equality were verified. This is repository delivery, not device or
+production-release evidence.
 
 Unsigned Release-configuration verification at 17:21:39 UTC built for generic
 iOS with version 1.0, minimum iOS 17.0, iPhone-only device family and the widget

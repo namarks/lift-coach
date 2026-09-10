@@ -1,0 +1,87 @@
+import XCTest
+
+/// Asset capture through real screens and controls, using only the isolated
+/// simulator transport. Images remain drafts until checked against the final
+/// selected candidate. This test does not upload anything to App Store Connect.
+final class AppStoreScreenshotTests: XCTestCase {
+    override func setUpWithError() throws { continueAfterFailure = false }
+
+    private func launch() -> XCUIApplication {
+        let app = XCUIApplication()
+        app.launchEnvironment["TRESFORT_UI_FIXTURE"] = "app-store"
+        app.launchArguments = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US",
+                               "-restAudioCuesEnabled", "NO"]
+        app.launch()
+        XCTAssertTrue(app.tabBars.buttons["Today"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["START WORKOUT"].waitForExistence(timeout: 10))
+        XCTAssertFalse(app.staticTexts["fixture.scenario"].exists)
+        return app
+    }
+
+    private func capture(_ name: String) {
+        // A freshly created iOS 26 simulator can announce Apple Intelligence.
+        // Wait for that transient banner to disappear. Swiping its text can
+        // open Settings, so capture must also require the app in foreground.
+        let banner = XCUIApplication(bundleIdentifier: "com.apple.springboard")
+            .staticTexts["Ready for Apple Intelligence"]
+        if banner.exists {
+            let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: banner)
+            XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 15), .completed)
+        }
+        XCTAssertEqual(XCUIApplication().state, .runningForeground)
+        let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
+        attachment.name = "app-store-\(name)"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func tap(_ element: XCUIElement, in app: XCUIApplication) {
+        XCTAssertTrue(element.waitForExistence(timeout: 5))
+        for _ in 0..<5 where !element.isHittable { app.swipeUp() }
+        XCTAssertTrue(element.isHittable)
+        element.tap()
+    }
+
+    func testCaptureTodayWorkoutsAndHistory() {
+        let app = launch()
+        capture("01-today")
+        tap(app.buttons["Workout options"], in: app)
+        tap(app.buttons["Workouts"], in: app)
+        XCTAssertTrue(app.navigationBars["Workouts"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["Strength A"].exists)
+        capture("03-workouts")
+        tap(app.navigationBars["Workouts"].buttons["Done"], in: app)
+        tap(app.tabBars.buttons["History"], in: app)
+        XCTAssertTrue(app.segmentedControls.buttons["Exercises"].waitForExistence(timeout: 5))
+        capture("04-history")
+    }
+
+    func testCaptureRunnerAndFeedback() {
+        let app = launch()
+        tap(app.buttons["START WORKOUT"], in: app)
+        let log = app.buttons["LOG SET 1"]
+        XCTAssertTrue(log.waitForExistence(timeout: 5))
+        // The real runner scrolls under the translucent tab bar. Frame the
+        // capture with its primary action fully above the bar. Base the drag
+        // on its overlap so the same journey also works on CI's smaller phone.
+        for _ in 0..<3 where log.frame.maxY >= app.tabBars.firstMatch.frame.minY - 12 {
+            let overlap = log.frame.maxY - (app.tabBars.firstMatch.frame.minY - 24)
+            let distance = min(0.25, max(0.05, overlap / app.frame.height + 0.02))
+            app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.70))
+                .press(forDuration: 0.05, thenDragTo:
+                    app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.70 - distance)),
+                       withVelocity: .slow, thenHoldForDuration: 0.3)
+        }
+        XCTAssertLessThan(log.frame.maxY, app.tabBars.firstMatch.frame.minY - 12)
+        capture("02-runner")
+        tap(app.buttons["Workout options"], in: app)
+        tap(app.buttons["End workout"], in: app)
+        XCTAssertTrue(app.textViews["feedback.note"].waitForExistence(timeout: 5))
+        tap(app.textViews["feedback.note"], in: app)
+        app.textViews["feedback.note"].typeText("Steady reps today. Keep this weight next time.")
+        if app.buttons["Done"].isHittable { app.buttons["Done"].tap() }
+        XCTAssertEqual(app.textViews["feedback.note"].value as? String,
+                       "Steady reps today. Keep this weight next time.")
+        capture("05-feedback")
+    }
+}

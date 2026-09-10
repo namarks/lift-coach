@@ -23,6 +23,7 @@ class VerifyIOSTests(unittest.TestCase):
         (self.root / 'bin' / 'python3').symlink_to(Path(sys.executable).resolve())
         (self.root / 'ios' / 'project.yml').write_text('name: Test\n')
         shutil.copy(SCRIPT, self.root / 'scripts' / SCRIPT.name)
+        shutil.copy(SCRIPT.parent / 'ios_sources.py', self.root / 'scripts' / 'ios_sources.py')
         mock = '''#!/usr/bin/env python3
 import json, os, pathlib, sys
 name = pathlib.Path(sys.argv[0]).name

@@ -130,6 +130,7 @@ jobs:
       - name: Verification command failure and cleanup checks
         run: |
           python3 test/verify-ios.test.py
+          python3 -B -O test/app-store-assets.test.py
           python3 -B test/ci-ios-scope.test.py
           ruby test/submit-for-review.test.rb
 
