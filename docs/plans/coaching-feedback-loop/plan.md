@@ -138,7 +138,9 @@ follow-up and do not block P1 repository delivery.
   actor/reason values remain canonical; missing rationale is explicitly absent.
   No new feed, mutation API, schema, background notification or stored audio.
   Older history responses still decode and retain direct version comparison.
-  Recent-history reads reject superseded requests and account/plan changes;
+  Recent-history reads require the exact plan version from the single state
+  pull and reject superseded requests and account/plan changes. A newer history
+  response stays undisplayed and undismissible until state refresh catches up;
   read failures do not replace workout sync errors or block training.
 - P1 local verification (2026-09-09): typecheck, plan graph, verification-script
   checks and all 908 backend tests (62 files) passed. All 423 iOS unit tests,

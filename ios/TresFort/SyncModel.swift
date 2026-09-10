@@ -5243,7 +5243,7 @@ final class SyncModel: ObservableObject {
     var recentPlanChanges: [PlanHistoryItem] {
         guard canInitiateBoundFeatureAction, let plan,
               let history = recentPlanHistory, history.plan_id == plan.id,
-              history.current_version >= plan.version else { return [] }
+              history.current_version == plan.version else { return [] }
         let through = PlanChangeDismissalStore.load(userID: accountID, planID: plan.id, defaults: defaults)
         return history.items.filter { $0.version > through }
     }
@@ -5269,9 +5269,9 @@ final class SyncModel: ObservableObject {
             let response = try await routineEditingAPI.getPlanHistory(limit: 5, beforeVersion: nil, jwt: jwt)
             guard canInitiateBoundFeatureAction, !Task.isCancelled, planHistoryRequest == request,
                   plan?.id == requestedPlan.id, plan?.version == requestedPlan.version else { return }
-            guard response.plan_id == requestedPlan.id, response.current_version >= requestedPlan.version else {
+            guard response.plan_id == requestedPlan.id, response.current_version == requestedPlan.version else {
                 recentPlanHistory = nil
-                planChangesError = "Workout history changed. Try again."
+                planChangesError = "Your plan changed. Refresh to see recent changes."
                 return
             }
             recentPlanHistory = response

@@ -79,8 +79,15 @@ struct PlanHistoryView: View {
                     Section {
                         Text("All plan changes, including dismissed changes, stay here. Compare a saved version with your current plan before restoring it.")
                             .font(.caption).foregroundStyle(Theme.muted)
-                        Button("Correct current workouts") { showEditor = true }
-                            .accessibilityIdentifier("planHistory.correct")
+                        Button("Correct current workouts") {
+                            Task {
+                                await sync.load()
+                                if let error = sync.loadError { errorMessage = error }
+                                else { showEditor = true }
+                            }
+                        }
+                        .disabled(sync.isLoading || sync.isRoutineMutationInFlight)
+                        .accessibilityIdentifier("planHistory.correct")
                     }
                     comparisonContent.id("comparison")
                     capturedVersionsContent

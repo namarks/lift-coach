@@ -4035,6 +4035,13 @@ final class SetOutboxTests: XCTestCase {
                                        created_at: 4, summary: nil)] + items, next_before_version: nil)
         }
         await reopened.refreshRecentPlanChanges()
+        XCTAssertTrue(reopened.recentPlanChanges.isEmpty)
+        XCTAssertNotNil(reopened.planChangesError)
+        reopened.dismissRecentPlanChanges(through: 4, planID: "plan-a")
+        XCTAssertEqual(PlanChangeDismissalStore.load(userID: auth.userID, planID: "plan-a", defaults: defaults), 3)
+        reopened.replaceState(with: state(session: session(status: "planned", attempt: 0), sets: [],
+            workouts: [day(with: [exercise()])], planVersion: 4))
+        await reopened.refreshRecentPlanChanges()
         XCTAssertEqual(reopened.recentPlanChanges.map(\.version), [4])
         // A tap rendered before the newer response can dismiss only what it showed.
         reopened.dismissRecentPlanChanges(through: 3, planID: "plan-a")

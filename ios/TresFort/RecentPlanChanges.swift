@@ -79,8 +79,13 @@ struct RecentPlanChanges: View {
             } else if let error = sync.planChangesError {
                 HStack {
                     Text(error).font(.caption).foregroundStyle(Theme.muted)
-                    Button("Try again") { Task { await sync.refreshRecentPlanChanges() } }
-                        .frame(minHeight: 44)
+                    Button("Refresh") {
+                        Task {
+                            await sync.load()
+                            await sync.refreshRecentPlanChanges()
+                        }
+                    }
+                    .frame(minHeight: 44)
                 }.padding(.horizontal, 14)
             }
         }
