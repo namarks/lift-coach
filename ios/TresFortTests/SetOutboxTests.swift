@@ -4002,6 +4002,99 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(routineAPI.restoreCalls, 1)
     }
 
+    func testRecentChangesDismissalPersistsWithoutRemovingEitherActorFromHistory() async throws {
+        let defaults = defaults()
+        let api = SetRoutineEditingAPIStub()
+        let items = [
+            PlanHistoryItem(version: 3, actor: "ios", operation: "update_exercise", reason: "Manual correction",
+                            created_at: 3, summary: nil, previous_version: 2, affected: ["A · Squat"]),
+            PlanHistoryItem(version: 2, actor: "mcp", operation: "update_exercise", reason: "Feedback",
+                            created_at: 2, summary: nil, previous_version: 1, affected: ["A · Squat"]),
+        ]
+        api.historyHandler = { _, _, _ in
+            PlanHistoryResponse(plan_id: "plan-a", current_version: 3, items: items, next_before_version: nil)
+        }
+        let auth = retainedAuth(defaults: defaults)
+        let model = SyncModel(auth: auth, routineEditingAPI: api, defaults: defaults)
+        let saved = state(session: session(status: "planned", attempt: 0), sets: [],
+                          workouts: [day(with: [exercise()])], planVersion: 3)
+        model.replaceState(with: saved)
+        await model.refreshRecentPlanChanges()
+        XCTAssertEqual(model.recentPlanChanges.map(\.actor), ["ios", "mcp"])
+        model.dismissRecentPlanChanges(through: 3, planID: "plan-a")
+        XCTAssertTrue(model.recentPlanChanges.isEmpty)
+        let reopened = SyncModel(auth: auth, routineEditingAPI: api, defaults: defaults)
+        reopened.replaceState(with: saved)
+        await reopened.refreshRecentPlanChanges()
+        XCTAssertTrue(reopened.recentPlanChanges.isEmpty)
+        let history = await reopened.loadPlanHistory()
+        XCTAssertEqual(history?.items, items)
+        api.historyHandler = { _, _, _ in
+            PlanHistoryResponse(plan_id: "plan-a", current_version: 4,
+                items: [PlanHistoryItem(version: 4, actor: "mcp", operation: "update_plan", reason: nil,
+                                       created_at: 4, summary: nil)] + items, next_before_version: nil)
+        }
+        await reopened.refreshRecentPlanChanges()
+        XCTAssertEqual(reopened.recentPlanChanges.map(\.version), [4])
+        // A tap rendered before the newer response can dismiss only what it showed.
+        reopened.dismissRecentPlanChanges(through: 3, planID: "plan-a")
+        XCTAssertEqual(reopened.recentPlanChanges.map(\.version), [4])
+        reopened.dismissRecentPlanChanges(through: 4, planID: "other-plan")
+        XCTAssertEqual(reopened.recentPlanChanges.map(\.version), [4])
+    }
+
+    func testRecentHistoryRejectsLateAccountAndPlanResponsesAndSeparatesReadFailure() async {
+        let defaults = defaults()
+        let auth = retainedAuth(defaults: defaults)
+        let api = SetRoutineEditingAPIStub()
+        let model = SyncModel(auth: auth, routineEditingAPI: api, defaults: defaults)
+        model.replaceState(with: state(session: session(status: "planned", attempt: 0), sets: [],
+                                       workouts: [day(with: [exercise()])]))
+        api.historyHandler = { _, _, _ in throw URLError(.notConnectedToInternet) }
+        await model.refreshRecentPlanChanges()
+        XCTAssertNotNil(model.planChangesError)
+        XCTAssertNil(model.loadError)
+        var response: CheckedContinuation<PlanHistoryResponse, Error>?
+        api.historyHandler = { _, _, _ in try await withCheckedThrowingContinuation { response = $0 } }
+        let request = Task { await model.refreshRecentPlanChanges() }
+        while response == nil { await Task.yield() }
+        model.plan = PlanTree(id: "different", name: "Other plan", version: 8, workouts: [], meta: nil)
+        response?.resume(returning: PlanHistoryResponse(plan_id: "plan-a", current_version: 1,
+            items: [], next_before_version: nil))
+        await request.value
+        XCTAssertNil(model.recentPlanHistory)
+        response = nil
+        let switched = Task { await model.refreshRecentPlanChanges() }
+        while response == nil { await Task.yield() }
+        auth.signOut()
+        response?.resume(returning: PlanHistoryResponse(plan_id: "different", current_version: 8,
+            items: [], next_before_version: nil))
+        await switched.value
+        XCTAssertNil(model.recentPlanHistory)
+        XCTAssertTrue(model.recentPlanChanges.isEmpty)
+    }
+
+    func testDismissalIsAccountAndPlanScopedMonotonicAndDeletedWithAccount() {
+        let defaults = defaults()
+        PlanChangeDismissalStore.dismiss(through: 8, userID: "one", planID: "plan", defaults: defaults)
+        PlanChangeDismissalStore.dismiss(through: 3, userID: "one", planID: "plan", defaults: defaults)
+        XCTAssertEqual(PlanChangeDismissalStore.load(userID: "one", planID: "plan", defaults: defaults), 8)
+        XCTAssertEqual(PlanChangeDismissalStore.load(userID: "two", planID: "plan", defaults: defaults), 0)
+        XCTAssertEqual(PlanChangeDismissalStore.load(userID: "one", planID: "other", defaults: defaults), 0)
+        AccountLocalState.clear(userID: "one", defaults: defaults)
+        XCTAssertEqual(PlanChangeDismissalStore.load(userID: "one", planID: "plan", defaults: defaults), 0)
+    }
+
+    func testLegacyHistoryDecodesWithoutInventingRationaleOrPredecessor() throws {
+        let item = try JSONDecoder().decode(PlanHistoryItem.self, from: Data(
+            #"{"version":5,"actor":"mcp","operation":"update_exercise","created_at":100}"#.utf8))
+        XCTAssertNil(item.previous_version)
+        XCTAssertNil(item.affected)
+        XCTAssertEqual(PlanHistoryPresentation.rationale(item), "No reason recorded.")
+        XCTAssertEqual(PlanHistoryPresentation.actor("mcp"), "Coach")
+        XCTAssertEqual(PlanHistoryPresentation.actor("ios"), "You")
+    }
+
     func testPlanHistoryPresentationUsesReadableValuesWithoutStoragePaths() {
         let change = PlanVersionChange(
             kind: "exercise", path: "days.day-a.exercises.slot-a.target_weight",

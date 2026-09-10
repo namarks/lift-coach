@@ -58,7 +58,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
       cancellation and interruption with synthetic recognition outcomes. Use
       current iPhones at normal text sizes. Neither a failed recording nor empty
       recognition output may block workout completion or erase existing feedback.
-- [ ] **P1 — Coaching changes are visible and correctable**
+- [x] **P1 — Coaching changes are visible and correctable**
   - Show recent plan changes in iOS with actor, time, concise rationale, and the
     affected day or exercise, using the canonical audit, note, and plan-history
     records rather than a parallel notification feed.
@@ -92,7 +92,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
 
 ## Execution frontier
 
-- P1
+- P2
 
 ## Dependencies
 
@@ -106,18 +106,50 @@ P0(b) reuses the completed [superset runner/editor integration](../completed/sup
 
 ## Next step
 
-**Now (@owner):** After a separately authorized Worker release and TestFlight
-build containing [PR #163](https://github.com/namarks/tres-fort/pull/163), perform
-the [physical iPhone feedback checks](device-verification.md). The owner
-explicitly deferred these checks until that build; they no longer block
-repository delivery. P0 implementation and automated verification are complete;
-delivery still requires exact-head review/CI, merge and integration verification
-under the existing authorization. Keep this workstream paused after P0; P1/P2
-need explicit activation. Production deployment and TestFlight distribution
-remain outside this goal.
+**Now (@owner):** P1 implementation and local verification are complete. Its
+repository delivery requires the P1 pull request's exact-head independent review,
+green CI, merge and integration evidence; the active delivery goal closes only
+after those gates. Keep P2 paused until explicitly activated. Production
+deployment, migrations and TestFlight distribution require separate authorization.
+
+The [physical iPhone feedback checks](device-verification.md) remain deferred to
+an eventual separately authorized build containing P0. They are a release
+follow-up and do not block P1 repository delivery.
 
 ## Notes / open questions
 
+- P1 activation (2026-09-09): live main and fetched `origin/main` both verified at
+  `4ec8a9ef43b377c76458f57f32cd94e9d63da4ef`, the merge of P0 PR #163.
+  GitHub confirms P0 merged with all configured checks green. Existing iOS
+  Workout history already lists actor/time/reason, pages versions, compares
+  snapshots and restores with reviewed plan/version and active-workout guards.
+  P1 closes discovery, affected-target summaries, and durable local dismissal
+  with a permanent route back to the same history. Preserve P0 privacy/recovery.
+- P1 implementation milestone (2026-09-09): Today surfaces the newest canonical
+  change with Coach/You attribution, time, recorded reason and named affected
+  targets. Dismissal persists only an account/plan-scoped version marker and is
+  cleared on account deletion; it never removes history. Workout history remains
+  reachable from Today and Workouts, including dismissed entries, correction
+  controls and comparison of a change's predecessor with the current plan before
+  the existing full-plan restore. Restore retains the reviewed plan/version,
+  active-workout and successful-acknowledgement contracts.
+- History adds optional `previous_version` and `affected` fields derived from the
+  same snapshot comparison that supplies its summary. Existing audit/note-derived
+  actor/reason values remain canonical; missing rationale is explicitly absent.
+  No new feed, mutation API, schema, background notification or stored audio.
+  Older history responses still decode and retain direct version comparison.
+  Recent-history reads reject superseded requests and account/plan changes;
+  read failures do not replace workout sync errors or block training.
+- P1 local verification (2026-09-09): typecheck, plan graph, verification-script
+  checks and all 908 backend tests (62 files) passed. All 423 iOS unit tests,
+  both P1 iPhone 17 simulator journeys and all five P0 feedback UI journeys passed.
+  The P1 path covers visibility, dismissal, relaunch, both actors in revisited
+  history, predecessor comparison, restore as a new visible version and reaching
+  the existing editor. Additional deterministic checks cover legacy decoding,
+  account/plan scoping and deletion, late requests, read failure, concurrent
+  history writes, and dismissal pinned to the rendered version. Both P1 journeys
+  now run in CI smoke coverage. These are synthetic simulator/D1 checks, not
+  production, physical microphone or on-device recognition evidence.
 - P0(a) implementation milestone (2026-09-09): session notes/fatigue now travel
   through private exercise history and both brief paths. Focused real-D1/MCP
   checks passed 20/20, including skipped/in-progress latest sessions and group
@@ -138,8 +170,9 @@ remain outside this goal.
   approved feedback before any sets, relaunch, stale app views and first-set
   session binding. Independent review cleared `6a2606a` against main `fd560e4`,
   and every configured check passed in [CI run 34391201635](https://github.com/namarks/tres-fort/actions/runs/34391201635).
-  The final owner-decision/cleanup commit still requires fresh exact-head
-  review and CI before merge; PR #163 carries that live evidence.
+  The final owner-decision/cleanup head `e7bd91f` subsequently passed fresh
+  review and CI and merged through PR #163 as `4ec8a9e`. Main integration CI
+  passed in [run 34398139340](https://github.com/namarks/tres-fort/actions/runs/34398139340).
 - Release ordering after separate owner authorization: deploy the compatible
   Worker before distributing the iOS build that sends `expected_feedback`.
   Older Workers can reject that new field. No schema migration is required;
