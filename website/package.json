@@ -1,0 +1,11 @@
+{
+  "name": "tres-fort-website",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node dev.mjs",
+    "test": "node --test test/*.test.mjs"
+  }
+}
