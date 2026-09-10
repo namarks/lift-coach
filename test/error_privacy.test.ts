@@ -85,6 +85,26 @@ describe('unexpected error privacy', () => {
     await waitOnExecutionContext(context);
   });
 
+  it('tells MCP callers to correct contradictory workout aliases without recording a mutation', async () => {
+    await devJwt();
+    const before = await env.DB.prepare('SELECT (SELECT COUNT(*) FROM plans) AS plans, (SELECT COUNT(*) FROM audit_log) AS audits, (SELECT COUNT(*) FROM notes) AS notes').first();
+    const captured = logs(), context = createExecutionContext();
+    const response = await worker.fetch(new Request(`${BASE}/mcp`, {
+      method: 'POST', headers: { Authorization: 'Bearer test-mcp-token', 'content-type': 'application/json' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: {
+        name: 'update_plan', arguments: { name: PRIVATE, workouts: [{ name: PRIVATE, exercises: [] }], days: [] },
+      } }),
+    }), env, context);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ jsonrpc: '2.0', id: 2, result: {
+      content: [{ type: 'text', text: 'error: conflicting_workout_fields' }], isError: true,
+    } });
+    expect(captured.error).not.toHaveBeenCalled();
+    captured.assertPrivate();
+    await waitOnExecutionContext(context);
+    expect(await env.DB.prepare('SELECT (SELECT COUNT(*) FROM plans) AS plans, (SELECT COUNT(*) FROM audit_log) AS audits, (SELECT COUNT(*) FROM notes) AS notes').first()).toEqual(before);
+  });
+
   it('keeps a failed cron marked failed without exposing the original platform exception', async () => {
     const captured = logs();
     const pending: Promise<unknown>[] = [];
@@ -115,5 +135,6 @@ describe('unexpected error privacy', () => {
     expect(publicToolErrorCode({ message: 'no_active_plan' })).toBeNull();
     expect(publicToolErrorCode(new Error('no_active_plan'))).toBe('no_active_plan');
     expect(publicToolErrorCode(new Error('unknown_exercise:' + PRIVATE))).toBe('unknown_exercise');
+    expect(publicToolErrorCode(new Error('conflicting_workout_fields:' + PRIVATE))).toBe('conflicting_workout_fields');
   });
 });
