@@ -16,6 +16,9 @@ both builds; deployment of the website does not deploy the app Worker.
 
 Disclosures were checked against source at `69729d6`:
 
+- `ios/TresFort/OnDeviceFeedbackTranscriber.swift`, `WorkoutFeedback.swift`,
+  and `WorkoutFeedbackView.swift`: optional on-device speech recognition,
+  discarded audio, and only explicitly saved text entering training records.
 - `ios/TresFort/Health/HealthKitSyncModel.swift`: permissions, on-device
   heart-rate summary, uploaded workout fields, disconnect preserving imports.
 - `ios/TresFort/Health/AppleHealthSettingsView.swift` and `src/db.ts` group
