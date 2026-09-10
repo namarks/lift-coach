@@ -24,8 +24,8 @@ extension APIClient {
 
     /// PATCH /api/me/integrations/intervals — connect or disconnect.
     /// Pass both args non-nil to connect; pass both nil to disconnect.
-    /// Returns `{ connected: bool }`. Side effect: backend starts polling
-    /// (or stops) on the next sync tick.
+    /// Acknowledges credential storage separately from the initial import.
+    /// Older Workers may omit the additive generation/freshness fields.
     func setIntervalsCredentials(apiKey: String?,
                                  athleteID: String?,
                                  jwt: String) async throws -> IntervalsConnectResult {
@@ -41,6 +41,20 @@ extension APIClient {
 
     struct IntervalsConnectResult: Decodable, Equatable {
         let connected: Bool
+        let credential_generation: Int?
+        let activity_sync_after: Int?
+
+        init(connected: Bool, credential_generation: Int? = nil,
+             activity_sync_after: Int? = nil) {
+            self.connected = connected
+            self.credential_generation = credential_generation
+            self.activity_sync_after = activity_sync_after
+        }
+    }
+
+    func syncIntervals(expectedGeneration: Int, jwt: String) async throws -> IntervalsImportResult {
+        try await post("api/me/integrations/intervals/sync",
+            body: ["expected_generation": expectedGeneration], jwt: jwt)
     }
 
     // MARK: - M3: Claude MCP connect code

@@ -1,195 +1,129 @@
 import SwiftUI
 
-/// Form for connecting/disconnecting the user's intervals.icu account
-/// (M1). Writes go through PATCH /api/me/integrations/intervals; the
-/// "Connected" state is read from the server snapshot (GET /api/me, via
-/// `groupModel.me`) OR the local post-PATCH mirror — so creds set
-/// elsewhere (env/MCP-seeded) still show as connected.
+/// Server connection status and recoverable recent-activity reconciliation.
 struct IntervalsSettingsView: View {
     @ObservedObject var groupModel: GroupModel
-
-    @State private var apiKey: String = ""
-    @State private var athleteID: String = ""
-    @State private var saving = false
+    @State private var apiKey = ""
+    @State private var athleteID = ""
     @State private var errorMessage: String?
-    @State private var oauthRunning = false
-    @State private var oauthError: String?
 
-    /// "Connected" comes from the SERVER (GET /api/me) OR the local mirror
-    /// (set when you connect from this device). Server-truth is what fixes
-    /// the old false "Not connected" for env/MCP-seeded creds.
-    private var isConnected: Bool {
-        groupModel.intervalsConnection != nil || groupModel.me?.intervals.connected == true
-    }
-    private var athleteID_: String? {
-        groupModel.intervalsConnection?.athlete_id ?? groupModel.me?.intervals.athlete_id
+    private var status: MeProfile.IntervalsStatus? { groupModel.intervalsStatus }
+    private var connected: Bool { status?.connected == true }
+    private var needsReauth: Bool { status?.needs_reauth == true }
+    private var unavailable: Bool { groupModel.intervalsStatusUnavailable || status == nil }
+    private var retry: Bool { status?.sync_pending == true || groupModel.intervalsImportStatus == .retry }
+
+    private var title: String {
+        if groupModel.intervalsBusy { return "Updating connection…" }
+        if unavailable { return "Check connection status" }
+        if needsReauth { return "Reconnect needed" }
+        if connected { return retry ? "Connected · Sync pending" : "Connected" }
+        return "Not connected"
     }
 
     var body: some View {
         Form {
             Section {
-                if isConnected {
-                    HStack(spacing: 10) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.green)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Connected").font(.headline)
-                            if let aid = athleteID_ {
-                                Text("Athlete \(aid)")
-                                    .font(.footnote)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
+                HStack(spacing: 10) {
+                    if groupModel.intervalsBusy { ProgressView() }
+                    else {
+                        Image(systemName: connected && !retry && !unavailable
+                              ? "checkmark.circle.fill" : "arrow.triangle.2.circlepath")
+                            .foregroundStyle(connected && !retry && !unavailable ? .green : .secondary)
                     }
-                    // Only known when connected from THIS device.
-                    if let conn = groupModel.intervalsConnection {
-                        LabeledContent("Connected at",
-                                       value: relative(epochMs: conn.connected_at))
+                    Text(title).font(.headline).accessibilityIdentifier("intervals.status")
+                }
+                if groupModel.intervalsBusy {
+                    Text("Connecting and importing your recent activities…").font(.footnote)
+                } else if unavailable {
+                    Text("Refresh to check the latest connection and import status.").font(.footnote)
+                    Button("Refresh status") { Task { await groupModel.refreshMe() } }
+                        .accessibilityIdentifier("intervals.refresh")
+                } else if needsReauth {
+                    Text("Intervals.icu needs you to reconnect before new activities can sync.").font(.footnote)
+                } else if connected {
+                    if retry {
+                        Text("Your connection is saved. Recent activities haven’t finished importing. You can retry without entering your credentials again.")
+                            .font(.footnote)
+                    } else if let lastSync = status?.last_synced_at {
+                        LabeledContent("Last synced", value: relative(epochMs: lastSync))
                     }
-                } else {
-                    HStack(spacing: 10) {
-                        Image(systemName: "exclamationmark.circle")
-                            .foregroundStyle(.secondary)
-                        Text("Not connected").font(.headline)
+                    Button(retry ? "Retry sync" : "Sync recent activities") {
+                        errorMessage = nil
+                        Task { await groupModel.retryIntervalsSync() }
                     }
+                    .accessibilityIdentifier("intervals.retry")
+                }
+                if let aid = status?.athlete_id, !unavailable {
+                    Text("Athlete \(aid)").font(.footnote).foregroundStyle(.secondary)
                 }
             } header: {
                 Text("intervals.icu")
             } footer: {
-                Text("We poll intervals.icu in the background for your planned rides and completed activities. Friends in your group see them in the feed.")
+                Text("Connecting imports your last 90 days of activity. Background updates keep planned rides and completed activities current. Disconnecting or reconnecting keeps your imported history.")
             }
 
             Section {
-                Button {
-                    connectOAuth()
-                } label: {
-                    HStack {
-                        Spacer()
-                        if oauthRunning {
-                            ProgressView()
-                        } else {
-                            Text(isConnected ? "Reconnect with intervals.icu"
-                                             : "Connect with intervals.icu")
-                                .bold()
-                        }
-                        Spacer()
+                Button(connected || needsReauth ? "Reconnect with intervals.icu" : "Connect with intervals.icu") {
+                    errorMessage = nil
+                    Task {
+                        do { _ = try await groupModel.connectIntervalsViaOAuth() }
+                        catch { errorMessage = "Couldn’t connect to intervals.icu. Try again, or use an API key below." }
                     }
                 }
-                .disabled(oauthRunning || saving)
-                if let oauthError {
-                    Text(oauthError)
-                        .foregroundStyle(.red)
-                        .font(.footnote)
-                }
+                .accessibilityIdentifier("intervals.oauth")
             } footer: {
-                Text("One-tap: sign in to intervals.icu and approve. Or enter an API key below.")
+                Text("Sign in to intervals.icu and approve, or enter an API key below.")
             }
+            .disabled(groupModel.intervalsBusy)
 
-            Section {
-                SecureField(isConnected ? "New API key" : "API key",
-                            text: $apiKey)
-                    .textInputAutocapitalization(.never)
-                    .disableAutocorrection(true)
+            Section("API key") {
+                SecureField("API key", text: $apiKey)
+                    .textInputAutocapitalization(.never).disableAutocorrection(true)
+                    .accessibilityIdentifier("intervals.apiKey")
                 TextField("Athlete ID (optional)", text: $athleteID)
-                    .textInputAutocapitalization(.never)
-                    .disableAutocorrection(true)
-                Button {
-                    save()
-                } label: {
-                    HStack {
-                        Spacer()
-                        if saving {
-                            ProgressView()
-                        } else {
-                            Text(isConnected ? "Reconnect" : "Connect")
-                                .bold()
-                        }
-                        Spacer()
+                    .textInputAutocapitalization(.never).disableAutocorrection(true)
+                Button(connected || needsReauth ? "Reconnect" : "Connect") {
+                    errorMessage = nil
+                    let key = apiKey, athlete = athleteID
+                    Task {
+                        do {
+                            try await groupModel.setIntervalsCredentials(apiKey: key, athleteID: athlete)
+                            apiKey = ""
+                        } catch { errorMessage = "Couldn’t save the connection. Check your connection and try again." }
                     }
                 }
-                // Athlete ID optional (#1094): only the API key is required.
-                .disabled(apiKey.isEmpty || saving || oauthRunning)
-                if let errorMessage {
-                    Text(errorMessage)
-                        .foregroundStyle(.red)
-                        .font(.footnote)
-                }
-                Link(destination: URL(string: "https://intervals.icu/settings")!) {
-                    Label("Open intervals.icu settings", systemImage: "arrow.up.right.square")
-                }
-            } header: {
-                Text("Credentials")
-            } footer: {
-                Text("Find your API key under Settings → Developer. Your Athlete ID (like i123456) is in the address bar when you open your profile.")
+                .disabled(apiKey.isEmpty)
+                .accessibilityIdentifier("intervals.connect")
+                Link("Open intervals.icu settings", destination: URL(string: "https://intervals.icu/settings")!)
             }
+            .disabled(groupModel.intervalsBusy)
 
-            if isConnected {
+            if let errorMessage {
+                Section { Text(errorMessage).font(.footnote).foregroundStyle(.red) }
+            }
+            if connected || needsReauth {
                 Section {
-                    Button(role: .destructive) {
-                        disconnect()
-                    } label: {
-                        Text("Disconnect")
+                    Button("Disconnect", role: .destructive) {
+                        errorMessage = nil
+                        Task {
+                            do { try await groupModel.disconnectIntervals(); athleteID = "" }
+                            catch { errorMessage = "Couldn’t disconnect. Check your connection and try again." }
+                        }
                     }
+                    .disabled(groupModel.intervalsBusy)
+                    .accessibilityIdentifier("intervals.disconnect")
                 }
             }
         }
         .navigationTitle("Intervals.icu")
         .navigationBarTitleDisplayMode(.inline)
-    }
-
-    private func connectOAuth() {
-        oauthRunning = true
-        oauthError = nil
-        Task {
-            do {
-                // On success, connectIntervalsViaOAuth refreshes /api/me, so
-                // `isConnected` flips via groupModel.me. A dismissed sheet
-                // returns false → no-op (stay put). Errors surface below.
-                _ = try await groupModel.connectIntervalsViaOAuth()
-                oauthRunning = false
-            } catch {
-                oauthError = "Couldn't connect to intervals.icu. Try again, or use an API key below."
-                oauthRunning = false
-            }
-        }
-    }
-
-    private func save() {
-        saving = true
-        errorMessage = nil
-        let key = apiKey
-        let id = athleteID
-        Task {
-            do {
-                try await groupModel.setIntervalsCredentials(apiKey: key, athleteID: id)
-                apiKey = ""    // never persist the key in @State
-                saving = false
-            } catch {
-                errorMessage = error.localizedDescription
-                saving = false
-            }
-        }
-    }
-
-    private func disconnect() {
-        saving = true
-        errorMessage = nil
-        Task {
-            do {
-                try await groupModel.disconnectIntervals()
-                athleteID = ""
-                saving = false
-            } catch {
-                errorMessage = error.localizedDescription
-                saving = false
-            }
-        }
+        .task { await groupModel.refreshMe() }
     }
 
     private func relative(epochMs: Int) -> String {
-        let d = Date(timeIntervalSince1970: TimeInterval(epochMs) / 1000)
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .short
-        return f.localizedString(for: d, relativeTo: Date())
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter.localizedString(for: Date(timeIntervalSince1970: Double(epochMs) / 1000), relativeTo: Date())
     }
 }

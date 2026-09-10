@@ -285,11 +285,13 @@ struct ProfileView: View {
                     Image(systemName: "link").foregroundStyle(Theme.muted)
                     Text("Connections")
                     Spacer()
-                    if groupModel.me?.intervals.needs_reauth == true {
+                    if groupModel.intervalsStatusUnavailable || groupModel.intervalsStatus == nil {
+                        Text("Check status").font(.footnote).foregroundStyle(.secondary)
+                    } else if groupModel.intervalsStatus?.needs_reauth == true {
                         Text("Reconnect needed")
                             .font(.footnote).foregroundStyle(.orange)
-                    } else if groupModel.me?.intervals.connected == true {
-                        Text(groupModel.me?.intervals.athlete_id ?? "Connected")
+                    } else if groupModel.intervalsStatus?.connected == true {
+                        Text(groupModel.intervalsStatus?.athlete_id ?? "Connected")
                             .font(.footnote).foregroundStyle(.secondary)
                     } else {
                         Text("Not connected")
@@ -297,6 +299,7 @@ struct ProfileView: View {
                     }
                 }
             }
+            .accessibilityIdentifier("profile.connections")
         }
     }
 

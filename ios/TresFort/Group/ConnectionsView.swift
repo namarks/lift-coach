@@ -13,13 +13,13 @@ struct ConnectionsView: View {
     @ObservedObject var health: HealthKitSyncModel
 
     private var intervalsConnected: Bool {
-        groupModel.intervalsConnection != nil || groupModel.me?.intervals.connected == true
+        groupModel.intervalsStatus?.connected == true
     }
     private var intervalsNeedsReauth: Bool {
-        groupModel.me?.intervals.needs_reauth == true
+        groupModel.intervalsStatus?.needs_reauth == true
     }
     private var athleteID: String? {
-        groupModel.intervalsConnection?.athlete_id ?? groupModel.me?.intervals.athlete_id
+        groupModel.intervalsStatus?.athlete_id
     }
 
     var body: some View {
@@ -49,8 +49,13 @@ struct ConnectionsView: View {
                                     .foregroundStyle(Theme.accent)
                                     .clipShape(Capsule())
                             }
-                            if intervalsNeedsReauth {
+                            if groupModel.intervalsStatusUnavailable || groupModel.intervalsStatus == nil {
+                                Text("Check connection status").font(.footnote).foregroundStyle(.secondary)
+                            } else if intervalsNeedsReauth {
                                 Label("Reconnect needed", systemImage: "exclamationmark.circle")
+                                    .font(.footnote).foregroundStyle(.orange)
+                            } else if groupModel.intervalsStatus?.sync_pending == true {
+                                Label("Connected · Sync pending", systemImage: "arrow.clockwise")
                                     .font(.footnote).foregroundStyle(.orange)
                             } else if intervalsConnected {
                                 Label(athleteID.map { "Connected · \($0)" } ?? "Connected",
@@ -63,6 +68,7 @@ struct ConnectionsView: View {
                         }
                     }
                 }
+                .accessibilityIdentifier("connections.intervals")
             } header: {
                 Text("Recommended")
             } footer: {
