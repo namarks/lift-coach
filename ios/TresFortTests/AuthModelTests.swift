@@ -2083,11 +2083,12 @@ extension AuthModelTests {
         let h = LocalPersistenceTestHarness()
         addTeardownBlock { h.cleanup() }
         let local = h.open(), api = AuthAPIStub(), tokens = MemoryTokenStore()
+        let originalToken = sessionToken(for: "user-a")
         let auth = AuthModel(api: api, tokenStore: tokens, defaults: local)
         XCTAssertTrue(auth.requestEntry(.invite("ABC234")))
         let original = try h.store.data(forKey: AuthModel.pendingEntryKey)
         h.faults.failWrites = true
-        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-a"),
+        api.authResult = .success(AuthResponse(jwt: originalToken,
             user: UserDTO(id: "user-a", display_name: nil, email: nil)))
         await auth.exchange(identityToken: "synthetic", fullName: nil)
         XCTAssertEqual(auth.userID, "user-a")
@@ -2098,7 +2099,7 @@ extension AuthModelTests {
             user: UserDTO(id: "user-b", display_name: nil, email: nil)))
         await auth.exchange(identityToken: "synthetic", fullName: nil)
         XCTAssertEqual(auth.userID, "user-a")
-        XCTAssertEqual(tokens.token, sessionToken(for: "user-a"))
+        XCTAssertEqual(tokens.token, originalToken)
         auth.signOut()
         XCTAssertEqual(auth.userID, "user-a")
         h.faults.failWrites = false

@@ -135,6 +135,15 @@ successful joining and workout completion. All 268 tested iOS source hashes
 matched. This proves the target defect and local recovery behavior; fresh remote
 CI must also pass before clearing the failed run's delivery gate.
 
+The subsequent [CI run 34513974066](https://github.com/namarks/tres-fort/actions/runs/34513974066)
+passed all 20 UI journeys, including invite retry. Its only failure among 483
+unit tests was an authentication assertion comparing a retained JWT to a newly
+generated token. The payloads had identical claims but different JSON key order.
+The test now retains the original fixture token and asserts those exact bytes
+survive the rejected account switch. All 72 authentication tests passed locally;
+all 268 tested iOS source hashes matched. The simulator file-protection skip
+remains explicit. Fresh independent review and CI must pass the corrected head.
+
 Unsigned Release-configuration verification at 17:21:39 UTC built for generic
 iOS with version 1.0, minimum iOS 17.0, iPhone-only device family and the widget
 extension. The bundled privacy manifest declares UserDefaults reason `CA92.1`;

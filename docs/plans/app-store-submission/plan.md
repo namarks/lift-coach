@@ -144,7 +144,13 @@ Preserve external release and publication gates.
   the undersized target. The button label now owns the full touch area. All
   eight onboarding journeys passed, including retry from the expanded area,
   group joining and workout completion; all 268 tested iOS source hashes match.
-  Fresh exact-head independent review and CI remain required for this follow-up.
+  [CI run 34513974066](https://github.com/namarks/tres-fort/actions/runs/34513974066)
+  passed all 20 UI journeys, including invite retry, but failed one of 483 unit
+  tests (one additional simulator protection skip). The assertion regenerated an
+  equivalent JWT whose JSON claims serialized in a different key order. It now
+  compares the retained token with the exact original fixture token. All 72
+  authentication tests passed locally, with all 268 tested iOS source hashes
+  matching. Fresh exact-head independent review and CI remain required.
   An unsigned Release build for generic iOS also passed: version 1.0, iPhone-only
   family, embedded widget and `CA92.1` manifest verified; the synthetic fixture
   switch was absent. This used the unreserved project build placeholder 29,
@@ -171,7 +177,7 @@ Preserve external release and publication gates.
   unapplied. Normal-browser checks successfully rendered both public marketing
   and privacy pages with support links; HTTP clients still returned 403.
   Mailbox delivery is untested. No production change was made.
-  A SELECT-only refresh at 17:47 UTC confirmed the same deployment and ledger
+  A SELECT-only refresh at 17:47–17:48 UTC confirmed the same deployment and ledger
   through `0045`, with zero rows written.
 - P2 draft screenshot preparation is isolated in `codex/app-store-screenshots`.
   Two UI capture journeys produced five opaque RGB 1320 × 2868 images through
