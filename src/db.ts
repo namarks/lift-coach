@@ -1,5 +1,6 @@
 import { shareWorkoutSchemaCache, workoutDB } from './workoutSchema';
 import { validActivitySourceTime } from './activityTime';
+import { diagnosticErrorType } from './errors';
 // Service layer: all D1 access goes through here so REST (now) and MCP
 // (milestone b) share identical behavior. Timestamps are epoch-ms integers.
 import { parseRunnerTargets, summarizeWorkout, type SummaryExercise, type SummarySet, type RunnerTargetSnapshot, type WorkoutSummary } from './workoutSummary';
@@ -9718,7 +9719,7 @@ export async function reconcileIntervalsConnection(
     return { status: result.status === 'ok' ? 'synced' : 'retry', connection };
   } catch (error) {
     console.warn({ event: 'intervals_connection_import_failed',
-      error_type: error instanceof Error ? error.name : 'unknown' });
+      error_type: diagnosticErrorType(error) });
     return { status: 'retry', connection: null };
   }
 }

@@ -9,6 +9,7 @@ import { webhookRoutes } from './routes/webhooks';
 import { mcpRoutes } from './mcp';
 import { oauthRoutes } from './oauth';
 import type { Fetcher } from './intervals';
+import { diagnosticErrorType, internalErrorResponse, logUnexpectedError } from './errors';
 import {
   ensureOwnerUser,
   observeD1Usage,
@@ -32,9 +33,9 @@ app.route('/api', apiRoutes);
 app.route('/webhooks', webhookRoutes); // POST /webhooks/intervals (intervals.icu push)
 app.route('/mcp', mcpRoutes);
 
-app.onError((err, c) => {
-  console.error('unhandled', err);
-  return c.json({ error: 'internal', message: err.message }, 500);
+app.onError((err) => {
+  logUnexpectedError('http', err);
+  return internalErrorResponse();
 });
 
 app.notFound((c) => c.json({ error: 'not_found' }, 404));
@@ -51,16 +52,23 @@ async function fetch(
       : request.method === 'GET' && pathname === '/api/me'
         ? 'GET /api/me'
         : null;
-  if (!operation) return app.fetch(request, env, ctx);
+  try {
+    if (!operation) return await app.fetch(request, env, ctx);
 
-  // Clone the bindings object for this invocation rather than mutating the
-  // shared env. This lets the collector see auth middleware and route queries.
-  return observeD1Usage(
-    env.DB,
-    operation,
-    async (db) => app.fetch(request, { ...env, DB: db }, ctx),
-    (response) => (response.status >= 500 ? 'error' : 'ok'),
-  );
+    // Clone the bindings object for this invocation rather than mutating the
+    // shared env. This lets the collector see auth middleware and route queries.
+    return await observeD1Usage(
+      env.DB,
+      operation,
+      async (db) => app.fetch(request, { ...env, DB: db }, ctx),
+      (response) => (response.status >= 500 ? 'error' : 'ok'),
+    );
+  } catch (error: unknown) {
+    // Hono's onError handles Error instances. A non-Error rejection must not
+    // escape this last boundary into a raw platform exception log either.
+    logUnexpectedError('http', error);
+    return internalErrorResponse();
+  }
 }
 
 const CRON_FRESHNESS_MS = 2 * 60 * 60 * 1000;
@@ -144,7 +152,7 @@ export async function runIntervalsCron(
           console.error({
             event: 'intervals_cron_member_sync_failed',
             cache: 'events',
-            error_type: error instanceof Error ? error.name : 'unknown',
+            error_type: diagnosticErrorType(error),
           });
         }
       }
@@ -173,7 +181,7 @@ export async function runIntervalsCron(
           console.error({
             event: 'intervals_cron_member_sync_failed',
             cache: 'activities',
-            error_type: error instanceof Error ? error.name : 'unknown',
+            error_type: diagnosticErrorType(error),
           });
         }
       }
@@ -210,7 +218,12 @@ async function scheduled(
       'cron tick',
       (db) => runIntervalsCron(db, env, event.scheduledTime),
       (result) => (result.failed ? 'error' : 'ok'),
-    ),
+    ).catch((error: unknown) => {
+      logUnexpectedError('scheduled', error);
+      // Preserve the failed-tick signal without giving the platform the
+      // original Error, message, stack or cause to retain in exception logs.
+      throw new Error('Scheduled task failed');
+    }),
   );
 }
 

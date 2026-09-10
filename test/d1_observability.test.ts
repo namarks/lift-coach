@@ -214,7 +214,7 @@ describe('D1 usage observability', () => {
     expect(log.rows_written).toBe(0);
   });
 
-  it('marks a handled GET /api/me 500 as an error without changing the response', async () => {
+  it('marks a handled GET /api/me 500 as an error with a generic response', async () => {
     const jwt = await devJwt();
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await expectOneUsageLog(
@@ -231,7 +231,7 @@ describe('D1 usage observability', () => {
         expect(response.status).toBe(500);
         expect(await response.json()).toEqual({
           error: 'internal',
-          message: 'forced D1 failure',
+          message: 'Something went wrong. Please try again.',
         });
         expect(errorSpy).toHaveBeenCalledOnce();
       },
@@ -263,8 +263,9 @@ describe('D1 usage observability', () => {
     expect(log.rows_written).toBe(0);
   });
 
-  it('marks an MCP get_history tool isError result as an error without changing it', async () => {
+  it('marks an MCP get_history failure as an error without exposing internals', async () => {
     await devJwt();
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
     await expectOneUsageLog(
       'MCP get_history',
       async () => {
@@ -291,7 +292,7 @@ describe('D1 usage observability', () => {
         }>();
         expect(response.status).toBe(200);
         expect(body.result.isError).toBe(true);
-        expect(body.result.content[0]?.text).toContain('forced D1 failure');
+        expect(body.result.content[0]?.text).toBe('error: internal. Check current state before retrying a write.');
       },
       'error',
     );
