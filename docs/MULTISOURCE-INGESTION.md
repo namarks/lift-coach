@@ -1,6 +1,14 @@
 # DESIGN: Direct Multi-Source Activity Ingestion
 
-**Status:** Proposal + in-progress build · **Scope:** backend (Worker + D1) + iOS · **Companion to:** `docs/DESIGN.md`
+**Status:** Historical proposal with implementation notes · **Scope:** backend (Worker + D1) + iOS · **Companion to:** `docs/DESIGN.md`
+
+Current work is tracked in [Activity Integration Integrity](plans/activity-integration-integrity/plan.md).
+The proposal and older phase notes below are historical, including their pending
+HealthKit UI, group-sharing and dedup items; those paths now exist in the repository.
+The P0 contract in [`DESIGN.md`](DESIGN.md) adds conservative native/HealthKit
+strength matching and durable source timing with migration `0046`. It retains the
+existing Intervals/HealthKit rule. Repository delivery is separate from migration,
+Worker deployment and client rollout; provider expansion below remains a proposal.
 
 > ## Implementation status (kept current as we build)
 >

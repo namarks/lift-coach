@@ -6,6 +6,7 @@ import { requireAppJwt } from '../auth';
 import { planForCapabilities, readCapabilities } from '../exerciseGroupViews';
 import { isGroupId } from '../exerciseGroups';
 import { appleProviderConfig } from '../apple';
+import { validActivitySourceTime } from '../activityTime';
 import {
   accountDeletionContinuationMatches,
   addWorkoutAtVersion,
@@ -1196,6 +1197,8 @@ apiRoutes.post('/activities/healthkit', async (c) => {
     id?: string;
     date?: string;
     start_date_local_ms?: number | null;
+    start_date_utc_ms?: number | null;
+    source_timezone?: string | null;
     kind?: string;
     name?: string | null;
     moving_time_sec?: number | null;
@@ -1231,10 +1234,15 @@ apiRoutes.post('/activities/healthkit', async (c) => {
   if (!healthKitDateMatchesStart(b.date, startDateLocalMs)) {
     return c.json(workoutWire({ error: 'invalid_start_date' }), 400);
   }
+  if (!validActivitySourceTime(b.start_date_utc_ms, b.source_timezone, b.date, startDateLocalMs)) {
+    return c.json(workoutWire({ error: 'invalid_source_time' }), 400);
+  }
   const row = await upsertHealthKitActivity(c.env.DB, c.get('userId'), {
     id: b.id,
     date: b.date,
     start_date_local_ms: startDateLocalMs,
+    start_date_utc_ms: b.start_date_utc_ms ?? null,
+    source_timezone: b.source_timezone ?? null,
     kind: b.kind,
     name: typeof b.name === 'string' && b.name.length > 0 ? b.name : null,
     moving_time_sec: intOrNull(b.moving_time_sec),

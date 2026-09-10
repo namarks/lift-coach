@@ -304,6 +304,9 @@ export interface ExternalActivityRow {
   user_id: string;
   source: string; // 'intervals' | 'healthkit' | … (migration 0027: multi-source)
   external_id: string;
+  start_date_local_ms?: number | null;
+  start_date_utc_ms?: number | null;
+  source_timezone?: string | null;
   date: string; // YYYY-MM-DD from start_date_local, verbatim
   kind: string; // ride|run|swim|other
   name: string | null;
@@ -323,7 +326,7 @@ export interface ExternalActivityRow {
   deleted_at: number | null;
   // Cross-source dedup (migration 0027). canonical=1 → surface this row;
   // 0 → a deduped duplicate kept for provenance. duplicate_of points a
-  // non-canonical row at the canonical one it duplicates.
+  // non-canonical row at an external activity or `session:<native UUID>`.
   canonical: number; // 0 | 1
   duplicate_of: string | null;
 }
@@ -334,6 +337,8 @@ export interface CompletedActivity {
   date: string; // start_date_local YYYY-MM-DD verbatim
   /** start_date_local parsed to epoch-ms (treated as UTC for ordering only). */
   start_date_local_ms: number | null;
+  /** Actual source instant, only when the provider supplies an explicit zone. */
+  start_date_utc_ms?: number | null;
   kind: string; // ride|run|swim|other
   name: string | null;
   moving_time_sec: number | null;

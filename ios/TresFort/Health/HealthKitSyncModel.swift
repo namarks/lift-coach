@@ -314,7 +314,8 @@ final class HealthKitSyncModel: ObservableObject {
     /// `totalDistance` initializer properties.
     private func buildPush(for w: HKWorkout) async -> HealthKitActivityPush {
         let kind = Self.kind(for: w.workoutActivityType)
-        let (date, startLocalMs) = Self.civilDateAndLocalMs(w.startDate)
+        let sourceZone = (w.metadata?[HKMetadataKeyTimeZone] as? String).flatMap(TimeZone.init(identifier:))
+        let (date, startLocalMs) = Self.civilDateAndLocalMs(w.startDate, timeZone: sourceZone ?? .current)
 
         // duration excludes paused time → "moving"; wall-clock span → "elapsed".
         let movingSec = Int(w.duration.rounded())
@@ -350,6 +351,8 @@ final class HealthKitSyncModel: ObservableObject {
             id: w.uuid.uuidString,
             date: date,
             start_date_local_ms: startLocalMs,
+            start_date_utc_ms: Int((w.startDate.timeIntervalSince1970 * 1000).rounded()),
+            source_timezone: sourceZone?.identifier,
             kind: kind,
             name: Self.displayName(for: w.workoutActivityType, source: sourceName),
             moving_time_sec: movingSec,
@@ -464,15 +467,17 @@ final class HealthKitSyncModel: ObservableObject {
     /// so the cross-source dedup lines the same ride up across sources. Using a
     /// raw `timeIntervalSince1970` instead would be off by the tz offset and the
     /// 2-minute dedup window would miss the match.
-    static func civilDateAndLocalMs(_ start: Date) -> (String, Int) {
+    /// Prefer the workout's recorded timezone. Without it the first ingest uses
+    /// the current zone; the server retains that first civil date on retries.
+    static func civilDateAndLocalMs(_ start: Date, timeZone: TimeZone = .current) -> (String, Int) {
         let f = DateFormatter()
         f.calendar = Calendar(identifier: .gregorian)
         f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = .current
+        f.timeZone = timeZone
         f.dateFormat = "yyyy-MM-dd"
         let date = f.string(from: start)
-        let offset = TimeZone.current.secondsFromGMT(for: start)
-        let localMs = Int((start.timeIntervalSince1970 + Double(offset)) * 1000)
+        let offset = timeZone.secondsFromGMT(for: start)
+        let localMs = Int((start.timeIntervalSince1970 * 1000).rounded()) + offset * 1000
         return (date, localMs)
     }
 
@@ -492,6 +497,8 @@ struct HealthKitActivityPush {
     let id: String
     let date: String
     let start_date_local_ms: Int?
+    let start_date_utc_ms: Int?
+    let source_timezone: String?
     let kind: String
     let name: String?
     let moving_time_sec: Int?
@@ -508,6 +515,8 @@ struct HealthKitActivityPush {
     var jsonBody: [String: Any] {
         var b: [String: Any] = ["id": id, "date": date, "kind": kind]
         if let v = start_date_local_ms { b["start_date_local_ms"] = v }
+        if let v = start_date_utc_ms { b["start_date_utc_ms"] = v }
+        if let v = source_timezone { b["source_timezone"] = v }
         if let v = name { b["name"] = v }
         if let v = moving_time_sec { b["moving_time_sec"] = v }
         if let v = elapsed_time_sec { b["elapsed_time_sec"] = v }

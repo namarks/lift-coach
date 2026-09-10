@@ -136,8 +136,9 @@ Keep imported activity and private-group behavior correct before adding more
 integration or social breadth.
 
 - [Activity integration integrity](activity-integration-integrity/plan.md) —
-  **planned**; reconcile source identity, civil dates, connection state,
-  corrections, and deletions.
+  **paused** after P0 repository delivery: native/HealthKit strength matching
+  and stable source dates. Connection state, corrections and deletions remain
+  later slices; rollout is deferred.
 - [Group experience and governance](group-experience-and-governance/plan.md) —
   **planned**; deliver a correct feed, durable invites, lightweight reactions
   and notifications, and essential group controls.
