@@ -206,6 +206,19 @@ private struct UIFixtureServer {
                     "logged_at": revision, "updated_at": revision, "is_timed": 0]]
             }
         }
+        if let fixture = coachingFixture {
+            sessions = [fixture["session"] as! [String: Any]]
+            sets = fixture["sets"] as! [[String: Any]]
+            let meta = try! JSONSerialization.data(withJSONObject: fixture["meta"]!)
+            plan?["meta"] = String(decoding: meta, as: UTF8.self)
+        }
+
+    }
+
+    var coachingFixture: [String: Any]? {
+        guard let raw = ProcessInfo.processInfo.environment["TRESFORT_UI_COACHING_CONTRACT"],
+              let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     // The same contract is consumed by real-D1 and unit tests. Only the UI
@@ -363,6 +376,7 @@ private struct UIFixtureServer {
                  "modality": slot["exercise_modality"]!, "unit": "lb", "primary_muscle": "full body"]
             }
         case ("GET", "/api/exercises"):
+            if let fixture = coachingFixture { response = fixture["catalog"]!; break }
             response = [["id": "synthetic-exercise",
                 "name": scenario == .bodyweight ? "Pull-Up" : scenario == .timed ? "Plank" : "Barbell Squat",
                 "modality": scenario == .bodyweight ? "bw" : scenario == .timed ? "timed" : "barbell",

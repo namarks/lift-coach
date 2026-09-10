@@ -1,6 +1,6 @@
 # Coaching Feedback Loop
 
-Slug: coaching-feedback-loop · Status: paused · Updated: 2026-09-09 · Theme: coaching
+Slug: coaching-feedback-loop · Status: done · Updated: 2026-09-09 · Theme: coaching · Archived: completed
 
 ## Goal
 
@@ -66,7 +66,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
     path owned by `reversible-plan-management`.
   - Keep manual and AI-authored edits equally visible; actor labels explain who
     changed the plan without giving either path a different data model.
-- [ ] **P2 — Coaching uses the whole training context**
+- [x] **P2 — Coaching uses the whole training context**
   - Include the existing schedule, recent feedback, races, periodization,
     trips, and stress settings in one compact coaching context where relevant.
   - Correct misleading trend labels and pair simple load or volume trends with
@@ -90,33 +90,62 @@ surfaces without adding AI to the Worker or creating a second coaching record.
     interference advice.
   - Verify that iOS and MCP describe the same recent sessions and plan state.
 
-## Execution frontier
-
-- P2
-
 ## Dependencies
 
-P1 reuses the completed [shared snapshot/history projection](../completed/reversible-plan-management/decisions.md) for visibility and reversion, preserving one change feed.
+P1 reuses the completed [shared snapshot/history projection](../reversible-plan-management/decisions.md) for visibility and reversion, preserving one change feed.
 
-P0(b) reuses the completed [superset runner/editor integration](../completed/supersets-and-circuits/plan.md), including shared recovery, models, API/cache handling and synthetic fixtures. Its temporary shared-file blockers are satisfied; preserve those delivered contracts when adding finish-flow feedback.
+P0(b) reuses the completed [superset runner/editor integration](../supersets-and-circuits/plan.md), including shared recovery, models, API/cache handling and synthetic fixtures. Its temporary shared-file blockers are satisfied; preserve those delivered contracts when adding finish-flow feedback.
 
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P2 | coordinates_with | plan:activity-integration-integrity#P0 | Identity/civil-date fixes and unknown-load labels need consistent source context. |
+P2 retains the civil-date and source identities supplied by the current activity
+integration. The separate Activity Integration Integrity P0 workstream remains
+planned; no provider reconciliation, HealthKit writes or permissions were added.
 
-## Next step
+## Release follow-up
 
-**Now (@owner):** P1 implementation and local verification are complete. Its
-repository delivery requires the P1 pull request's exact-head independent review,
-green CI, merge and integration evidence; the active delivery goal closes only
-after those gates. Keep P2 paused until explicitly activated. Production
-deployment, migrations and TestFlight distribution require separate authorization.
-
-The [physical iPhone feedback checks](device-verification.md) remain deferred to
-an eventual separately authorized build containing P0. They are a release
-follow-up and do not block P1 repository delivery.
+Repository delivery covers P0/P1/P2. Production deployment and TestFlight remain
+separately authorized. The [physical iPhone feedback checks](device-verification.md)
+remain deferred to a future build containing P0; this retained release follow-up
+is not repository completion evidence. Deploy the compatible Worker before
+that iOS build because older Workers can reject `expected_feedback`.
 
 ## Notes / open questions
+
+- P2 implementation milestone (2026-09-09): the brief includes authored
+  schedule/race/periodization/trip/stress context, seven recent private session
+  summaries and the last completed workout. Both summary paths reuse the same
+  projection; iOS builds matching context from the synced plan, logs and catalog.
+  Key sets use the best observed rep/hold within exact comparable conditions,
+  retaining exercise identity, signed load, load units, duration, sides/hands and
+  optional RPE. Decimal loads remain exact in the context labels. Authored
+  freeform metadata is opaque to workout compatibility rewriting.
+- Logged working-set counts exclude warm-ups/tombstones and state primary-muscle
+  attribution and effort coverage. Volume retains the legacy `hard_sets` alias
+  with its limited meaning; positive external-load volume is grouped by unit
+  and the legacy scalar is null for mixed units. Unsupported measures remain
+  absent. Endurance flags and their tool/UI wording identify a scheduling
+  heuristic, with incomplete inputs unknown rather than easy. The Worker has
+  no AI, readiness calculation, body-mass assumption or new write path.
+- P2 verification milestone (2026-09-09): all 925 backend tests (63 files),
+  typecheck, plan graph and verification-script checks passed. The iPhone 17
+  simulator passed all 427 unit tests and all 13 selected smoke journeys,
+  including P0 feedback, P1 history/restore and P2 authored/session context.
+  The shared fixture reuses delivered BodyweightProgress semantics and covers
+  mixed units, partial effort, legacy timed duration, deleted and warm-up rows,
+  missing catalog data and authored metadata. These are synthetic simulator and
+  D1 checks, not physical microphone or production evidence.
+- Integration: Member Activation P0 PR #165 merged as `91b798a` and is included
+  in the P2 delivery branch. Its verified-plan creation gates, onboarding
+  ownership and synthetic journeys are retained. The only merge conflict was
+  the expected smoke selection count; both added journey suites remain covered.
+  The pull request retains final combined verification, exact-head independent
+  review and terminal CI evidence. Merge is permitted only after those gates;
+  the proposed completed-plan lifecycle takes effect with that reviewed merge.
+- P2 activation (2026-09-09): remote HEAD and fetched main verified at
+  `48288420313ec745016d36bf12da42af484af36c`, the merge of P1 PR #164.
+  The owner authorized P2 through repository delivery. Member Activation P0
+  continues in its separate managed worktree; coordinate shared Swift and
+  fixture wiring while preserving its onboarding ownership. P0/P1 feedback,
+  history, request guards and physical-device release follow-up remain intact.
 
 - P1 activation (2026-09-09): live main and fetched `origin/main` both verified at
   `4ec8a9ef43b377c76458f57f32cd94e9d63da4ef`, the merge of P0 PR #163.
@@ -194,12 +223,12 @@ follow-up and do not block P1 repository delivery.
   existing session note and discard the recording. Cloud transcription or
   retained audio would require a separate product/privacy decision.
 
-- [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
+- [Completed bodyweight support](../bodyweight-training-support/plan.md)
   supplies variation replacement and comparable metrics. Reuse the shared
   `BodyweightProgress.json` contract for bodyweight PR/hold claims; this is a
   delivered repository foundation, not an unresolved dependency.
 
-- The [September app review](../../reviews/2026-09-app-review/report.md)
+- The [September app review](../../../reviews/2026-09-app-review/report.md)
   found that current compact strings omit timed/load semantics and session
   notes. These are projection gaps even though fuller tools expose much of
   the underlying data. P0 remains independent of later metrics/history work.
@@ -212,5 +241,5 @@ follow-up and do not block P1 repository delivery.
 - The Worker remains deterministic data infrastructure. Claude interprets the
   feedback in conversation; the backend stores and returns it.
 - Reuse the durable terminal session-write path completed in
-  [Workout Write Reliability](../completed/workout-write-reliability/plan.md);
+  [Workout Write Reliability](../workout-write-reliability/plan.md);
   it is historical foundation rather than an unresolved dependency.

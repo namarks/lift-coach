@@ -73,7 +73,7 @@ separate.
 
 P0 carries the completed [prescription and recurring-adjustment contract](../prescription-integrity/decisions.md)
 into the input controls. P2 supplies the persisted summary for
-[coaching feedback P2](../../coaching-feedback-loop/plan.md), without activating
+[coaching feedback P2](../coaching-feedback-loop/plan.md), without activating
 that separate workstream.
 
 ## Next step

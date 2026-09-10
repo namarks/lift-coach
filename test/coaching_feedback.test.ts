@@ -1,6 +1,8 @@
 import { env, applyD1Migrations, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { issueAppJwt } from '../src/auth';
+import { coachingSession, coachingPlanMeta } from '../src/coachingContext';
+import contextFixture from '../ios/TresFortTests/Fixtures/CoachingContext.json';
 import feedback from '../ios/TresFortTests/Fixtures/WorkoutFeedback.json';
 
 const BASE = 'https://tres-fort.test';
@@ -74,6 +76,26 @@ describe('private workout feedback from finish to coach', () => {
     expect(result.last_completed_session).toMatchObject({ date: session.date, ...expected });
     expect((await tool('get_today_workout')).last_completed_session).toMatchObject(expected);
   });
+  it('projects the same persisted sessions and authored plan metadata delivered to iOS', async () => {
+    const state = await rest('state');
+    await env.DB.prepare('UPDATE plans SET meta = ? WHERE id = ?')
+      .bind(JSON.stringify(contextFixture.meta), state.plan.id).run();
+    // A future planned row must not displace recent training in the brief.
+    await rest('sessions', 'POST', { date: '2099-01-01' });
+    const current = await rest('state');
+    const catalog = await rest('exercises');
+    const result = brief((await rpc('resources/read', { uri: 'coach://state/current' })).contents[0].text);
+    expect(result.active_plan).toMatchObject({ id: current.plan.id, version: current.plan.version,
+      authored_context: coachingPlanMeta(current.plan.meta) });
+    expect(result.active_plan.authored_context.stress_model).toEqual(contextFixture.meta.stress_model);
+    expect(result.recent_sessions.some((s: any) => s.date === '2099-01-01')).toBe(false);
+    const row = current.sessions.find((s: any) => s.id === session.id);
+    const projection = coachingSession(row, current.sets, catalog);
+    expect(result.recent_sessions.find((s: any) => s.id === row.id)).toEqual(projection);
+    expect(result.last_completed_session).toEqual(projection);
+    expect(result.scheduling_context.basis).toBe('scheduling_heuristic');
+    expect(JSON.stringify(result)).not.toContain('readiness_score');
+  });
   it('retries an identical finish without losing edited feedback', async () => {
     const response = await rest(`sessions/${session.id}?expected_attempt=${session.attempt}`, 'PATCH', {
       status: 'completed', ...expected,
@@ -127,5 +149,24 @@ describe('private workout feedback from finish to coach', () => {
     const other = await rest('state', 'GET', undefined, await issueAppJwt(id, 'test-secret'));
     expect(other.sessions).toEqual([]);
     expect(JSON.stringify(other)).not.toContain(feedback.edited);
+  });
+});
+
+describe('working-set trend semantics', () => {
+  it('states effort coverage and primary attribution and never adds incompatible units', async () => {
+    await rest(`sessions/${session.id}/sets`, 'POST', { id: crypto.randomUUID(),
+      exercise_id: 'ex_bench', set_index: 2, weight: 50, reps: 5, rpe: 8 });
+    // Same primary muscle, different unit. Catalog fixtures are test-only.
+    await env.DB.prepare(`INSERT INTO exercises (id,name,primary_muscle,modality,unit,created_at)
+      VALUES ('coaching-kg','Kilogram press','chest','barbell','kg',0)`).run();
+    await rest(`sessions/${session.id}/sets`, 'POST', { id: crypto.randomUUID(),
+      exercise_id: 'coaching-kg', set_index: 1, weight: 20, reps: 5 });
+    const result = await tool('get_volume_trend', { muscle_group: 'chest', range: 'all' });
+    expect(result).toMatchObject({ muscle_attribution: 'primary_muscle_only', set_count_basis: 'logged_non_warmup_sets' });
+    expect(result.buckets).toEqual([expect.objectContaining({ hard_sets: 3, logged_working_sets: 3,
+      sets_with_effort: 1, tonnage: null, unit: null, external_load_volume: [
+        { unit: 'kg', value: 100, contributing_sets: 1 },
+        { unit: 'lb', value: 475, contributing_sets: 2 },
+      ] })]);
   });
 });

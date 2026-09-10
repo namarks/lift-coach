@@ -245,39 +245,9 @@ enum CalendarProjection {
 }
 
 // ────────────────────────────────────────────────────────────────────────
-// FROZEN CONFLICT RULE — must match the backend `detectConflicts`
-// byte-for-byte. Deliberately isolated + over-commented so the lead can
-// diff this single function against the server. The app is READ-ONLY for
-// rides: this only classifies, it never writes anything.
-//
-// INTERFERENCE-AWARE (MULTISPORT.md §6.1/§7). A same-day lift+endurance is
-// only a real `.clash` when the endurance side is HARD (key/long); an
-// easy/short same-day pairing is a benign, intended `.brick`. This mirrors
-// the backend `detectConflicts` `isHard`-keyed same-day branch byte-for-byte
-// (the M0-spike "every brick reads as a clash" fix).
-//
-// Inputs (all already tombstone-filtered upstream — `deleted_at != null`
-// events are NEVER passed here):
-//   - a calendar date that carries a LIFT (a real cached session OR a
-//     projected lift from CalendarProjection). Rest/none days are not
-//     lift dates and produce `.none`.
-//   - the external events on a given date.
-//
-// Rule (evaluated for a LIFT date `L`):
-//   (a) SAME-DAY  → if ANY non-deleted external_event falls on `L` itself:
-//                    severity = .clash  if any same-day event isHard,
-//                    severity = .brick  otherwise (benign intended brick).
-//   (b) DAY-BEFORE-HARD → else if `L` is the calendar day immediately
-//                    BEFORE a date that has a non-deleted external_event
-//                    with training_load >= 150 OR
-//                    planned_duration_sec >= 9000, severity = .heavyNextDay.
-//   (else)        → .none.
-//
-// same-day takes precedence over day-before-hard. "The day before" is L + 1
-// calendar day, computed with the same Gregorian/POSIX/device-tz Calendar
-// used everywhere else (civil date, NOT a UTC offset) — identical rule to
-// CalendarProjection.
-// ────────────────────────────────────────────────────────────────────────
+// Scheduling heuristic mirrored by backend detectConflicts. Inputs are civil
+// lift dates and cached planned endurance load/duration. Fixed thresholds are
+// not individualized safety or interference advice. Missing data is unknown.
 
 enum RideConflict {
 
@@ -286,8 +256,9 @@ enum RideConflict {
     /// backend ("none" / "brick" / "heavy-next-day" / "clash").
     enum Severity: String {
         case none          = "none"
-        /// A benign, intended same-day lift + EASY endurance pairing.
+        /// Both recorded measures are below the fixed thresholds; not an easy-work claim.
         case brick         = "brick"
+        case unknown       = "unknown"
         case heavyNextDay  = "heavy-next-day"
         case clash         = "clash"
     }
@@ -355,19 +326,18 @@ enum RideConflict {
         // Conflicts only attach to LIFT dates. No lift → no conflict.
         guard hasLift(liftDateString) else { return .none }
 
-        // (a) SAME-DAY — any non-deleted event on the lift date itself. A
-        // real .clash only when the endurance side is HARD (key/long);
-        // otherwise it is a benign, intended .brick. Mirrors the backend
-        // `sameDay.some(isHard) ? 'clash' : 'brick'`.
+        // Known threshold evidence wins; missing inputs never mean easy work.
         let sameDay = ridesOn(liftDateString)
         if !sameDay.isEmpty {
-            return sameDay.contains(where: isHard) ? .clash : .brick
+            return sameDay.contains(where: isHard) ? .clash
+                : sameDay.contains { $0.training_load == nil || $0.planned_duration_sec == nil } ? .unknown : .brick
         }
 
         // (b) DAY-BEFORE-HARD — the lift is the day before a hard event.
-        if let next = nextDateString(after: liftDateString),
-           ridesOn(next).contains(where: isHard) {
-            return .heavyNextDay
+        if let next = nextDateString(after: liftDateString) {
+            let events = ridesOn(next)
+            if events.contains(where: isHard) { return .heavyNextDay }
+            if events.contains(where: { $0.training_load == nil || $0.planned_duration_sec == nil }) { return .unknown }
         }
 
         return .none

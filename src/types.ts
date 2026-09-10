@@ -423,23 +423,13 @@ export interface GroupInvite {
   used_by: string | null;
 }
 
-/**
- * Per-date conflict between lift sessions/projections and external events.
- *
- * Severities (least → most concerning), interference-aware per MULTISPORT.md
- * §6.1/§7 — NOT "any same-day pairing is a clash":
- *   - 'brick'          — a benign, intended same-day pairing: a strength day
- *     alongside an EASY/short endurance session (sub-`isHard` threshold). This
- *     is the deliberate brick/double, NOT a problem. Informational only.
- *   - 'heavy-next-day' — a lift the civil day BEFORE a hard endurance session
- *     (training_load >= 150 OR planned_duration_sec >= 9000). Unchanged.
- *   - 'clash'          — a real interference: a strength day SAME-DAY as a
- *     KEY/long (hard) endurance session. The case worth flagging.
- */
+/** Scheduling heuristic only. Legacy severity names are retained:
+ * brick = both measures known below thresholds; clash/heavy-next-day = a
+ * threshold met; unknown = incomplete inputs without a threshold met. */
 export interface DayConflict {
   date: string;
   conflicts: string[]; // external_event ids
-  severity: 'brick' | 'clash' | 'heavy-next-day';
+  severity: 'brick' | 'clash' | 'heavy-next-day' | 'unknown';
 }
 
 // ---- weekly schedule (frozen contract — see migrations/0005) -------------

@@ -1,0 +1,552 @@
+{
+  "catalog": [
+    {
+      "id": "hold",
+      "name": "Plank",
+      "modality": "timed",
+      "unit": "sec",
+      "laterality": "bilateral",
+      "load_mode": "total",
+      "primary_muscle": "core"
+    },
+    {
+      "id": "pull",
+      "name": "Pull-Up",
+      "modality": "bw",
+      "unit": "lb",
+      "laterality": "bilateral",
+      "load_mode": "total",
+      "primary_muscle": "back"
+    },
+    {
+      "id": "split",
+      "name": "Split Squat",
+      "modality": "dumbbell",
+      "unit": "lb",
+      "laterality": "unilateral",
+      "load_mode": "per_hand",
+      "primary_muscle": "quads"
+    },
+    {
+      "id": "kg",
+      "name": "Press",
+      "modality": "barbell",
+      "unit": "kg",
+      "laterality": "bilateral",
+      "load_mode": "total",
+      "primary_muscle": "shoulders"
+    },
+    {
+      "id": "erg",
+      "name": "Bike",
+      "modality": "cardio",
+      "unit": "sec",
+      "laterality": "bilateral",
+      "load_mode": "total",
+      "primary_muscle": "cardio"
+    }
+  ],
+  "sets": [
+    {
+      "id": "s0",
+      "session_id": "recent",
+      "exercise_id": "hold",
+      "template_exercise_id": null,
+      "set_index": 1,
+      "weight": 0,
+      "reps": 45,
+      "duration_s": null,
+      "is_timed": 1,
+      "rpe": null,
+      "is_warmup": 0,
+      "logged_at": 0,
+      "deleted_at": null
+    },
+    {
+      "id": "s1",
+      "session_id": "recent",
+      "exercise_id": "pull",
+      "template_exercise_id": null,
+      "set_index": 2,
+      "weight": -30,
+      "reps": 8,
+      "duration_s": null,
+      "is_timed": 0,
+      "rpe": 7,
+      "is_warmup": 0,
+      "logged_at": 1,
+      "deleted_at": null
+    },
+    {
+      "id": "s2",
+      "session_id": "recent",
+      "exercise_id": "pull",
+      "template_exercise_id": null,
+      "set_index": 3,
+      "weight": 10,
+      "reps": 5,
+      "duration_s": null,
+      "is_timed": 0,
+      "rpe": null,
+      "is_warmup": 0,
+      "logged_at": 2,
+      "deleted_at": null
+    },
+    {
+      "id": "s3",
+      "session_id": "recent",
+      "exercise_id": "split",
+      "template_exercise_id": null,
+      "set_index": 4,
+      "weight": 22.25,
+      "reps": 8,
+      "duration_s": null,
+      "is_timed": 0,
+      "rpe": 8.5,
+      "is_warmup": 0,
+      "logged_at": 3,
+      "deleted_at": null
+    },
+    {
+      "id": "s4",
+      "session_id": "recent",
+      "exercise_id": "kg",
+      "template_exercise_id": null,
+      "set_index": 5,
+      "weight": 20,
+      "reps": 5,
+      "duration_s": null,
+      "is_timed": 0,
+      "rpe": null,
+      "is_warmup": 0,
+      "logged_at": 4,
+      "deleted_at": null
+    },
+    {
+      "id": "s5",
+      "session_id": "recent",
+      "exercise_id": "erg",
+      "template_exercise_id": null,
+      "set_index": 6,
+      "weight": 0,
+      "reps": 300,
+      "duration_s": 300,
+      "is_timed": 1,
+      "rpe": null,
+      "is_warmup": 0,
+      "logged_at": 5,
+      "deleted_at": null
+    },
+    {
+      "id": "s6",
+      "session_id": "recent",
+      "exercise_id": "missing",
+      "template_exercise_id": null,
+      "set_index": 7,
+      "weight": 12,
+      "reps": 3,
+      "duration_s": null,
+      "is_timed": 0,
+      "rpe": null,
+      "is_warmup": 0,
+      "logged_at": 6,
+      "deleted_at": null
+    },
+    {
+      "id": "warm",
+      "session_id": "recent",
+      "exercise_id": "hold",
+      "template_exercise_id": null,
+      "set_index": 1,
+      "weight": 0,
+      "reps": 45,
+      "duration_s": null,
+      "is_timed": 1,
+      "rpe": null,
+      "is_warmup": 1,
+      "logged_at": 0,
+      "deleted_at": null
+    },
+    {
+      "id": "deleted",
+      "session_id": "recent",
+      "exercise_id": "pull",
+      "template_exercise_id": null,
+      "set_index": 2,
+      "weight": -30,
+      "reps": 8,
+      "duration_s": null,
+      "is_timed": 0,
+      "rpe": 7,
+      "is_warmup": 0,
+      "logged_at": 1,
+      "deleted_at": 10
+    },
+    {
+      "id": "other",
+      "session_id": "other",
+      "exercise_id": "pull",
+      "template_exercise_id": null,
+      "set_index": 3,
+      "weight": 10,
+      "reps": 5,
+      "duration_s": null,
+      "is_timed": 0,
+      "rpe": null,
+      "is_warmup": 0,
+      "logged_at": 2,
+      "deleted_at": null
+    }
+  ],
+  "session": {
+    "id": "recent",
+    "date": "2026-09-09",
+    "status": "completed",
+    "workout_id": null,
+    "notes": "Grip tired; keep the hold unchanged.",
+    "perceived_fatigue": 6
+  },
+  "expected_session": {
+    "id": "recent",
+    "date": "2026-09-09",
+    "status": "completed",
+    "notes": "Grip tired; keep the hold unchanged.",
+    "perceived_fatigue": 6,
+    "logged_working_sets": 7,
+    "sets_with_effort": 2,
+    "primary_muscle_sets": [
+      {
+        "muscle": "back",
+        "logged_working_sets": 2
+      },
+      {
+        "muscle": "cardio",
+        "logged_working_sets": 1
+      },
+      {
+        "muscle": "core",
+        "logged_working_sets": 1
+      },
+      {
+        "muscle": "quads",
+        "logged_working_sets": 1
+      },
+      {
+        "muscle": "shoulders",
+        "logged_working_sets": 1
+      },
+      {
+        "muscle": "unknown",
+        "logged_working_sets": 1
+      }
+    ],
+    "external_load_volume": [
+      {
+        "unit": "kg",
+        "value": 100,
+        "contributing_sets": 1
+      },
+      {
+        "unit": "lb",
+        "value": 762,
+        "contributing_sets": 2
+      }
+    ],
+    "key_sets": [
+      "Plank: 45s \u00b7 bodyweight",
+      "Pull-Up: 8 reps \u00b7 30 lb assistance \u00b7 RPE 7",
+      "Pull-Up: 5 reps \u00b7 10 lb added",
+      "Split Squat: 8 reps per side \u00b7 22.25 lb each hand \u00b7 RPE 8.5",
+      "Press: 5 reps \u00b7 20 kg",
+      "Bike: 300s",
+      "missing: 3 reps \u00b7 12 unit unknown"
+    ],
+    "sets": [
+      {
+        "id": "s0",
+        "exercise_id": "hold",
+        "name": "Plank",
+        "unit": "lb",
+        "modality": "timed",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "weight": 0,
+        "load_condition": "bodyweight",
+        "reps": null,
+        "duration_s": 45,
+        "is_timed": true,
+        "rpe": null,
+        "label": "Plank: 45s \u00b7 bodyweight"
+      },
+      {
+        "id": "s1",
+        "exercise_id": "pull",
+        "name": "Pull-Up",
+        "unit": "lb",
+        "modality": "bw",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "weight": -30,
+        "load_condition": "assistance",
+        "reps": 8,
+        "duration_s": null,
+        "is_timed": false,
+        "rpe": 7,
+        "label": "Pull-Up: 8 reps \u00b7 30 lb assistance \u00b7 RPE 7"
+      },
+      {
+        "id": "s2",
+        "exercise_id": "pull",
+        "name": "Pull-Up",
+        "unit": "lb",
+        "modality": "bw",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "weight": 10,
+        "load_condition": "added",
+        "reps": 5,
+        "duration_s": null,
+        "is_timed": false,
+        "rpe": null,
+        "label": "Pull-Up: 5 reps \u00b7 10 lb added"
+      },
+      {
+        "id": "s3",
+        "exercise_id": "split",
+        "name": "Split Squat",
+        "unit": "lb",
+        "modality": "dumbbell",
+        "laterality": "unilateral",
+        "load_mode": "per_hand",
+        "weight": 22.25,
+        "load_condition": "external",
+        "reps": 8,
+        "duration_s": null,
+        "is_timed": false,
+        "rpe": 8.5,
+        "label": "Split Squat: 8 reps per side \u00b7 22.25 lb each hand \u00b7 RPE 8.5"
+      },
+      {
+        "id": "s4",
+        "exercise_id": "kg",
+        "name": "Press",
+        "unit": "kg",
+        "modality": "barbell",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "weight": 20,
+        "load_condition": "external",
+        "reps": 5,
+        "duration_s": null,
+        "is_timed": false,
+        "rpe": null,
+        "label": "Press: 5 reps \u00b7 20 kg"
+      },
+      {
+        "id": "s5",
+        "exercise_id": "erg",
+        "name": "Bike",
+        "unit": null,
+        "modality": "cardio",
+        "laterality": "bilateral",
+        "load_mode": "total",
+        "weight": null,
+        "load_condition": "unavailable",
+        "reps": null,
+        "duration_s": 300,
+        "is_timed": true,
+        "rpe": null,
+        "label": "Bike: 300s"
+      },
+      {
+        "id": "s6",
+        "exercise_id": "missing",
+        "name": null,
+        "unit": null,
+        "modality": null,
+        "laterality": null,
+        "load_mode": null,
+        "weight": 12,
+        "load_condition": "unknown",
+        "reps": 3,
+        "duration_s": null,
+        "is_timed": false,
+        "rpe": null,
+        "label": "missing: 3 reps \u00b7 12 unit unknown"
+      }
+    ]
+  },
+  "meta": {
+    "schedule": {
+      "version": 3,
+      "week": {
+        "mon": "workout",
+        "tue": null
+      }
+    },
+    "race": {
+      "name": "Autumn event",
+      "date": "2026-10-10",
+      "discipline": "cycling",
+      "distance": "100km"
+    },
+    "periodization": [
+      {
+        "phase": "build",
+        "start": "2026-09-01",
+        "end": "2026-09-30",
+        "focus": "Consistency",
+        "weekly_load_target": 250,
+        "strength_emphasis": "maintenance"
+      }
+    ],
+    "trips": [
+      {
+        "id": "trip",
+        "start": "2026-09-12",
+        "end": "2026-09-14",
+        "type": "travel",
+        "can_train_light": true,
+        "note": "Hotel gym only"
+      }
+    ],
+    "stress_model": {
+      "interference_rules": [
+        "Discuss back-to-back long days"
+      ],
+      "discipline_weights": {
+        "ride": {
+          "legs": 1
+        }
+      },
+      "custom_context": "Authored, not computed",
+      "custom_document": {
+        "workout_id": "literal-authored-id",
+        "workouts": [
+          "literal authored value"
+        ]
+      }
+    }
+  },
+  "conflicts": [
+    {
+      "name": "missing-same",
+      "lift_date": "2026-09-09",
+      "events": [
+        {
+          "id": "missing-same",
+          "date": "2026-09-09",
+          "source": "intervals",
+          "external_id": "missing-same",
+          "kind": "ride",
+          "training_load": null,
+          "planned_duration_sec": null,
+          "synced_at": 0
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "partial-same",
+      "lift_date": "2026-09-09",
+      "events": [
+        {
+          "id": "partial-same",
+          "date": "2026-09-09",
+          "source": "intervals",
+          "external_id": "partial-same",
+          "kind": "ride",
+          "training_load": 20,
+          "planned_duration_sec": null,
+          "synced_at": 0
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "known-low",
+      "lift_date": "2026-09-09",
+      "events": [
+        {
+          "id": "known-low",
+          "date": "2026-09-09",
+          "source": "intervals",
+          "external_id": "known-low",
+          "kind": "ride",
+          "training_load": 20,
+          "planned_duration_sec": 300,
+          "synced_at": 0
+        }
+      ],
+      "expected": "brick"
+    },
+    {
+      "name": "threshold",
+      "lift_date": "2026-09-09",
+      "events": [
+        {
+          "id": "threshold",
+          "date": "2026-09-09",
+          "source": "intervals",
+          "external_id": "threshold",
+          "kind": "ride",
+          "training_load": 150,
+          "planned_duration_sec": null,
+          "synced_at": 0
+        }
+      ],
+      "expected": "clash"
+    },
+    {
+      "name": "duration-threshold",
+      "lift_date": "2026-09-09",
+      "events": [
+        {
+          "id": "duration-threshold",
+          "date": "2026-09-10",
+          "source": "intervals",
+          "external_id": "duration-threshold",
+          "kind": "ride",
+          "training_load": null,
+          "planned_duration_sec": 9000,
+          "synced_at": 0
+        }
+      ],
+      "expected": "heavy-next-day"
+    },
+    {
+      "name": "missing-next",
+      "lift_date": "2026-09-09",
+      "events": [
+        {
+          "id": "missing-next",
+          "date": "2026-09-10",
+          "source": "intervals",
+          "external_id": "missing-next",
+          "kind": "ride",
+          "training_load": null,
+          "planned_duration_sec": null,
+          "synced_at": 0
+        }
+      ],
+      "expected": "unknown"
+    },
+    {
+      "name": "low-next",
+      "lift_date": "2026-09-09",
+      "events": [
+        {
+          "id": "low-next",
+          "date": "2026-09-10",
+          "source": "intervals",
+          "external_id": "low-next",
+          "kind": "ride",
+          "training_load": 20,
+          "planned_duration_sec": 300,
+          "synced_at": 0
+        }
+      ],
+      "expected": "none"
+    }
+  ]
+}

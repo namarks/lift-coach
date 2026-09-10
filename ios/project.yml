@@ -67,6 +67,8 @@ targets:
         buildPhase: resources
       - path: TresFortTests/Fixtures/WorkoutFeedback.json
         buildPhase: resources
+      - path: TresFortTests/Fixtures/CoachingContext.json
+        buildPhase: resources
     dependencies:
       - target: TresFort
     settings:

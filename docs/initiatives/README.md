@@ -46,3 +46,6 @@ production, or external-closeout authority by itself.
 Verified completed initiatives live under `completed/` and are excluded from
 the current graph. [Training Data Trust](completed/training-data-trust.md)
 retains its delivered workstreams and release/verification evidence.
+
+[Closed-Loop Coaching](completed/closed-loop-coaching.md) retains its delivered
+feedback/context contracts and the deferred physical-device release follow-up.

@@ -1,6 +1,6 @@
 # Closed-Loop Coaching
 
-Slug: closed-loop-coaching · Status: planned · Updated: 2026-09-07
+Slug: closed-loop-coaching · Status: done · Updated: 2026-09-09 · Archived: completed
 
 ## Objective
 
@@ -8,22 +8,26 @@ Make coaching a visible, two-way loop: members share what happened and how it
 felt, coaches receive that context, and plan changes are understandable and
 recoverable without moving coaching logic into the backend.
 
-The completed [prescription contract](../plans/completed/prescription-integrity/plan.md)
-and [snapshot/revert history](../plans/completed/reversible-plan-management/plan.md)
+The completed [prescription contract](../../plans/completed/prescription-integrity/plan.md)
+and [snapshot/revert history](../../plans/completed/reversible-plan-management/plan.md)
 are delivered foundations for this remaining work.
 
-## Scope
+## Delivered workstreams
 
-- plan:coaching-feedback-loop
+- [Coaching feedback loop](../../plans/completed/coaching-feedback-loop/plan.md)
+
+The retained [physical iPhone feedback checks](../../plans/completed/coaching-feedback-loop/device-verification.md)
+require a future separately authorized release. They remain unverified and do
+not authorize deployment, distribution, cloud transcription or stored audio.
 
 ## Priority policy
 
-[Completed Gym Runner Depth](../plans/completed/gym-runner-depth/plan.md)
+[Completed Gym Runner Depth](../../plans/completed/gym-runner-depth/plan.md)
 provides prescription fidelity, durable corrections, bounded loading/timing
 aids and the persisted completion summary. Its production/app release remains
 separate from repository delivery.
 
-[Completed bodyweight support](../plans/completed/bodyweight-training-support/plan.md)
+[Completed bodyweight support](../../plans/completed/bodyweight-training-support/plan.md)
 provides the comparable-metrics repository foundation. Its Worker/app release
 remains separate from repository completion.
 

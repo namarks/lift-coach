@@ -5586,6 +5586,7 @@ export async function getRecentSessions(
   db: D1Database,
   userId: string,
   n: number,
+  throughDate = '9999-12-31',
 ): Promise<SessionRow[]> {
   // Exclude 'discarded' — a thrown-away session is not "recent training"
   // and must not surface as last_session in the coach brief / today
@@ -5593,8 +5594,8 @@ export async function getRecentSessions(
   // set-based reads via deleted_at. This is the one session-list read
   // that needs an explicit filter.)
   const r = await workoutDB(db)
-    .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND status != 'discarded' ORDER BY date DESC LIMIT ?2")
-    .bind(userId, n)
+    .prepare("SELECT * FROM sessions WHERE user_id = ?1 AND status != 'discarded' AND date <= ?3 ORDER BY date DESC, id LIMIT ?2")
+    .bind(userId, n, throughDate)
     .all<SessionRow>();
   return r.results;
 }
@@ -5610,12 +5611,13 @@ export async function getLastCompletedSession(
   db: D1Database,
   userId: string,
   excludeDate?: string,
+  throughDate = '9999-12-31',
 ): Promise<SessionRow | null> {
   return workoutDB(db)
     .prepare(
-      "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'completed' AND date != ?2 ORDER BY date DESC LIMIT 1",
+      "SELECT * FROM sessions WHERE user_id = ?1 AND status = 'completed' AND date != ?2 AND date <= ?3 ORDER BY date DESC, id LIMIT 1",
     )
-    .bind(userId, excludeDate ?? '')
+    .bind(userId, excludeDate ?? '', throughDate)
     .first<SessionRow>();
 }
 
@@ -7093,51 +7095,51 @@ export async function getHistory(
 }
 
 export async function getVolume(
-  db: D1Database,
-  userId: string,
-  muscle: string,
-  from: number,
-  to: number,
-): Promise<
-  | {
-      muscle_group: string;
-      tonnage_basis: 'external_load';
-      buckets: { week: string; hard_sets: number; tonnage: number | null }[];
-    }
-  | { error: 'unknown_muscle'; query: string }
-> {
+  db: D1Database, userId: string, muscle: string, from: number, to: number,
+) {
   const normalizedMuscle = muscle.trim().toLowerCase();
   const known = await workoutDB(db)
     .prepare('SELECT 1 FROM exercises WHERE lower(primary_muscle) = ?1 LIMIT 1')
-    .bind(normalizedMuscle)
-    .first();
-  if (!known) return { error: 'unknown_muscle', query: muscle };
-
-  // `weight` is one implement when load_mode=per_hand and `reps` is one
-  // side when laterality=unilateral. These dimensions are independent: a
-  // 45x8 two-dumbbell Bulgarian split squat is 45*8*2 legs*2 dumbbells =
-  // 1,440 lb of work. Zero-load bodyweight and assisted (negative-load)
-  // sets remain hard sets but have undefined tonnage; timed holds likewise
-  // use duration rather than pretending seconds are repetitions.
-  const rows = await workoutDB(db)
-    .prepare(
-      `SELECT strftime('%Y-%W', s.date) AS week,
-              COUNT(*) AS hard_sets,
-              SUM(CASE WHEN sl.weight > 0 AND sl.is_timed = 0
-                       THEN sl.weight * sl.reps
-                         * CASE WHEN e.laterality = 'unilateral' THEN 2 ELSE 1 END
-                         * CASE WHEN e.load_mode = 'per_hand' THEN 2 ELSE 1 END
-                       ELSE NULL END) AS tonnage
-       FROM set_logs sl
-       JOIN sessions s ON s.id = sl.session_id
-       JOIN exercises e ON e.id = sl.exercise_id
-       WHERE s.user_id = ?1 AND lower(e.primary_muscle) = ?2 AND sl.deleted_at IS NULL
-         AND sl.is_warmup = 0 AND sl.logged_at BETWEEN ?3 AND ?4
-       GROUP BY week ORDER BY week`,
-    )
-    .bind(userId, normalizedMuscle, from, to)
-    .all<{ week: string; hard_sets: number; tonnage: number | null }>();
-  return { muscle_group: normalizedMuscle, tonnage_basis: 'external_load', buckets: rows.results };
+    .bind(normalizedMuscle).first();
+  if (!known) return { error: 'unknown_muscle' as const, query: muscle };
+  const rows = await workoutDB(db).prepare(
+    `SELECT strftime('%Y-%W', s.date) AS week, e.unit,
+            COUNT(*) AS logged_working_sets, COUNT(sl.rpe) AS sets_with_effort,
+            SUM(CASE WHEN sl.weight > 0 AND sl.is_timed = 0 AND e.unit != 'sec' AND e.modality != 'cardio'
+                     THEN sl.weight * sl.reps
+                       * CASE WHEN e.laterality = 'unilateral' THEN 2 ELSE 1 END
+                       * CASE WHEN e.load_mode = 'per_hand' THEN 2 ELSE 1 END
+                     ELSE NULL END) AS external_load_volume,
+            SUM(CASE WHEN sl.weight > 0 AND sl.is_timed = 0 AND e.unit != 'sec' AND e.modality != 'cardio' THEN 1 ELSE 0 END) AS contributing_sets
+     FROM set_logs sl JOIN sessions s ON s.id = sl.session_id
+     JOIN exercises e ON e.id = sl.exercise_id
+     WHERE s.user_id = ?1 AND lower(e.primary_muscle) = ?2 AND sl.deleted_at IS NULL
+       AND s.status != 'discarded' AND sl.is_warmup = 0 AND sl.logged_at BETWEEN ?3 AND ?4
+     GROUP BY week, e.unit ORDER BY week, e.unit`,
+  ).bind(userId, normalizedMuscle, from, to).all<{
+    week: string; unit: string; logged_working_sets: number; sets_with_effort: number;
+    external_load_volume: number | null; contributing_sets: number;
+  }>();
+  const weeks = [...new Set(rows.results.map(row => row.week))];
+  return {
+    muscle_group: normalizedMuscle, muscle_attribution: 'primary_muscle_only' as const,
+    set_count_basis: 'logged_non_warmup_sets' as const,
+    hard_sets_meaning: 'Legacy alias of logged_working_sets; effort is not required. Not measured stimulus or complete muscle volume.',
+    tonnage_basis: 'external_load' as const,
+    buckets: weeks.map(week => {
+      const group = rows.results.filter(row => row.week === week);
+      const count = group.reduce((n, row) => n + row.logged_working_sets, 0);
+      const byUnit = group.filter(row => row.external_load_volume != null).map(row => ({
+        unit: row.unit, value: row.external_load_volume!, contributing_sets: row.contributing_sets,
+      }));
+      return { week, hard_sets: count, logged_working_sets: count,
+        sets_with_effort: group.reduce((n, row) => n + row.sets_with_effort, 0),
+        external_load_volume: byUnit,
+        // A legacy scalar is valid only for one known unit; never sum lb and kg.
+        tonnage: byUnit.length === 1 ? byUnit[0]!.value : null,
+        unit: byUnit.length === 1 ? byUnit[0]!.unit : null };
+    }),
+  };
 }
 
 // ---- weekly schedule + future-calendar projection ------------------------
@@ -10405,54 +10407,10 @@ export async function dedupeHealthKitAgainstIntervals(
   return results.reduce((total, result) => total + (result.meta.changes ?? 0), 0);
 }
 
-/**
- * CONFLICT RULE — authoritative. iOS mirrors this BYTE-FOR-BYTE.
- *
- * INTERFERENCE-AWARE (MULTISPORT.md §6.1/§7). The old rule flagged EVERY
- * same-day lift+endurance as a 'clash' — which means every intended brick
- * read as a conflict (the M0-spike bug, `db.ts` §5/#5). The fix keys the
- * same-day severity off whether the endurance side is HARD — the same
- * `isHard` proxy the day-before branch already uses — so a key/long endurance
- * session on a lift day is a real clash, while an easy/short one is a benign,
- * intended brick.
- *
- * Inputs: the set of dates that hold a lift (a real lift session OR a
- * projected/scheduled lift day) and the non-deleted external_events.
- * Soft-deleted events are excluded by the caller and ignored here.
- *
- * "Hard" endurance = training_load >= 150 OR planned_duration_sec >= 9000
- * (≈2h30m) — the key/long-session proxy.
- *
- * For each lift date D, in priority order (first match wins; a date emits at
- * most one DayConflict):
- *
- *  (a) SAME-DAY:
- *      there exists a non-deleted external_event whose `date` == D.
- *        - if ANY same-day event is HARD → severity "clash" (real
- *          interference: a heavy/key endurance session on a strength day).
- *        - else (all same-day endurance is easy/short) → severity "brick"
- *          (a benign, intended same-day pairing — NOT a problem; surfaced
- *          informationally so a UI can label the brick).
- *      `conflicts` = the ids of ALL same-day events either way.
- *
- *  (b) DAY-BEFORE-HARD  → severity "heavy-next-day":
- *      D itself has no same-day event, AND there exists a non-deleted
- *      external_event E on the immediately following calendar day
- *      (date == D + 1 civil day) that is HARD.
- *      `conflicts` = the ids of ALL such hard next-day events.
- *      (Sub-threshold next-day events do NOT flag.)
- *
- * NOTE ON "heavy LOWER-BODY": the §7 ideal keys a clash off a heavy/lower-
- * body strength day. `detectConflicts` has no per-day strength load/muscle
- * metadata in its inputs today (lift dates are bare strings), so M4 uses the
- * conservative, available proxy — the endurance side's hardness — exactly as
- * the day-before branch does. Tightening to lower-body-aware clashes needs
- * strength-day metadata plumbed in; left for a later milestone.
- *
- * "Calendar day before/after" uses the YYYY-MM-DD civil date (the same
- * tz-free rule as weekdayOf/addDays) — never a UTC offset. Output is
- * sorted by date ascending and is fully deterministic.
- */
+/** Scheduling heuristic, mirrored by Swift. These fixed thresholds use only
+ * planned endurance load/duration and lift dates; they cannot establish
+ * individualized interference or safety. One missing measure leaves context
+ * incomplete even when the other is known. Same-day takes priority. */
 export function detectConflicts(
   liftDates: Iterable<string>,
   events: Pick<ExternalEventRow, 'id' | 'date' | 'training_load' | 'planned_duration_sec'>[],
@@ -10472,9 +10430,9 @@ export function detectConflicts(
   for (const d of dates) {
     const sameDay = byDate.get(d);
     if (sameDay && sameDay.length) {
-      // A same-day pairing is a real 'clash' only when the endurance side is
-      // hard (key/long); otherwise it is an intended 'brick'.
-      const severity: DayConflict['severity'] = sameDay.some(isHard) ? 'clash' : 'brick';
+      // Known threshold evidence wins; missing inputs never mean easy work.
+      const severity: DayConflict['severity'] = sameDay.some(isHard) ? 'clash'
+        : sameDay.some(e => e.training_load == null || e.planned_duration_sec == null) ? 'unknown' : 'brick';
       out.push({ date: d, conflicts: sameDay.map((e) => e.id), severity });
       continue;
     }
@@ -10483,6 +10441,9 @@ export function detectConflicts(
       const hard = next.filter(isHard);
       if (hard.length) {
         out.push({ date: d, conflicts: hard.map((e) => e.id), severity: 'heavy-next-day' });
+      } else {
+        const incomplete = next.filter(e => e.training_load == null || e.planned_duration_sec == null);
+        if (incomplete.length) out.push({ date: d, conflicts: incomplete.map(e => e.id), severity: 'unknown' });
       }
     }
   }

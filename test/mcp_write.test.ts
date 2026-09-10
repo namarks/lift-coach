@@ -1,4 +1,4 @@
-import { env, applyD1Migrations, SELF } from 'cloudflare:test';
+import { env, applyD1Migrations, fetchMock, SELF } from 'cloudflare:test';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { logSet } from '../src/db';
 
@@ -262,17 +262,27 @@ describe('mcp write tools', () => {
       }>()
     )!.c;
 
-    // In the offline test runtime the real intervals.icu fetch cannot
-    // connect, so both syncs return the failed-fetch guard status WITHOUT
-    // touching the caches. The tool returns {rides,activities}, each a
-    // {synced,status} pair (planned events + completed activities).
-    const r = await call('refresh_rides', {});
-    expect(r.rides).toHaveProperty('status');
-    expect(r.rides).toHaveProperty('synced');
-    expect(r.activities).toHaveProperty('status');
-    expect(r.activities).toHaveProperty('synced');
-    expect(['ok', 'fetch_failed', 'disabled']).toContain(r.rides.status);
-    expect(['ok', 'fetch_failed', 'disabled']).toContain(r.activities.status);
+    // Exercise provider failure without real network I/O. A real fetch can
+    // outlive Vitest's timeout and leave D1 work pending during isolation
+    // cleanup. Both endpoint mocks must be consumed before the test finishes.
+    fetchMock.activate();
+    fetchMock.disableNetConnect();
+    const provider = fetchMock.get('https://intervals.icu');
+    for (const endpoint of ['events', 'activities']) {
+      provider.intercept({
+        method: 'GET',
+        path: (path) => new URL(path, 'https://intervals.icu').pathname === `/api/v1/athlete/i12345/${endpoint}`,
+      }).reply(503, 'Synthetic provider unavailable');
+    }
+    try {
+      const r = await call('refresh_rides', {});
+      expect(r.rides).toEqual({ synced: 0, status: 'fetch_failed', detail: 'http:503' });
+      expect(r.activities).toEqual({ synced: 0, status: 'fetch_failed', detail: 'http:503' });
+      fetchMock.assertNoPendingInterceptors();
+    } finally {
+      fetchMock.deactivate();
+      fetchMock.enableNetConnect();
+    }
 
     // Audited (action), but NO plan-version bump and NO claude notes row.
     const auditAfter = (

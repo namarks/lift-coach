@@ -633,26 +633,24 @@ struct DayAgendaView: View {
 
     /// Static, read-only conflict explanation (NO action / button —
     /// adjustments happen in the Claude app, mirroring no-in-app-chat).
-    /// `.clash` (same-day HARD) keeps the original single line;
-    /// `.heavyNextDay` adds the triggering next-day hard ride's context
-    /// (named, with duration/TSS when available, graceful when it can't be
-    /// found). `.brick` (M4: a benign same-day EASY pairing) and `.none`
-    /// render NOTHING — an intended brick is not a warning.
+    /// Fixed scheduling heuristic; missing inputs remain visible as unknown.
     @ViewBuilder private func conflictMessage(_ conflict: RideConflict.Severity) -> some View {
-        if conflict == .clash || conflict == .heavyNextDay {
+        if conflict == .clash || conflict == .heavyNextDay || conflict == .unknown {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundStyle(Theme.accent)
-                    Text(conflict == .heavyNextDay
-                         ? "Hard ride the next day — ask Claude to adjust"
-                         : "Conflicts with a planned ride — ask Claude to adjust")
+                    Text(conflict == .unknown ? "Endurance context incomplete"
+                         : conflict == .heavyNextDay ? "Higher planned endurance load tomorrow"
+                         : "Strength and higher planned endurance load today")
                         .font(Theme.mono(12, .bold))
                         .foregroundStyle(Theme.accent)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
+                Text("Scheduling heuristic · planned endurance load ≥150 or duration ≥2h 30m. Missing values are unknown; this does not measure recovery or safety.")
+                    .font(Theme.mono(11)).foregroundStyle(Theme.muted)
                 // Next-day hard ride context (only for .heavyNextDay).
                 if conflict == .heavyNextDay {
                     if let ride = nextDayHardRide {
@@ -664,7 +662,7 @@ struct DayAgendaView: View {
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
-                        Text("A hard ride is planned for the next day.")
+                        Text("A planned endurance event meets a scheduling threshold tomorrow.")
                             .font(Theme.mono(11, .bold))
                             .foregroundStyle(Theme.muted)
                             .fixedSize(horizontal: false, vertical: true)

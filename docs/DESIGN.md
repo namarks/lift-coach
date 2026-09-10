@@ -240,7 +240,7 @@ and block changes are Claude editing `target_*`/`progression` and writing a
 | `POST /api/sessions/{id}/sets` | Idempotent on body `id`. `{id, exercise_id, set_index, weight, reps, rpe?, is_warmup?, notes?, logged_at}` with existing slot/timed/attempt context and optional `prescription: {plan_id, version, day_id}` from the plan shown at the tap. |
 | `PATCH /api/sets/{id}` | Edit / soft-delete a set. Runner corrections supply all of `expected_session_id`, `expected_attempt`, `expected_updated_at`; stale competing changes return 409. Guarded success returns the flat set row plus its authoritative `session`. Legacy callers retain the flat row response. |
 | `GET /api/history?exercise_id=&from=&to=` | Set history + comparisons by exercise/mode/external load; conventional rep Epley only. |
-| `GET /api/volume?muscle=&from=&to=` | Nullable external-load volume (`tonnage_basis: external_load`) & hard sets per week bucket. |
+| `GET /api/volume?muscle=&from=&to=` | External-load volume grouped by unit, logged working sets (legacy `hard_sets` alias), primary-muscle attribution and recorded-effort coverage per week bucket. |
 | `GET /api/me/export` | Download the signed caller's portable account and training-data snapshot as a non-cacheable JSON attachment. Excludes credentials, tokens, invite capabilities, and other members' private data. |
 | `DELETE /api/me` | Permanently delete the signed caller after explicit in-app confirmation and recent Apple authentication. A UUID-bound intent serializes provider revocation and local deletion; a durable receipt makes a lost success response safe to acknowledge. The response reports `apple_revocation: revoked|manual_required`; provider failure, legacy accounts without a stored token, or an uncertain exchange never retain local data and instead trigger the manual Apple Account handoff. |
 | `PUT /api/plan/active` | Idempotently ensure an active plan for manual authoring. Returns the existing winner on retry/concurrent coach creation and never archives it; explicit plan replacement archives and inserts atomically so the two creation paths cannot violate the one-active-plan invariant. |
@@ -400,6 +400,24 @@ time. Mitigation: the static-bearer path is a guaranteed fallback; verify
 the OAuth path empirically at milestone (b) before polishing it.
 
 ---
+
+## Coaching context
+
+The compact MCP resource/prompt and iOS Coaching context view use private
+session/set logs, the exercise catalog and authored plan metadata. Recent means
+up to seven non-discarded sessions through the member's civil today; a separate
+last-completed projection preserves feedback even beyond that window. Both
+session paths use the same semantic projector, tested with shared Swift/TS
+fixtures. Schedule, race, periodization, trips and freeform stress settings stay
+authored data; the Worker does not interpret them. The resource names its
+cached endurance sources and keeps missing measures explicit.
+
+Logged working-set counts are literal non-warm-up rows, with primary-muscle
+attribution only and recorded RPE coverage. External-load volume uses positive
+rep loads with side/implement multipliers and keeps units separate; unavailable
+volume is absent and the legacy scalar is null for mixed units. Neither count
+is measured stimulus, complete muscle volume, bodyweight system load or readiness.
+Legacy `hard_sets` is only an alias, not an effort threshold.
 
 ## 7. Sync — the other hard one
 

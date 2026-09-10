@@ -208,7 +208,7 @@ The brief omits session notes and renders key sets as `weight x reps`, so a
 missing. See [set envelope](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/ios/TresFort/SetOutbox.swift#L6)
 and [brief](https://github.com/namarks/tres-fort/blob/696c1d34c98d956a3e1fddf78fcfd5eba168e874/src/mcp/server.ts#L1439).
 
-**Closure:** [coaching-feedback-loop P0/P2](../../plans/coaching-feedback-loop/plan.md)
+**Closure:** [coaching-feedback-loop P0/P2](../../plans/completed/coaching-feedback-loop/plan.md)
 now names durable optional feedback, typed/semantic key sets, last-completed
 context and relevant authored metadata. Runner P0 owns set RPE. Missing
 feedback stays missing, completion requires no questionnaire, and private

@@ -54,8 +54,10 @@ correct workout.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0 | coordinates_with | plan:coaching-feedback-loop#P1 | Start onboarding/authentication independently; integrate after PR #164 lands and rerun affected tests and exact-head review for shared SyncModel, Today and fixtures. |
 | P2(a) | gated_by | external:starter-plan-policy | Implementing or explicitly declining the starter path requires the product decision; evidence and recommendation do not. |
+
+P0 integrated the [completed coaching feedback/history contracts](../completed/coaching-feedback-loop/plan.md)
+and retains their shared SyncModel, Today and fixture behavior.
 
 ## Next step
 

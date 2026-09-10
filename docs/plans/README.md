@@ -91,8 +91,10 @@ until their named authority, evidence, or activation condition is satisfied.
 Close the feedback loop between what an athlete experiences and what the coach
 can understand and safely change.
 
-- [Coaching feedback loop](coaching-feedback-loop/plan.md) — **planned**;
-  capture useful session feedback and show the resulting coaching rationale.
+[Completed coaching feedback loop](completed/coaching-feedback-loop/plan.md)
+provides private feedback, visible/correctable plan changes and accurate training
+context. [Physical iPhone feedback verification](completed/coaching-feedback-loop/device-verification.md)
+remains a separately authorized release follow-up.
 
 ### Gym floor (`gym-floor`)
 
