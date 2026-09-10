@@ -129,8 +129,12 @@ App Store publication remain separately authorized steps.
   correction, including background/foreground use. Rejected block requests now
   revalidate membership rather than leaving a false empty-group screen; an offline
   reload exposes retry while preserving the original block error. The regression
-  reproduced both failures before the fix; all four safety unit tests pass after
-  it. No production or App Store changes occurred.
+  reproduced both failures before the fix. Blocks and operator restrictions now
+  share one recovery path that clears shared projections before either write and
+  reconciles uncertain responses. The lost-restriction-response regression also
+  failed before this correction; all five safety unit tests and both safety
+  journeys pass afterward, with all 274 input hashes matching. No production or
+  App Store changes occurred.
 - P1 protected-storage repository work was delivered in
   [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
   `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as

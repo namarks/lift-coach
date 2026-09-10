@@ -138,4 +138,42 @@ final class GroupSafetyTests: XCTestCase {
         }
     }
 
+
+    func testLostRestrictionResponseClearsSharedDataBeforeWriteAndReconciles() async throws {
+        let suite = "GroupSafetyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let auth = AuthModel(tokenStore: TokenStore(), defaults: defaults)
+        auth.userID = "user-a"
+        let payload = try JSONSerialization.data(withJSONObject: ["sub": "user-a", "exp": 4_000_000_000])
+        auth.jwt = "header." + payload.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".signature"
+        var reloads = 0
+        var model: GroupModel!
+        model = GroupModel(auth: auth, defaults: defaults, groupLister: { _ in
+            reloads += 1
+            return []
+        }, profileLoader: { _ in throw URLError(.notConnectedToInternet) }, groupRestrictionWriter: { _, _, _, _ in
+            XCTAssertTrue(model.groups.isEmpty)
+            XCTAssertTrue(model.feed.isEmpty)
+            XCTAssertTrue(model.stats.isEmpty)
+            throw URLError(.networkConnectionLost)
+        })
+        model.phase = .ready
+        model.groups = [.init(id: "group", name: "Crew", created_by: "user-b", created_at: 1, members: [])]
+        model.feed["group"] = [.unknown(.init(id: "activity", user_id: "user-b", user_display_name: "Restricted member",
+            is_me: false, date: "2026-09-10", occurred_at: 1))]
+        model.stats["group"] = [.init(user_id: "user-b", display_name: "Restricted member", avatar_initials: "RM",
+            is_me: false, workout_count: 1, streak_days: 1, last_active: 1)]
+        do {
+            try await model.setSharingRestriction(userID: "user-b", active: true, reason: .harassment)
+            XCTFail("The lost response must remain an error")
+        } catch { XCTAssertEqual((error as? URLError)?.code, .networkConnectionLost) }
+        XCTAssertEqual(reloads, 1)
+        XCTAssertTrue(model.groups.isEmpty)
+        XCTAssertTrue(model.feed.isEmpty)
+        XCTAssertTrue(model.stats.isEmpty)
+        XCTAssertEqual(model.phase, .none)
+        model = nil
+    }
+
 }

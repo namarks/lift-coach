@@ -91,6 +91,7 @@ final class GroupModel: ObservableObject {
     private let groupLister: ((String) async throws -> [GroupSummary])?
     private let groupSafetyLoader: ((String) async throws -> GroupSafetyState)?
     private let groupBlockWriter: ((String, Bool, String) async throws -> Void)?
+    private let groupRestrictionWriter: ((String, Bool, GroupReportReason, String) async throws -> Void)?
     private let profileLoader: ((String) async throws -> MeProfile)?
     private let intervalsConnector: ((String?, String?, String) async throws -> APIClient.IntervalsConnectResult)?
     private let intervalsImporter: ((Int, String) async throws -> IntervalsImportResult)?
@@ -117,6 +118,7 @@ final class GroupModel: ObservableObject {
         groupLister: ((String) async throws -> [GroupSummary])? = nil,
         profileLoader: ((String) async throws -> MeProfile)? = nil,
         groupBlockWriter: ((String, Bool, String) async throws -> Void)? = nil,
+        groupRestrictionWriter: ((String, Bool, GroupReportReason, String) async throws -> Void)? = nil,
         groupSafetyLoader: ((String) async throws -> GroupSafetyState)? = nil,
         intervalsConnector: ((String?, String?, String) async throws -> APIClient.IntervalsConnectResult)? = nil,
         intervalsImporter: ((Int, String) async throws -> IntervalsImportResult)? = nil,
@@ -131,6 +133,7 @@ final class GroupModel: ObservableObject {
         self.groupLister = groupLister
         self.profileLoader = profileLoader
         self.groupBlockWriter = groupBlockWriter
+        self.groupRestrictionWriter = groupRestrictionWriter
         self.groupSafetyLoader = groupSafetyLoader
         self.intervalsConnector = intervalsConnector
         self.intervalsImporter = intervalsImporter
@@ -773,11 +776,25 @@ final class GroupModel: ObservableObject {
     }
 
     func setGroupBlock(userID: String, active: Bool) async throws {
+        try await changeGroupSafety { jwt in
+            if let groupBlockWriter { try await groupBlockWriter(userID, active, jwt) }
+            else { try await api.setGroupBlock(userID: userID, active: active, jwt: jwt) }
+        }
+    }
+
+    func setSharingRestriction(userID: String, active: Bool, reason: GroupReportReason) async throws {
+        try await changeGroupSafety { jwt in
+            if let groupRestrictionWriter { try await groupRestrictionWriter(userID, active, reason, jwt) }
+            else { try await api.setSharingRestriction(userID: userID, active: active, reason: reason, jwt: jwt) }
+        }
+    }
+
+    /// Both safety writes share the same uncertain-response and refresh rules.
+    private func changeGroupSafety(_ write: (String) async throws -> Void) async throws {
         guard let jwt = currentJWT else { throw APIError.http(401, "not_signed_in") }
         invalidateSharedGroups()
         do {
-            if let groupBlockWriter { try await groupBlockWriter(userID, active, jwt) }
-            else { try await api.setGroupBlock(userID: userID, active: active, jwt: jwt) }
+            try await write(jwt)
         } catch {
             guard isCurrentAccount else { return }
             handle(error, jwt: jwt)
@@ -788,18 +805,10 @@ final class GroupModel: ObservableObject {
         }
         guard isCurrentAccount else { return }
         invalidateSharedGroups()
-        // A failed refresh cannot turn an acknowledged block into a failed
+        // A failed refresh cannot turn an acknowledged write into a failed
         // mutation. Retain empty projections until a later successful load.
         await load()
         try? await refreshGroupSafety()
-    }
-
-    func setSharingRestriction(userID: String, active: Bool, reason: GroupReportReason) async throws {
-        guard let jwt = currentJWT else { throw APIError.http(401, "not_signed_in") }
-        try await api.setSharingRestriction(userID: userID, active: active, reason: reason, jwt: jwt)
-        guard isCurrentAccount else { return }
-        invalidateSharedGroups()
-        await load()
     }
 
     // MARK: - Intervals.icu
