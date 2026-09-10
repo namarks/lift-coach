@@ -100,7 +100,7 @@ struct JoinInviteConfirmSheet: View {
         case .failed:
             Text("Couldn't load this invite")
                 .font(.title3.weight(.bold)).foregroundStyle(Theme.text)
-            Text("Check your connection and try again. Your invite has not been redeemed.")
+            Text("Check your connection and try again to review this invite.")
                 .font(.subheadline).foregroundStyle(Theme.muted).multilineTextAlignment(.center)
             Button("Try again") { Task { await load() } }
                 .frame(minHeight: 44)

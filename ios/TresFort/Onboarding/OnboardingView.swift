@@ -302,7 +302,7 @@ private struct CoachIntroStep: View {
             StepHeader(icon: "dumbbell.fill",
                        title: "Choose your first step",
                        subtitle: "Build and schedule your workouts here, or connect your own Claude to help with your plan. Every member has their own Coach Connect, whether joining a group or training independently.")
-            Text("Both paths use your same plan. Workouts and Coach Connect in Profile are available whenever you're ready.")
+            Text("Both paths use your same plan. Find Workouts in Today’s menu and Coach Connect in Profile whenever you're ready.")
                 .font(.footnote).foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
             OnboardingPrimaryButton("Build my first workout", action: onManual)

@@ -1,30 +1,31 @@
 import SwiftUI
 
-/// The signed-in host delivers the same pending navigation after first-run
-/// setup and after ordinary authentication recovery. Each sheet retains its
-/// own intent and epoch, so a delayed dismissal cannot consume a newer link.
+/// Consume navigation at the sheet's dismissal boundary. Keep the original
+/// intent and epoch until that callback, including interactive dismissals.
 struct MemberEntryPresentation: ViewModifier {
     @ObservedObject var auth: AuthModel
     @ObservedObject var sync: SyncModel
     @ObservedObject var groupModel: GroupModel
     var onJoined: () -> Void
     var onCoach: () -> Void
-    @State private var presented: MemberEntryIntent?
-    @State private var presentedEpoch: UInt64?
+
+    private struct Presentation {
+        let intent: MemberEntryIntent
+        let epoch: UInt64
+    }
+    @State private var presented: Presentation?
+    @State private var showing = false
 
     func body(content: Content) -> some View {
         content
             .task(id: auth.nextEntryIntent?.id) { presentNext() }
-            .sheet(item: $presented, onDismiss: {
-                presentedEpoch = nil
-                presentNext()
-            }) { intent in
-                let epoch = presentedEpoch ?? auth.featureSessionEpoch
-                Group {
-                    switch intent.destination {
+            .sheet(isPresented: $showing, onDismiss: finishPresented) {
+                if let presentation = presented {
+                    switch presentation.intent.destination {
                     case let .invite(code):
                         JoinInviteConfirmSheet(groupModel: groupModel, code: code) {
-                            guard auth.isCurrentFeatureSession(accountID: intent.accountID, epoch: epoch) else { return }
+                            guard auth.isCurrentFeatureSession(
+                                accountID: presentation.intent.accountID, epoch: presentation.epoch) else { return }
                             onJoined()
                         }
                     case .coach:
@@ -32,7 +33,7 @@ struct MemberEntryPresentation: ViewModifier {
                             CoachConnectView(groupModel: groupModel)
                                 .toolbar {
                                     ToolbarItem(placement: .cancellationAction) {
-                                        Button("Done") { presented = nil }
+                                        Button("Done") { showing = false }
                                     }
                                 }
                         }
@@ -40,15 +41,20 @@ struct MemberEntryPresentation: ViewModifier {
                         WorkoutsView(sync: sync)
                     }
                 }
-                .onDisappear { auth.finishEntry(intent, epoch: epoch) }
             }
     }
 
+    private func finishPresented() {
+        guard let presentation = presented else { return }
+        auth.finishEntry(presentation.intent, epoch: presentation.epoch)
+        presented = nil
+        presentNext()
+    }
+
     private func presentNext() {
-        guard presented == nil, presentedEpoch == nil,
-              let intent = auth.nextEntryIntent else { return }
-        presentedEpoch = auth.featureSessionEpoch
+        guard presented == nil, !showing, let intent = auth.nextEntryIntent else { return }
+        presented = Presentation(intent: intent, epoch: auth.featureSessionEpoch)
         if intent.destination == .coach { onCoach() }
-        presented = intent
+        showing = true
     }
 }

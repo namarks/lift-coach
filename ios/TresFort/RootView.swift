@@ -85,9 +85,8 @@ struct RootView: View {
 }
 
 /// Open sign-in. Anyone can sign in with Apple; no invite code required.
-/// Invited friends sign in first, then redeem their code from inside the
-/// Group tab via "Join with code" — that path lives entirely in the
-/// signed-in app surface, so the sign-in screen stays a single button.
+/// Invite links and the personal coach setup choice survive authentication;
+/// the signed-in host presents their confirmation or setup destination.
 private struct SignedOutView: View {
     @ObservedObject var model: AuthModel
 

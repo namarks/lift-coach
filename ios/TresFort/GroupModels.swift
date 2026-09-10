@@ -459,9 +459,9 @@ struct MeProfile: Decodable, Equatable {
         let needs_reauth: Bool?
     }
 
-    /// Claude coaching is single-owner. `is_owner` = this account is the one
-    /// Claude operates on. `connected` = owner AND the claude.ai connector is
-    /// authorized. `last_active` = most recent MCP write (epoch ms).
+    /// `is_owner` identifies the bootstrap owner; all members can connect their
+    /// own coach. `connected` and `last_active` describe this account's access,
+    /// never a different group member's coach or plan (epoch ms).
     struct ClaudeStatus: Decodable, Equatable {
         let is_owner: Bool
         let connected: Bool

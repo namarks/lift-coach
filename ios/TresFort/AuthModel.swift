@@ -72,7 +72,7 @@ final class AuthModel: ObservableObject {
     /// main app. `false` ⇒ a brand-new sign-in that hasn't been guided
     /// through setup yet. Persisted so it survives relaunch and never
     /// re-fires once completed. See the grandfathering logic in `init`.
-    @Published var onboardingComplete: Bool
+    @Published var onboardingComplete = false
 
     @Published private(set) var pendingEntryIntents: [MemberEntryIntent] = []
     static let pendingEntryKey = "com.nmarkspdx.liftcoach.pending-entry.v1"
@@ -352,7 +352,11 @@ final class AuthModel: ObservableObject {
                         userID: res.user.id))
             }
             reauthenticationReason = nil
-            onboardingComplete = defaults.bool(forKey: AccountLocalState.onboardedKey(userID: res.user.id))
+            let onboardingKey = AccountLocalState.onboardedKey(userID: res.user.id)
+            if defaults.object(forKey: onboardingKey) == nil {
+                defaults.set(false, forKey: onboardingKey)
+            }
+            onboardingComplete = defaults.bool(forKey: onboardingKey)
             bindEntryIntents(to: res.user.id)
             phase = .signedIn
         } catch {

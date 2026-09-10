@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 
 /// Navigation only: never stores an Apple credential or a coach connect code.
 /// Unbound links belong to the next successful sign-in. Once bound, an intent
