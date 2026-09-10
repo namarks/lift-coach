@@ -110,8 +110,13 @@ Preserve external release and publication gates.
   executed 468 unit tests with zero failures and one explicit simulator
   protection skip, plus 14 passing onboarding/workout/feedback UI journeys.
   The final account-isolation and foreground-recovery follow-up passed 71 focused
-  unit tests and the manual onboarding journey. Independent review and remote CI
-  must finish before repository delivery is complete.
+  unit tests and the manual onboarding journey. Independent review identified
+  two navigation-persistence gaps; the follow-up preserves unreadable intents,
+  requires durable saves before navigation changes and reloads account binding
+  after recovery. Its 77 focused unit tests and eight onboarding/invite UI
+  journeys passed, with all 268 iOS source-manifest entries matching the tested
+  files. Fresh independent review and remote CI must finish before repository
+  delivery is complete.
   The file-protection test must pass on a physical iPhone; simulator results do
   not prove this property. See the release audit for upgrade/rollback constraints.
 - [Release audit, 2026-09-10](release-audit-2026-09-10.md): production version
@@ -131,6 +136,9 @@ Preserve external release and publication gates.
   `0.1.0 (34)` was `VALID`, `APP_STORE_ELIGIBLE`, `IN_BETA_TESTING`. Re-read before
   writes. Existing API permissions did not allow pricing/availability reads;
   agreements and App Privacy answers remain unverified.
+- Owner phone screenshot, 2026-09-10: pricing and app availability are both
+  unset. Phone instructions provided for the approved free / US-only setup;
+  saved values and agreement readiness remain unverified.
 - Website hosting belongs to [PR #170](https://github.com/namarks/tres-fort/pull/170);
   do not duplicate its edits. Merged source is not public-URL evidence.
 - Repository work is authorized through required review and merge. Production

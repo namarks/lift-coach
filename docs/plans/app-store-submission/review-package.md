@@ -145,6 +145,10 @@ over stale preference values; a failed migration preserves its source bytes.
 Unreadable durable work pauses feature requests, and failed saves do not claim
 a queued write. Foreground return retries storage after a normal device unlock;
 unresolved failures expose Retry and support controls.
+An unsuccessful navigation save asks the member to retry storage and reopen
+the link or choose the destination again. Sign-out preserves the account until
+saved navigation can be cleared; confirmed account deletion can explicitly
+erase unreadable local data.
 
 Verify protection on a physical iPhone and audit the final archive before
 finalizing privacy answers. The old TestFlight build cannot read the new local

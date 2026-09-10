@@ -93,10 +93,11 @@ final class LocalPersistenceTests: XCTestCase {
         XCTAssertTrue(SetOutboxStore.load(userID: "a", defaults: local).isEmpty)
         XCTAssertTrue(local.hasFailure(userID: "a"))
         XCTAssertFalse(SetOutboxStore.save(SetOutbox(), userID: "a", defaults: local))
+        XCTAssertFalse(local.removeObject(forKey: key))
         XCTAssertFalse(local.retry(userID: "a"))
         XCTAssertEqual(try h.store.data(forKey: key), original)
         // Explicit account cleanup is permitted to erase the corrupt bytes.
-        XCTAssertTrue(SetOutboxStore.clear(userID: "a", defaults: local))
+        XCTAssertTrue(AccountLocalState.clear(userID: "a", defaults: local))
         XCTAssertNil(try h.store.data(forKey: key))
     }
 

@@ -80,6 +80,15 @@ relaunch. A foreground retry handles ordinary protected-data unavailability;
 unresolved errors expose a local recovery banner. Final exact-head review/CI
 and physical-device proof remain required.
 
+Navigation recovery also preserves unreadable envelopes and invalid encoded
+intents. Ordinary removal cannot erase a failed read. Link requests and sheet
+dismissals update visible state only after persistence succeeds; onboarding
+does not advance after a failed destination save. Storage recovery reloads
+AuthModel's saved links and resumes account binding. A failed bind cannot pass
+an unbound link to another account. Sign-out requires successful navigation
+cleanup; acknowledged account deletion has a separate path that can erase
+unreadable bytes while retaining its receipt until cleanup succeeds.
+
 Before candidate upload, use a physical iPhone to verify file protection on the
 same source, upgrade migration without erasing the install, offline workout
 recovery, lock/unlock and foreground retry, and account deletion. Backup exclusion
@@ -103,3 +112,12 @@ dated September 10, 2026 and visibly covers account/training data, on-device
 speech, optional providers, group sharing, export/deletion and support.
 Browser reachability and visible links are verified; mailbox delivery was not
 tested and the HTTP-client 403 behavior remains distinct.
+
+## Owner-provided App Store Connect readback
+
+The owner's 2026-09-10 phone screenshot of Très Fort's Pricing and Availability
+page shows **Add Pricing** and **Set Up Availability**: neither setting was
+configured in that view. The owner has instructions to set a US base price of
+$0 and availability in the United States only. Saving and the resulting values
+remain unverified; signing in on the phone does not authenticate the agent's
+browser. Agreement readiness remains separate and unverified.

@@ -102,29 +102,33 @@ enum AccountLocalState {
     @MainActor
     @discardableResult
     static func clear(userID: String, defaults: LocalPersistence = .standard) -> Bool {
-        defaults.removeObject(forKey: PlanChangeDismissalStore.key(userID: userID))
-        ActivityOutboxStore.clear(userID: userID, defaults: defaults)
-        SetOutboxStore.clear(userID: userID, defaults: defaults)
-        SetCorrectionOutboxStore.clear(userID: userID, defaults: defaults)
-        WorkoutTerminalOutboxStore.clear(userID: userID, defaults: defaults)
+        let protectedKeys = [
+            PlanChangeDismissalStore.key(userID: userID),
+            ActivityOutboxStore.scopedKey(userID: userID),
+            SetOutboxStore.scopedKey(userID: userID),
+            SetCorrectionOutboxStore.key(userID: userID),
+            WorkoutTerminalOutboxStore.scopedKey(userID: userID),
+            WorkoutRunnerCheckpointStore.scopedKey(userID: userID),
+            ExerciseCatalogSnapshotStore.scopedKey(userID: userID),
+            intervalsConnectionKey(userID: userID),
+            healthAnchorKey(userID: userID),
+        ]
+        for key in protectedKeys { defaults.eraseAfterAccountDeletion(forKey: key) }
         WorkoutWriteRetryDeadlineStore.clear(
             userID: userID, defaults: defaults)
-        WorkoutRunnerCheckpointStore.clear(userID: userID, defaults: defaults)
-        StateSnapshotStore.clear(userID: userID, defaults: defaults)
+        StateSnapshotStore.clear(userID: userID, defaults: defaults, afterAccountDeletion: true)
         StateSyncAccountStore.clearIfActive(userID: userID, defaults: defaults)
-        ExerciseCatalogSnapshotStore.clear(userID: userID, defaults: defaults)
-        defaults.removeObject(forKey: intervalsConnectionKey(userID: userID))
         defaults.removeObject(forKey: healthEnabledKey(userID: userID))
-        defaults.removeObject(forKey: healthAnchorKey(userID: userID))
 
         // Defensive upgrade cleanup: if this account never mounted the feature
         // models after updating, the process-global v1 values may not have been
         // migrated yet. They must not survive permanent deletion for a future
         // Apple account to inherit.
         if claimLegacyState(userID: userID, defaults: defaults) {
-            defaults.removeObject(forKey: legacyIntervalsConnectionKey)
+            defaults.eraseAfterAccountDeletion(forKey: ActivityOutboxStore.legacyKey)
+            defaults.eraseAfterAccountDeletion(forKey: legacyIntervalsConnectionKey)
             defaults.removeObject(forKey: legacyHealthEnabledKey)
-            defaults.removeObject(forKey: legacyHealthAnchorKey)
+            defaults.eraseAfterAccountDeletion(forKey: legacyHealthAnchorKey)
         }
         // Retain the deletion receipt key and auth context until protected
         // cleanup succeeds. Retrying DELETE safely resumes its server receipt.

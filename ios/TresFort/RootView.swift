@@ -43,20 +43,29 @@ struct RootView: View {
             }
         }
         .safeAreaInset(edge: .top) {
-            if defaults.hasFailure(userID: model.userID) {
+            if defaults.hasFailure(userID: model.userID) || model.entryPersistenceError != nil {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Saved training needs attention").font(.headline)
                     Text("A local save or read failed. Unlock your iPhone and check its available storage, then retry. Keep the app installed to preserve unsynced workouts.")
                         .font(.footnote)
+                    if let message = model.entryPersistenceError {
+                        Text(message).font(.footnote)
+                    }
                     HStack {
                         Button("Retry saved data") { defaults.retry(userID: model.userID) }
                         Link("Contact support", destination: AppInformation.supportURL)
+                        if !defaults.hasFailure(userID: model.userID) {
+                            Button("Dismiss") { model.dismissEntryPersistenceError() }
+                        }
                     }
                 }
                 .padding().frame(maxWidth: .infinity, alignment: .leading)
                 .background(.regularMaterial)
                 .accessibilityIdentifier("storage.failure")
             }
+        }
+        .onChange(of: defaults.recoveryGeneration) { _, _ in
+            model.recoverEntryIntents()
         }
         .onChange(of: scenePhase) { _, phase in
             // Complete file protection intentionally denies background reads

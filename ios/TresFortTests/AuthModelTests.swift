@@ -1956,6 +1956,147 @@ final class AuthModelTests: XCTestCase {
 
 
 extension AuthModelTests {
+    func testUnreadableEntrySurvivesLaunchSignOutAndRetryUntilExplicitDeletion() async throws {
+        for invalidEnvelope in [false, true] {
+            let h = LocalPersistenceTestHarness()
+            addTeardownBlock { h.cleanup() }
+            let local = h.open(), key = AuthModel.pendingEntryKey
+            local.set("user-a", forKey: AuthModel.userIDKey)
+            let corrupt = Data("unreadable saved navigation".utf8)
+            XCTAssertTrue(local.set(corrupt, forKey: key))
+            if invalidEnvelope { try corrupt.write(to: h.store.fileURL(forKey: key)) }
+            let originalFile = try Data(contentsOf: h.store.fileURL(forKey: key))
+            let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+            let api = AuthAPIStub()
+            api.deletionResult = .success(.init(ok: true, owner_tombstoned: false, apple_revocation: .revoked))
+            let auth = AuthModel(api: api, tokenStore: tokens, defaults: local)
+            XCTAssertTrue(local.hasFailure(userID: "user-a"))
+            XCTAssertNil(auth.featureJWT)
+            XCTAssertFalse(auth.requestEntry(.coach))
+            auth.signOut()
+            XCTAssertEqual(auth.userID, "user-a")
+            XCTAssertFalse(local.retry(userID: "user-a"))
+            XCTAssertEqual(try Data(contentsOf: h.store.fileURL(forKey: key)), originalFile)
+            try await auth.deleteAccount()
+            XCTAssertNil(try h.store.data(forKey: key))
+            XCTAssertNil(tokens.token)
+            XCTAssertNil(auth.userID)
+        }
+    }
+
+    func testFailedEntryRequestDoesNotAcceptUnsavedNavigation() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open(), tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: local)
+        XCTAssertTrue(auth.requestEntry(.invite("ABC234")))
+        let original = auth.pendingEntryIntents
+        let bytes = try h.store.data(forKey: AuthModel.pendingEntryKey)
+        h.faults.failWrites = true
+        XCTAssertFalse(auth.requestEntry(.coach))
+        XCTAssertEqual(auth.pendingEntryIntents, original)
+        XCTAssertNotNil(auth.entryPersistenceError)
+        XCTAssertNil(auth.nextEntryIntent)
+        XCTAssertEqual(try h.store.data(forKey: AuthModel.pendingEntryKey), bytes)
+        let cold = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: h.open())
+        XCTAssertEqual(cold.pendingEntryIntents, original)
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        XCTAssertTrue(auth.requestEntry(.coach))
+        XCTAssertNil(auth.entryPersistenceError)
+        let restored = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: h.open())
+        XCTAssertEqual(restored.pendingEntryIntents.map(\.destination), [.invite("ABC234"), .coach])
+    }
+
+    func testFailedEntryDismissalKeepsDurableDestinationForRetry() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open(), tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: local)
+        XCTAssertTrue(auth.requestEntry(.coach))
+        let intent = try XCTUnwrap(auth.nextEntryIntent)
+        h.faults.failWrites = true
+        XCTAssertFalse(auth.finishEntry(intent, epoch: auth.featureSessionEpoch))
+        XCTAssertEqual(auth.pendingEntryIntents, [intent])
+        let cold = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: h.open())
+        XCTAssertEqual(cold.nextEntryIntent, intent)
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        XCTAssertTrue(auth.finishEntry(intent, epoch: auth.featureSessionEpoch))
+        XCTAssertNil(try h.store.data(forKey: AuthModel.pendingEntryKey))
+    }
+
+    func testFailedEntryBindRecoversWithoutTransferringToAnotherAccount() async throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open(), api = AuthAPIStub(), tokens = MemoryTokenStore()
+        let auth = AuthModel(api: api, tokenStore: tokens, defaults: local)
+        XCTAssertTrue(auth.requestEntry(.invite("ABC234")))
+        let original = try h.store.data(forKey: AuthModel.pendingEntryKey)
+        h.faults.failWrites = true
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-a"),
+            user: UserDTO(id: "user-a", display_name: nil, email: nil)))
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        XCTAssertEqual(auth.userID, "user-a")
+        XCTAssertNil(auth.featureJWT)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        XCTAssertEqual(try h.store.data(forKey: AuthModel.pendingEntryKey), original)
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-b"),
+            user: UserDTO(id: "user-b", display_name: nil, email: nil)))
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        XCTAssertEqual(auth.userID, "user-a")
+        XCTAssertEqual(tokens.token, sessionToken(for: "user-a"))
+        auth.signOut()
+        XCTAssertEqual(auth.userID, "user-a")
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        XCTAssertEqual(auth.pendingEntryIntents.map(\.accountID), ["user-a"])
+        let cold = AuthModel(api: api, tokenStore: tokens, defaults: h.open())
+        XCTAssertEqual(cold.pendingEntryIntents, auth.pendingEntryIntents)
+    }
+
+    func testEntryRecoveryReloadsNavigationAfterFailedLegacyRead() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let intent = MemberEntryIntent(id: UUID(), destination: .invite("ABC234"), accountID: "user-a")
+        h.preferences.set(try JSONEncoder().encode([intent]), forKey: AuthModel.pendingEntryKey)
+        h.faults.failWrites = true
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: local)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        XCTAssertNil(auth.featureJWT)
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        XCTAssertEqual(auth.nextEntryIntent, intent)
+    }
+
+    func testOnboardingDoesNotAdvanceWhenDestinationCannotBeSaved() {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: local)
+        auth.onboardingComplete = false
+        let flow = OnboardingFlow(auth: auth)
+        flow.advance(from: flow.checkpoint)
+        flow.advance(from: flow.checkpoint)
+        flow.advance(from: flow.checkpoint)
+        h.faults.failWrites = true
+        flow.finish(from: flow.checkpoint, destination: .workouts)
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(flow.step, .coach)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        flow.finish(from: flow.checkpoint, destination: .workouts)
+        XCTAssertTrue(auth.onboardingComplete)
+        XCTAssertEqual(auth.nextEntryIntent?.destination, .workouts)
+    }
+
     func testMemberEntrySurvivesFailedSignInRelaunchAndOnboarding() async {
         let defaults = defaults()
         let api = AuthAPIStub()

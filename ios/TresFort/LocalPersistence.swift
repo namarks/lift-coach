@@ -98,6 +98,23 @@ final class LocalPersistence: ObservableObject {
     @discardableResult
     func removeObject(forKey key: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
+        if let failure = failures[key] {
+            switch failure {
+            case .read, .invalidData: return false
+            case .write: break
+            }
+        }
+        return eraseObject(forKey: key)
+    }
+
+    /// Only acknowledged account deletion may erase unreadable durable data.
+    @discardableResult
+    func eraseAfterAccountDeletion(forKey key: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return eraseObject(forKey: key)
+    }
+
+    private func eraseObject(forKey key: String) -> Bool {
         if let value = preferences.object(forKey: key), !(value is Data) {
             preferences.removeObject(forKey: key)
             return true
