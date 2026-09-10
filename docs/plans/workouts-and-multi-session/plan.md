@@ -214,31 +214,32 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | gated_by | external:workout-legacy-client-canary | Backend deployment and migration are complete, and legacy-writing 1.0 (35) is authorized. Its live REST checks and five-minute observation remain pending before upload. Later canonical-writing release authority and evidence remain separate. |
+| P0(b) | gated_by | external:owner-workout-canonical-client-release | Legacy-writing 1.0 (35) is available to internal Testers under the owner's explicit live-canary deferral. A later canonical-writing client still requires its own release authority, route checks and observed compatibility cycle. |
 | P0(c) | gated_by | external:workout-client-compatibility-cycle | Cleanup requires P0(b) release evidence and the observed released-client compatibility cycle. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step
 
-**Now (@owner, agent verifies and uploads afterward):** Complete the deferred legacy-route REST checks on an
-owner-approved disposable workout, including authoring, date assignment and
-set/finish/discard behavior, then the five-minute observation described in
-[the rollout sequence](rollout.md). The 2026-09-10 approval authorizes uploading
-legacy-writing 1.0 (35) once those checks pass; its signed archive is ready.
-The matching adaptive Worker is now version
+**Now (@owner):** Authorize a later canonical-writing client rollout when that
+workstream resumes. Legacy-writing **1.0 (35)** was uploaded at 23:54:09 UTC on
+2026-09-10 after the owner explicitly deferred the live REST workout canary and
+its five-minute observation. At 23:56:53 UTC, Apple reported VALID /
+IN_BETA_TESTING and internal Testers membership. Those live checks are not claimed
+as passed. No production training records were modified. Do not repeat the upload
+or reinstate its waived canary gate.
+
+The matching adaptive Worker is version
 `722fbf91-4b13-48e2-b233-747b1d437ca6` at 100%, from source
 `361cf2ba9d40ef6572de700b65cf649c665559ba`. Additive migrations 0046–0048 are applied,
 with no foreign-key violations; do not repeat 0045 or earlier rollout stages.
 See [the candidate release record](../app-store-submission/plan.md#next-step).
-The owner was asked to run the check in the existing authenticated app because
-the paired iPhone is unavailable from the release host. Upload has not occurred.
-
 Keep the adaptive Worker, old routes and legacy outgoing fields. Canonical-route
-checks precede a later, separately authorized canonical-writing build. P0(b)
-remains open for client rollout and its observed compatibility cycle; P0(c) and
-multiple sessions per date (P1) remain later work.
+checks and the observed compatibility cycle still precede cleanup. P0(b) remains
+open for the later canonical-writing rollout; P0(c) and multiple sessions per
+date (P1) remain later work. The owner exception for this legacy build does not
+satisfy or waive those later requirements.
 
-Production release evidence (2026-09-09):
+Historical production release evidence (2026-09-09; later client exception above supersedes the pre-upload requirement):
 
 - Approved source `ff512825779f90b630a4a5dfd11a68e6a113825a`, tree
   `0f3621b3132ff27e659d7554a72bc96010973f8b`, is Worker version
