@@ -65,6 +65,8 @@ final class MemberActivationJourneyTests: XCTestCase {
 
     func testOwnerEntryReachesFirstCompletedWorkout() {
         let app = launch("activation-owner")
+        XCTAssertTrue(app.buttons["app.privacy-policy"].isHittable)
+        XCTAssertTrue(app.buttons["Contact support"].isHittable)
         tap(app.buttons["Sign in with Apple"], in: app)
         onboard(app)
         tap(app.buttons["Enter Très Fort"], in: app)
@@ -95,6 +97,7 @@ final class MemberActivationJourneyTests: XCTestCase {
         tap(app.buttons["Enter Très Fort"], in: app)
         XCTAssertTrue(app.navigationBars["Connect your coach"].waitForExistence(timeout: 10))
         XCTAssertTrue(app.staticTexts["Your coach is connected"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["coach.data-sharing"].exists)
         tap(app.navigationBars["Connect your coach"].buttons["Done"], in: app)
         tap(app.tabBars.buttons["Today"], in: app)
         completeFirstWorkout(app)

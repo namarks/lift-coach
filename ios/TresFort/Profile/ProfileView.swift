@@ -57,6 +57,10 @@ struct ProfileView: View {
                 coachSection
                 integrationsSection
                 groupsSection
+                Section("About Très Fort") {
+                    PrivacyPolicyLink()
+                    Link("Contact support", destination: AppInformation.supportURL)
+                }
             }
             .navigationTitle("Profile")
             .navigationBarTitleDisplayMode(.inline)

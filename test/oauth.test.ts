@@ -130,7 +130,12 @@ describe('oauth full PKCE flow', () => {
     // 2a. consent page renders
     const page = await SELF.fetch(authUrl);
     expect(page.status).toBe(200);
-    expect(await page.text()).toContain('passphrase');
+    const consent = await page.text();
+    expect(consent).toContain('passphrase');
+    expect(consent).toContain('Claude, operated by Anthropic');
+    expect(consent).toContain('imported Apple Health and Intervals.icu workouts');
+    expect(consent).toContain('https://tresfort.app/privacy');
+    expect(consent).toContain('Allow Claude access');
 
     // 2b. wrong passphrase is rejected
     const bad = new FormData();

@@ -86,6 +86,12 @@ Plans marked **active** are current execution frontiers. Other current plans
 show their exact **gated**, **paused**, or **planned** state and are not eligible
 until their named authority, evidence, or activation condition is satisfied.
 
+### Release (`release`)
+
+- [First App Store submission](app-store-submission/plan.md) — **active**;
+  prepare a verified 1.0 candidate, privacy requirements and review package for
+  a free, US-only release. External release and publication gates remain explicit.
+
 ### Coaching (`coaching`)
 
 Close the feedback loop between what an athlete experiences and what the coach

@@ -29,7 +29,7 @@ Upload an already-built IPA to TestFlight (run scripts/upload-testflight.sh firs
 [bundle exec] fastlane ios submit_for_review
 ```
 
-Submit the latest TestFlight build for App Store review. Manual release after approval (toggle in ASC). Usage: bundle exec fastlane ios submit_for_review
+Submit an explicitly selected version and build for review, with manual release. Requires separate submission authorization. Pass `version:1.0 build_number:<verified-build-number>`.
 
 ----
 

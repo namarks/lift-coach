@@ -35,10 +35,17 @@ platform :ios do
     )
   end
 
-  desc "Submit the latest TestFlight build for App Store review. Manual release after approval (toggle in ASC). Usage: bundle exec fastlane ios submit_for_review"
-  lane :submit_for_review do
+  desc "Submit an explicitly selected version and build for review, with manual release. Requires separate submission authorization."
+  lane :submit_for_review do |options|
+    version = options[:version].to_s
+    build = options[:build_number].to_s
+    unless version.match?(/\A[0-9]+(?:\.[0-9]+){0,2}\z/) && build.match?(/\A[1-9][0-9]*\z/)
+      UI.user_error!("Specify the verified candidate: submit_for_review version:1.0 build_number:<number>")
+    end
     deliver(
       app_identifier: "com.nmarkspdx.tresfort",
+      app_version: version,
+      build_number: build,
       metadata_path: "./fastlane/metadata",
       screenshots_path: "./fastlane/screenshots",
       skip_binary_upload: true,
@@ -48,14 +55,10 @@ platform :ios do
       automatic_release: false,
       run_precheck_before_submit: true,
       force: true,
-      reject_if_possible: true,
-      precheck_include_in_app_purchases: false,
-      submission_information: {
-        add_id_info_uses_idfa: false,
-        export_compliance_uses_encryption: false,
-        export_compliance_encryption_updated: false,
-        content_rights_contains_third_party_content: false
-      }
+      reject_if_possible: false,
+      # Compliance, privacy and content-rights declarations must already be
+      # verified in ASC. Do not overwrite them with blanket assumptions here.
+      precheck_include_in_app_purchases: false
     )
   end
 end

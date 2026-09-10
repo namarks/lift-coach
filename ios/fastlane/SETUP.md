@@ -88,8 +88,16 @@ matching version in App Store Connect.
 ## Submitting for App Store review
 
 ```bash
-cd ios && bundle exec fastlane submit_for_review
+cd ios && bundle exec fastlane submit_for_review version:1.0 build_number:<verified-build-number>
 ```
 
-Requires `ios/fastlane/metadata/` and `ios/fastlane/screenshots/` to be
-populated (currently empty — set up before first submission).
+This submits to App Review; submission preparation does not authorize running
+it. Supply the exact verified version and build. The lane does not select the
+latest upload, withdraw an existing submission, or automatically release after
+approval. Verify compliance and content-rights answers in App Store Connect;
+the lane does not supply blanket declarations.
+
+Requires `ios/fastlane/metadata/` and `ios/fastlane/screenshots/` to be populated
+from the approved [review package](../../docs/plans/app-store-submission/review-package.md).
+App Privacy answers are separate from `deliver` metadata. See the canonical
+[submission plan](../../docs/plans/app-store-submission/plan.md) for remaining gates.

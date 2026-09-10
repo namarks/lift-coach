@@ -35,14 +35,14 @@ final class WorkoutFeedbackJourneyTests: XCTestCase {
         let note = app.textViews["feedback.note"]
         reveal(note, app: app); note.tap()
         if replacing {
-            note.press(forDuration: 1)
-            if app.menuItems["Select All"].waitForExistence(timeout: 2) { app.menuItems["Select All"].tap() }
-            else {
-                let current = note.value as? String ?? ""
-                note.typeText(String(repeating: XCUIKeyboardKey.delete.rawValue, count: current.count))
-            }
+            // A missing selection menu must never fall back to deleting
+            // backward from an arbitrary cursor and leave old suffixes behind.
+            note.typeKey("a", modifierFlags: .command)
+            note.typeText(XCUIKeyboardKey.delete.rawValue)
+            XCTAssertEqual(note.value as? String, "", "Replacement must clear the entire transcript")
         }
         note.typeText(text)
+        XCTAssertEqual(note.value as? String, text)
         if app.buttons["Done"].isHittable { app.buttons["Done"].tap() }
     }
     private func finish(_ app: XCUIApplication) {

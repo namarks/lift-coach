@@ -174,11 +174,11 @@ function consentPage(params: Record<string, string>, error?: string): string {
         `<input type="hidden" name="${k}" value="${v.replace(/"/g, '&quot;')}">`,
     )
     .join('');
-  return `<!doctype html><html><head><meta charset="utf-8"><title>tres-fort</title>
+  return `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>tres-fort</title>
 <style>body{font-family:-apple-system,system-ui,sans-serif;background:#0a0a0a;color:#eee;
 display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
-form{background:#161616;padding:32px;border-radius:14px;width:320px;border:1px solid #262626}
-h1{font-size:18px;margin:0 0 4px}p{color:#9a9a9a;font-size:13px;margin:0 0 20px}
+form{background:#161616;padding:24px;border-radius:14px;width:min(440px,calc(100% - 32px));box-sizing:border-box;margin:16px 0;border:1px solid #262626}
+h1{font-size:18px;margin:0 0 4px}p{color:#b0b0b0;font-size:14px;line-height:1.5;margin:0 0 20px}a{color:#ddd}
 input[type=password]{width:100%;padding:11px;background:#0a0a0a;border:1px solid #333;
 color:#fff;border-radius:8px;box-sizing:border-box;font-size:15px}
 button{width:100%;margin-top:14px;padding:12px;background:#fff;color:#000;border:0;
@@ -186,9 +186,11 @@ border-radius:8px;font-weight:600;font-size:15px;cursor:pointer}
 .err{color:#ff6b6b;font-size:13px;margin-top:10px}</style></head>
 <body><form method="POST" action="/oauth/authorize">${hidden}
 <h1>Connect Très Fort</h1><p>Paste your connect code to link Claude to your training. Get it in the Très Fort app under Profile → Coach.</p>
+<p>Allowing access lets Claude, operated by Anthropic, read your training plan, workout history, saved feedback and available group information, including imported Apple Health and Intervals.icu workouts. It also lets Claude change your plan and record training updates.</p>
+<p>You can disconnect Claude in Profile to stop future access. This does not delete information already retrieved into Claude conversations. The Apple Health group-sharing switch does not limit your own coach’s access. Review the <a href="https://tresfort.app/privacy">Très Fort privacy policy</a> and <a href="https://www.anthropic.com/legal/privacy">Anthropic privacy policy</a>.</p>
 <input type="password" name="passphrase" placeholder="Connect code" autofocus>
 ${error ? `<div class="err">${error}</div>` : ''}
-<button type="submit">Authorize</button></form></body></html>`;
+<button type="submit">Allow Claude access</button></form></body></html>`;
 }
 
 async function loadClient(env: Env, clientId: string) {
