@@ -67,6 +67,10 @@ feedback. Add group or integration screenshots only after their release review
 requirements are resolved. Preserve source SHA, build, simulator/device, locale
 and dimensions with the resulting image set.
 
+Use the [screenshot capture workflow](screenshot-capture.md) to produce and
+validate the five-image draft set from the selected source. Its fictional-data
+fixture uses actual screens and preserves source and successful-test evidence.
+
 ## Reviewer instructions
 
 The app requires Sign in with Apple to synchronize a member's training.

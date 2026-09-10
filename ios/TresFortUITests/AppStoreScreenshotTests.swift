@@ -65,7 +65,8 @@ final class AppStoreScreenshotTests: XCTestCase {
         for _ in 0..<3 where log.frame.maxY >= app.tabBars.firstMatch.frame.minY - 12 {
             app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.70))
                 .press(forDuration: 0.05, thenDragTo:
-                    app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.60)))
+                    app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.65)),
+                       withVelocity: .slow, thenHoldForDuration: 0.3)
         }
         XCTAssertLessThan(log.frame.maxY, app.tabBars.firstMatch.frame.minY - 12)
         capture("02-runner")

@@ -55,6 +55,7 @@ output.mkdir(parents=True, exist_ok=False)
 for name, (source, _) in images.items():
     shutil.copy2(source, output / name)
 shutil.copy2(evidence / 'sources.json', output / 'sources.json')
+shutil.copy2(evidence / 'xcodebuild.log', output / 'capture-tests.log')
 def git(*args):
     return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
 manifest = {
@@ -63,6 +64,7 @@ manifest = {
     'source_tree': git('rev-parse', 'HEAD^{tree}'),
     'working_tree_changes': git('status', '--porcelain'),
     'ios_source_manifest': 'sources.json',
+    'test_evidence': 'capture-tests.log',
     'device': 'iPhone 17 Pro Max', 'runtime': 'iOS 26.2', 'locale': 'en_US',
     'configuration': 'Debug simulator; production views with fictional, network-isolated data',
     'image_size': [1320, 2868], 'images': {name: digest for name, (_, digest) in sorted(images.items())},
