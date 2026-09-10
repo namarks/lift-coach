@@ -214,7 +214,7 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | gated_by | external:owner-workout-testflight-release | Backend deployment and migration are complete. The legacy-writing 1.0 (35) candidate release is authorized, with its live REST canary still pending. The later canonical-writing release needs separate authority and evidence. |
+| P0(b) | gated_by | external:workout-legacy-client-canary | Backend deployment and migration are complete, and legacy-writing 1.0 (35) is authorized. Its live REST checks and five-minute observation remain pending before upload. Later canonical-writing release authority and evidence remain separate. |
 | P0(c) | gated_by | external:workout-client-compatibility-cycle | Cleanup requires P0(b) release evidence and the observed released-client compatibility cycle. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
