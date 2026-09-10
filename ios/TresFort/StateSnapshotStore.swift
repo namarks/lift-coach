@@ -377,14 +377,17 @@ enum StateSnapshotStore {
             defaults: defaults)
     }
 
+    @discardableResult
     static func clear(userID: String, defaults: LocalPersistence = .standard,
-                      afterAccountDeletion: Bool = false) {
+                      afterAccountDeletion: Bool = false) -> Bool {
+        let erased: Bool
         if afterAccountDeletion {
-            defaults.eraseAfterAccountDeletion(forKey: scopedKey(userID: userID))
+            erased = defaults.eraseAfterAccountDeletion(forKey: scopedKey(userID: userID))
         } else {
-            defaults.removeObject(forKey: scopedKey(userID: userID))
+            erased = defaults.removeObject(forKey: scopedKey(userID: userID))
         }
         if decodedCache?.userID == userID { decodedCache = nil }
+        return erased
     }
 
     private static func storedSnapshot(

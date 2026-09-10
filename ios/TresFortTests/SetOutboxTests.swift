@@ -5128,6 +5128,52 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(model.sets.map(\.id), [body.id])
     }
 
+    func testStaleWorkoutFallbackStopsWhenReplacementCannotBeSaved() async throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let defaults = h.open(), ex = exercise()
+        let s = SessionRow(id: "session-a", date: fixedCivilDate, status: "in_progress", workout_id: nil)
+        let body = SetRequestBody(id: fixedUUID.uuidString, exercise_id: ex.exercise_id,
+            template_exercise_id: ex.id, set_index: 1, weight: 135, reps: 5,
+            is_warmup: false, logged_at: 2_000_000_000_000, duration_s: nil, is_timed: false)
+        var outbox = SetOutbox()
+        outbox.enqueue(.init(body: body, date: s.date, workoutID: "removed-day-id",
+            resolvedSessionID: nil, deliveryState: .queued, failedHTTPStatus: nil))
+        XCTAssertTrue(SetOutboxStore.save(outbox, userID: "user-a", defaults: defaults))
+        let api = SetWriteAPIStub()
+        var rejected = 0
+        api.createHandler = { _, workoutID, _ in
+            if workoutID != nil {
+                rejected += 1
+                if rejected == 1 { h.faults.failWrites = true }
+                throw APIError.http(422, "unknown_day")
+            }
+            XCTAssertNil(SetOutboxStore.load(userID: "user-a", defaults: defaults).pending.first?.workoutID)
+            return s
+        }
+        api.logHandler = { [self] sessionID, request, _ in
+            .init(set: setLog(body: request, sessionID: sessionID), deduped: false)
+        }
+        api.stateHandler = { [self] _ in
+            state(session: s, sets: [setLog(body: body, sessionID: s.id)], exercise: ex)
+        }
+        let auth = retainedAuth(defaults: defaults)
+        let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+        await model.drainSetOutbox()
+        XCTAssertEqual(api.createCalls.map(\.workoutID), ["removed-day-id"])
+        XCTAssertTrue(api.logCalls.isEmpty)
+        XCTAssertEqual(model.setOutbox.pending.first?.workoutID, "removed-day-id")
+        XCTAssertEqual(SetOutboxStore.load(userID: "user-a", defaults: h.open()), outbox)
+        XCTAssertNil(auth.featureJWT)
+        XCTAssertNotNil(model.loadError)
+        h.faults.failWrites = false
+        XCTAssertTrue(defaults.retry(userID: "user-a"))
+        await model.drainSetOutbox()
+        XCTAssertEqual(api.createCalls.map(\.workoutID), ["removed-day-id", "removed-day-id", nil])
+        XCTAssertEqual(api.logCalls.map { $0.body.id }, [body.id])
+        XCTAssertTrue(model.setOutbox.isEmpty)
+    }
+
     func testStaleWorkoutFallsBackBeforeRetryingSet() async {
         let defaults = defaults()
         let ex = exercise()

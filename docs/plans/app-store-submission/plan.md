@@ -115,10 +115,27 @@ Preserve external release and publication gates.
   requires durable saves before navigation changes and reloads account binding
   after recovery. Its 77 focused unit tests and eight onboarding/invite UI
   journeys passed, with all 268 iOS source-manifest entries matching the tested
-  files. Fresh independent review and remote CI must finish before repository
-  delivery is complete.
+  files. Further review fixes scope deletion cleanup to its own account, remove
+  the legacy identity marker only after cleanup succeeds, and stop stale-workout
+  fallback requests when the replacement queue cannot be saved. The follow-up
+  ran all 478 unit tests (one simulator protection skip, zero failures) and the
+  workout-completion UI journey; all 268 source-manifest entries matched.
+  Fresh independent review and remote CI must finish before repository delivery
+  is complete. The preceding CI run connected Intervals successfully but left
+  History empty. Investigation reproduced eager construction of unused tab
+  models invalidating a shared snapshot request. The tab now owns one lazily
+  installed model container. The regression failed before the fix; afterward,
+  72 focused unit tests and all 12 connection/onboarding/workout UI journeys
+  passed, with all 268 source-manifest entries matching the final iOS files.
   The file-protection test must pass on a physical iPhone; simulator results do
   not prove this property. See the release audit for upgrade/rollback constraints.
+- The separate backend diagnostics fix is committed locally as
+  `f6d6bfe7a0f93af9614f2c683ef84feb5df85310` on
+  `codex/private-error-diagnostics`. TypeScript and all 972 backend tests passed.
+  Refresh it from main after storage delivery, then complete independent review
+  and CI. It removes raw unexpected error text from application logs and HTTP/MCP
+  responses; provider logging fields/retention and production deployment remain
+  separate, unverified gates.
 - [Release audit, 2026-09-10](release-audit-2026-09-10.md): production version
   `c5a298d1-a72a-4fa8-a24f-bd2cf0e27a6b`, source annotation `ff512825779f90b630a4a5dfd11a68e6a113825a`,
   migration ledger through `0045`; source migrations `0046` and `0047` remain
@@ -136,9 +153,11 @@ Preserve external release and publication gates.
   `0.1.0 (34)` was `VALID`, `APP_STORE_ELIGIBLE`, `IN_BETA_TESTING`. Re-read before
   writes. Existing API permissions did not allow pricing/availability reads;
   agreements and App Privacy answers remain unverified.
-- Owner phone screenshot, 2026-09-10: pricing and app availability are both
-  unset. Phone instructions provided for the approved free / US-only setup;
-  saved values and agreement readiness remain unverified.
+- Owner App Store Connect readback, 2026-09-10: after a phone screenshot showed
+  unset pricing/availability, the owner confirmed saving **Free / United States
+  only**. This is owner-confirmed configuration; direct API readback remains
+  unavailable to the existing key. The owner deferred checking App Store
+  agreements; agreement readiness remains pending.
 - Website hosting belongs to [PR #170](https://github.com/namarks/tres-fort/pull/170);
   do not duplicate its edits. Merged source is not public-URL evidence.
 - Repository work is authorized through required review and merge. Production

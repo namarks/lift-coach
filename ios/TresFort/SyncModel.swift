@@ -2563,10 +2563,16 @@ final class SyncModel: ObservableObject {
         return true
     }
 
-    private func persistReplacedSetIntent(_ intent: PendingSetIntent) {
-        guard canMutateBoundSetAccount else { return }
-        SetOutboxStore.replace(
-            intent, userID: accountID, defaults: defaults)
+    @discardableResult
+    private func persistReplacedSetIntent(_ intent: PendingSetIntent) -> Bool {
+        guard canMutateBoundSetAccount,
+              SetOutboxStore.replace(intent, userID: accountID, defaults: defaults)
+        else {
+            setOutbox = SetOutboxStore.load(userID: accountID, defaults: defaults)
+            loadError = "The set change could not be saved on this iPhone. Retry saved data before continuing."
+            return false
+        }
+        return true
     }
 
     private func persistRemovedSetIntentIDs(_ ids: Set<String>) {
@@ -2629,8 +2635,8 @@ final class SyncModel: ObservableObject {
         else { return }
         intent.deliveryState = .queued
         intent.failedHTTPStatus = nil
+        guard persistReplacedSetIntent(intent) else { return }
         setOutbox.replace(intent)
-        persistReplacedSetIntent(intent)
         normalizeMountedRunnerProgress(for: intent.date)
         await drainSetOutbox()
     }
@@ -2642,8 +2648,8 @@ final class SyncModel: ObservableObject {
         for var intent in setOutbox.pending where intent.deliveryState == .failed {
             intent.deliveryState = .queued
             intent.failedHTTPStatus = nil
+            guard persistReplacedSetIntent(intent) else { return }
             setOutbox.replace(intent)
-            persistReplacedSetIntent(intent)
             rearmedDates.insert(intent.date)
             changed = true
         }
@@ -3522,7 +3528,7 @@ final class SyncModel: ObservableObject {
                 guard intent.workoutID != nil,
                       isPermanentSetClientError(error),
                       canInitiateBoundFeatureAction,
-                      let fallbackJWT = currentJWT,
+                      currentJWT != nil,
                       durableSetIntent(matching: intent) != nil
                 else {
                     return classifySetIntentFailure(
@@ -3531,8 +3537,10 @@ final class SyncModel: ObservableObject {
                         attemptedJWT: jwt)
                 }
                 intent.workoutID = nil
+                guard persistReplacedSetIntent(intent),
+                      canInitiateBoundFeatureAction,
+                      let fallbackJWT = currentJWT else { return .staleAccount }
                 setOutbox.replace(intent)
-                persistReplacedSetIntent(intent)
                 do {
                     createdSession = try await setWriteAPI.createSession(
                         date: intent.date,
@@ -3575,8 +3583,8 @@ final class SyncModel: ObservableObject {
             session = resolvedSession
             intent.resolvedSessionID = resolvedSession.id
             intent.expectedAttempt = resolvedSession.attempt ?? createdAttempt
+            guard persistReplacedSetIntent(intent) else { return .staleAccount }
             setOutbox.replace(intent)
-            persistReplacedSetIntent(intent)
             guard let durable = durableSetIntent(matching: intent) else {
                 return .superseded
             }
@@ -3613,8 +3621,8 @@ final class SyncModel: ObservableObject {
         // stale work across another device's discard/restart.
         if intent.expectedAttempt == nil {
             intent.expectedAttempt = 0
+            guard persistReplacedSetIntent(intent) else { return .staleAccount }
             setOutbox.replace(intent)
-            persistReplacedSetIntent(intent)
             guard let rebound = durableSetIntent(matching: intent) else {
                 return .superseded
             }
@@ -3748,8 +3756,8 @@ final class SyncModel: ObservableObject {
             if var intent = setOutbox.pending.first(where: { $0.id == intentID }) {
                 intent.deliveryState = .failed
                 intent.failedHTTPStatus = code
+                guard persistReplacedSetIntent(intent) else { return .staleAccount }
                 setOutbox.replace(intent)
-                persistReplacedSetIntent(intent)
                 reopenMountedRunner(for: intent)
             }
             loadError = "Set wasn't saved because the server rejected it (HTTP \(code))."

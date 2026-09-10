@@ -89,6 +89,23 @@ an unbound link to another account. Sign-out requires successful navigation
 cleanup; acknowledged account deletion has a separate path that can erase
 unreadable bytes while retaining its receipt until cleanup succeeds.
 
+Deletion completion checks the deleted account's cleanup results, so a later
+account's failed navigation save cannot retain the deleted account's identifiers.
+The legacy ownership marker is removed only after legacy cleanup succeeds.
+Stale-workout fallback requests require a durable queue rewrite and a fresh
+account/storage check before sending. The final follow-up ran 478 unit tests
+with zero failures and one explicit simulator protection skip, plus the ordinary
+workout-completion UI journey. All 268 source-manifest entries matched.
+
+The prior remote smoke run connected Intervals but showed empty History. Its
+failure report led to a reproducible model-lifecycle defect: constructing an
+unused `MainTabView` eagerly created feature models and invalidated an existing
+snapshot request. Models now belong to one lazily installed `StateObject`
+container. The regression failed before this change; 72 focused unit tests and
+12 connection/onboarding/workout UI journeys passed afterward. The final
+268-entry source manifest matched. Fresh remote CI and independent review remain
+required; the local result does not retroactively clear the earlier CI run.
+
 Before candidate upload, use a physical iPhone to verify file protection on the
 same source, upgrade migration without erasing the install, offline workout
 recovery, lock/unlock and foreground retry, and account deletion. Backup exclusion
@@ -117,7 +134,8 @@ tested and the HTTP-client 403 behavior remains distinct.
 
 The owner's 2026-09-10 phone screenshot of Très Fort's Pricing and Availability
 page shows **Add Pricing** and **Set Up Availability**: neither setting was
-configured in that view. The owner has instructions to set a US base price of
-$0 and availability in the United States only. Saving and the resulting values
-remain unverified; signing in on the phone does not authenticate the agent's
-browser. Agreement readiness remains separate and unverified.
+configured in that view. The owner subsequently confirmed saving the app as
+free and available in the United States only. Treat those settings as
+owner-confirmed; the existing API key still cannot read them. Signing in on the
+phone does not authenticate the agent's browser. The owner deferred checking
+App Store agreements; agreement readiness remains pending.

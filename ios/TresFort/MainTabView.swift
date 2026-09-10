@@ -1,24 +1,17 @@
 import SwiftUI
 
-/// Owns the single shared SyncModel + GroupModel so every tab reads the
-/// same loaded state (one network pull, instant consistency). The
-/// GroupModel and SyncModel are peers — they don't share data, only
-/// the AuthModel reference.
-struct MainTabView: View {
-    @ObservedObject var auth: AuthModel
-    @StateObject private var sync: SyncModel
-    @StateObject private var groupModel: GroupModel
-    @StateObject private var health: HealthKitSyncModel
-    @StateObject private var setConnectivity: SetConnectivityMonitor
-    @Environment(\.scenePhase) private var scenePhase
+/// One installed owner per account/feature identity. SwiftUI may recreate a
+/// MainTabView value without installing new state; defer model construction
+/// inside StateObject so those discarded values cannot subscribe to account
+/// mutations, reserve sync tickets, or start connectivity monitors.
+@MainActor
+private final class MainTabModels: ObservableObject {
+    let sync: SyncModel
+    let group: GroupModel
+    let health: HealthKitSyncModel
+    let connectivity: SetConnectivityMonitor
 
-    @State private var showActivitySheet = false
-    @State private var selectedTab: Tab = .today
-
-    enum Tab { case today, history, group, profile }
-
-    init(auth: AuthModel, defaults: LocalPersistence = .standard, now: @escaping () -> Date = Date.init) {
-        self.auth = auth
+    init(auth: AuthModel, defaults: LocalPersistence, now: @escaping () -> Date) {
         let sync = SyncModel(
             auth: auth, defaults: defaults, now: now,
             automaticWorkoutWriteRetryEnabled: true)
@@ -43,10 +36,30 @@ struct MainTabView: View {
         setConnectivity.onSatisfiedTransition = { [weak sync] in
             Task { await sync?.recoverWorkoutWrites() }
         }
-        _sync = StateObject(wrappedValue: sync)
-        _groupModel = StateObject(wrappedValue: groupModel)
-        _health = StateObject(wrappedValue: health)
-        _setConnectivity = StateObject(wrappedValue: setConnectivity)
+        self.sync = sync
+        self.group = groupModel
+        self.health = health
+        self.connectivity = setConnectivity
+    }
+}
+
+struct MainTabView: View {
+    @ObservedObject var auth: AuthModel
+    @StateObject private var models: MainTabModels
+    @Environment(\.scenePhase) private var scenePhase
+
+    @State private var showActivitySheet = false
+    @State private var selectedTab: Tab = .today
+
+    private var sync: SyncModel { models.sync }
+    private var groupModel: GroupModel { models.group }
+    private var health: HealthKitSyncModel { models.health }
+
+    enum Tab { case today, history, group, profile }
+
+    init(auth: AuthModel, defaults: LocalPersistence = .standard, now: @escaping () -> Date = Date.init) {
+        self.auth = auth
+        _models = StateObject(wrappedValue: MainTabModels(auth: auth, defaults: defaults, now: now))
     }
 
     var body: some View {

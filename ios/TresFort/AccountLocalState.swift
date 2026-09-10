@@ -110,32 +110,42 @@ enum AccountLocalState {
             WorkoutTerminalOutboxStore.scopedKey(userID: userID),
             WorkoutRunnerCheckpointStore.scopedKey(userID: userID),
             ExerciseCatalogSnapshotStore.scopedKey(userID: userID),
+            WorkoutWriteRetryDeadlineStore.scopedKey(userID: userID),
             intervalsConnectionKey(userID: userID),
+            healthEnabledKey(userID: userID),
             healthAnchorKey(userID: userID),
         ]
-        for key in protectedKeys { defaults.eraseAfterAccountDeletion(forKey: key) }
-        WorkoutWriteRetryDeadlineStore.clear(
-            userID: userID, defaults: defaults)
-        StateSnapshotStore.clear(userID: userID, defaults: defaults, afterAccountDeletion: true)
-        StateSyncAccountStore.clearIfActive(userID: userID, defaults: defaults)
-        defaults.removeObject(forKey: healthEnabledKey(userID: userID))
+        var erased = true
+        for key in protectedKeys {
+            if !defaults.eraseAfterAccountDeletion(forKey: key) { erased = false }
+        }
+        if !StateSnapshotStore.clear(userID: userID, defaults: defaults, afterAccountDeletion: true) {
+            erased = false
+        }
+        if defaults.string(forKey: StateSyncAccountStore.activeAccountKey) == userID,
+           !defaults.removeObject(forKey: StateSyncAccountStore.activeAccountKey) {
+            erased = false
+        }
 
         // Defensive upgrade cleanup: if this account never mounted the feature
         // models after updating, the process-global v1 values may not have been
         // migrated yet. They must not survive permanent deletion for a future
         // Apple account to inherit.
-        if claimLegacyState(userID: userID, defaults: defaults) {
-            defaults.eraseAfterAccountDeletion(forKey: ActivityOutboxStore.legacyKey)
-            defaults.eraseAfterAccountDeletion(forKey: legacyIntervalsConnectionKey)
-            defaults.removeObject(forKey: legacyHealthEnabledKey)
-            defaults.eraseAfterAccountDeletion(forKey: legacyHealthAnchorKey)
+        let ownsLegacy = claimLegacyState(userID: userID, defaults: defaults)
+        if ownsLegacy {
+            for key in [ActivityOutboxStore.legacyKey, legacyIntervalsConnectionKey,
+                        legacyHealthEnabledKey, legacyHealthAnchorKey] {
+                if !defaults.eraseAfterAccountDeletion(forKey: key) { erased = false }
+            }
         }
         // Retain the deletion receipt key and auth context until protected
         // cleanup succeeds. Retrying DELETE safely resumes its server receipt.
-        guard !defaults.hasFailure(userID: userID) else { return false }
-        defaults.removeObject(forKey: appleCredentialUserKey(userID: userID))
-        defaults.removeObject(forKey: accountDeletionKey(userID: userID))
-        defaults.removeObject(forKey: onboardedKey(userID: userID))
-        return true
+        // Check only this cleanup's keys: a replacement account's global
+        // navigation failure cannot prevent the deleted account's completion.
+        guard erased else { return false }
+        if ownsLegacy, !defaults.removeObject(forKey: legacyOwnerKey) { return false }
+        guard defaults.removeObject(forKey: appleCredentialUserKey(userID: userID)),
+              defaults.removeObject(forKey: onboardedKey(userID: userID)) else { return false }
+        return defaults.removeObject(forKey: accountDeletionKey(userID: userID))
     }
 }

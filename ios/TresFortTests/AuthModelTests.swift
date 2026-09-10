@@ -175,6 +175,23 @@ final class AuthModelTests: XCTestCase {
         XCTAssertNotNil(model.reauthenticationReason)
     }
 
+    func testUninstalledTabViewDoesNotSupersedeMountedModelsStateRequest() throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(),
+            tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let ticket = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+            userID: "user-a", defaults: defaults))
+        XCTAssertTrue(StateSnapshotStore.isCurrent(ticket, defaults: defaults))
+
+        // SwiftUI can construct and discard view descriptions without mounting
+        // their state. That must not create a competing SyncModel or advance
+        // the account snapshot while the installed model's pull is in flight.
+        _ = MainTabView(auth: auth, defaults: defaults)
+
+        XCTAssertNil(defaults.string(forKey: StateSyncAccountStore.activeAccountKey))
+        XCTAssertTrue(StateSnapshotStore.isCurrent(ticket, defaults: defaults))
+    }
+
     func testLaunchMigratesBearerSubjectIntoMissingAccountPointer() {
         let defaults = defaults()
         let token = sessionToken(for: "user-a")
@@ -1455,6 +1472,40 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(defaults.string(forKey: AuthModel.userIDKey), "user-b")
         XCTAssertEqual(model.phase, .signedIn)
         XCTAssertTrue(model.postDeletionAppleRevocationRequired)
+    }
+
+    func testDeletionCompletionIgnoresReplacementAccountsNavigationFailure() async throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open(), api = AuthAPIStub()
+        local.set("user-a", forKey: AuthModel.userIDKey)
+        local.set("apple-a", forKey: AccountLocalState.appleCredentialUserKey(userID: "user-a"))
+        let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let started = AsyncLatch(), release = AsyncLatch()
+        api.deletionHandler = { _, _ in
+            await started.open(); await release.wait()
+            return .init(ok: true, owner_tombstoned: false, apple_revocation: .revoked)
+        }
+        let model = AuthModel(api: api, tokenStore: tokens, defaults: local)
+        let deletion = Task { try await model.deleteAccount() }
+        await started.wait()
+        let tokenB = sessionToken(for: "user-b")
+        api.authResult = .success(response(jwt: tokenB, userID: "user-b"))
+        await model.exchange(identityToken: "apple-b", fullName: nil, appleUserID: "apple-b")
+        XCTAssertTrue(model.requestEntry(.coach))
+        let savedB = try h.store.data(forKey: AuthModel.pendingEntryKey)
+        h.faults.failedFiles = [h.store.fileURL(forKey: AuthModel.pendingEntryKey).lastPathComponent]
+        XCTAssertFalse(model.requestEntry(.workouts))
+        XCTAssertTrue(local.hasFailure(forKey: AuthModel.pendingEntryKey))
+        await release.open()
+        try await deletion.value
+        XCTAssertNil(local.string(forKey: AccountLocalState.accountDeletionKey(userID: "user-a")))
+        XCTAssertNil(local.string(forKey: AccountLocalState.appleCredentialUserKey(userID: "user-a")))
+        XCTAssertNil(local.object(forKey: AccountLocalState.onboardedKey(userID: "user-a")))
+        XCTAssertEqual(model.userID, "user-b")
+        XCTAssertEqual(tokens.token, tokenB)
+        XCTAssertEqual(try h.store.data(forKey: AuthModel.pendingEntryKey), savedB)
+        XCTAssertTrue(local.hasFailure(forKey: AuthModel.pendingEntryKey))
     }
 
     func testDeletionCompletionAfterAccountSwitchOnlyClearsInitiatingAccount() async {

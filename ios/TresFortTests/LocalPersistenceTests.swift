@@ -162,6 +162,26 @@ final class LocalPersistenceTests: XCTestCase {
         XCTAssertEqual(ActivityOutboxStore.load(userID: "a", defaults: local).pending.map(\.id), ["owned-by-a"])
     }
 
+    func testDeletionRetainsLegacyOwnerUntilCleanupSucceedsThenRemovesIdentity() throws {
+        let h = harness(), local = h.open()
+        let ownerKey = "com.nmarkspdx.liftcoach.legacy-state-owner.v1"
+        XCTAssertTrue(AccountLocalState.claimLegacyState(userID: "a", defaults: local))
+        XCTAssertNotNil(h.preferences.string(forKey: ownerKey))
+        h.faults.failedFiles = [h.store.fileURL(forKey: AccountLocalState.legacyHealthAnchorKey).lastPathComponent]
+        XCTAssertFalse(AccountLocalState.clear(userID: "a", defaults: local))
+        XCTAssertFalse(AccountLocalState.claimLegacyState(userID: "b", defaults: local))
+        XCTAssertNotNil(h.preferences.string(forKey: ownerKey))
+        h.faults.failedFiles = []
+        XCTAssertTrue(AccountLocalState.clear(userID: "a", defaults: local))
+        XCTAssertNil(h.preferences.string(forKey: ownerKey))
+        XCTAssertTrue(AccountLocalState.claimLegacyState(userID: "b", defaults: local))
+        var legacy = ActivityOutbox()
+        legacy.enqueue(activity("new-account-legacy"))
+        XCTAssertTrue(local.set(try JSONEncoder().encode(legacy), forKey: ActivityOutboxStore.legacyKey))
+        XCTAssertEqual(ActivityOutboxStore.load(userID: "b", defaults: local).pending.map(\.id), ["new-account-legacy"])
+        XCTAssertTrue(ActivityOutboxStore.load(userID: "a", defaults: local).isEmpty)
+    }
+
     private func activity(_ id: String) -> PendingActivity {
         PendingActivity(id: id, date: "2026-09-10", type: "walk", title: nil,
                         duration_minutes: 10, notes: "Private training", logged_at: 2_000_000_000_000)
