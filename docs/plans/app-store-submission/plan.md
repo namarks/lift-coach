@@ -187,19 +187,20 @@ Preserve external release and publication gates.
   Mailbox delivery is untested. No production change was made.
   A SELECT-only refresh at 17:47–17:48 UTC confirmed the same deployment and ledger
   through `0045`, with zero rows written.
-- P2 draft screenshot preparation is isolated in `codex/app-store-screenshots`.
-  Two UI capture journeys produced five opaque RGB 1320 × 2868 images through
-  real views with fictional data, preserving source/image hashes and test logs.
-  The complete workflow passed again on source `55477d7` after integration with
-  the corrected storage candidate: both UI journeys passed, all 270 tested iOS
-  source hashes matched, and every image was visually inspected. The command
-  rejects PNG transparency, validates dimensions and source identity, and
-  removes its owned build/simulator. An unsigned Release build of the same app
-  sources passed with synthetic markers absent; later differences were confined
-  to tests and the capture script. The workflow is ready for independent review
-  as a focused change based on the storage PR. Both require their own final
-  review and CI before merging. Capture against the selected release source
-  remains required. No images or App Store metadata were published.
+- P2 screenshot workflow is in [PR #174](https://github.com/namarks/tres-fort/pull/174),
+  based on the protected-storage PR. The complete capture passed on clean source
+  `0d42db6813b1fb6d8e0e151304960b57da8bb97b`, including the Health reset fix.
+  Both UI journeys passed; all 270 source hashes matched, and five opaque RGB
+  1320 × 2868 images were visually inspected. The framing follow-up also passed
+  both journeys on CI's smaller iPhone 17. Explicit validation rejects missing
+  images, wrong dimensions, transparency and source changes even under optimized
+  Python; the optimization bypass reproduced before the fix. A generic-iOS
+  unsigned Release build passed on the same clean source with version 1.0,
+  embedded widget/`CA92.1` manifest and no synthetic fixture markers. Placeholder
+  build 29 remains unreserved. Fresh independent review and CI remain required;
+  merge the storage prerequisite first. Final candidate selection, device
+  verification and capture comparison remain open. Nothing was uploaded or
+  published to App Store Connect.
 - Source baseline `bb4db9c40675ba6be6a0b8ff42f8cdbabcf14a4c`;
   [main CI](https://github.com/namarks/tres-fort/actions/runs/34486074011) passed.
   The preceding run failed transcript replacement: its helper could delete
