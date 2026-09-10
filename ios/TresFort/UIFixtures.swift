@@ -7,6 +7,7 @@ import SwiftUI
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
+    case appStore = "app-store"
     case planChanges = "plan-changes"
     case activationOwner = "activation-owner", activationInvite = "activation-invite"
     case activationManual = "activation-manual", activationCoach = "activation-coach"
@@ -54,7 +55,7 @@ enum UIFixtureModel {
         let auth = AuthModel(tokenStore: FixtureTokenStore(), defaults: defaults)
         if UIFixtureScenario.selected != .signIn && UIFixtureScenario.selected?.isActivation != true {
             auth.userID = "synthetic-ui-user"
-            auth.jwt = UIFixtureScenario.selected?.isIntervals == true
+            auth.jwt = UIFixtureScenario.selected?.isIntervals == true || UIFixtureScenario.selected == .appStore
                 ? UIFixtureServer(scenario: UIFixtureScenario.selected!).syntheticJWT : "synthetic-ui-bearer"
             auth.onboardingComplete = UIFixtureScenario.selected != .onboarding
             auth.phase = .signedIn
@@ -93,7 +94,13 @@ struct UIFixtureView: View {
 
     var body: some View {
         Group {
-            if scenario == .signIn || scenario.isActivation || scenario.isIntervals {
+            if scenario == .appStore {
+                // Capture the production view hierarchy with fictional data.
+                // QA fixtures retain their banner; this dedicated asset mode
+                // is excluded from release and physical-device builds.
+                RootView(defaults: UIFixtureModel.defaults,
+                         now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
+            } else if scenario == .signIn || scenario.isActivation || scenario.isIntervals {
                 VStack(spacing: 0) {
                     Text("SYNTHETIC · \(scenario.rawValue)")
                         .font(.caption).dynamicTypeSize(.large)
@@ -249,6 +256,10 @@ private struct UIFixtureServer {
             }
         }
         if scenario.isIntervals { sessions = [] }
+        if scenario == .appStore {
+            sessions = AppStoreScreenshotData.sessions
+            sets = AppStoreScreenshotData.sets
+        }
         if scenario == .intervalsReauth {
             intervalsReauth = true
             importIntervalsActivity()
@@ -285,6 +296,7 @@ private struct UIFixtureServer {
          "attempt": attempt, "write_protocol": "attempt-v1"]
     }
     func makePlan(name: String = "Synthetic Training", workouts: Bool = true) -> [String: Any] {
+        if scenario == .appStore { return AppStoreScreenshotData.plan }
         if scenario == .library {
             return ["id": "synthetic-plan", "name": "My Workouts", "version": 1,
                 "meta": "{\"schedule\":{\"version\":1,\"week\":{\"tue\":\"synthetic-day\"}}}",
@@ -436,6 +448,7 @@ private struct UIFixtureServer {
                  "modality": slot["exercise_modality"]!, "unit": "lb", "primary_muscle": "full body"]
             }
         case ("GET", "/api/exercises"):
+            if scenario == .appStore { response = AppStoreScreenshotData.catalog; break }
             if let fixture = coachingFixture { response = fixture["catalog"]!; break }
             response = [["id": "synthetic-exercise",
                 "name": scenario == .bodyweight ? "Pull-Up" : scenario == .timed ? "Plank" : "Barbell Squat",
