@@ -190,8 +190,16 @@ Preserve external release and publication gates.
 - P2 draft screenshot preparation is isolated in `codex/app-store-screenshots`.
   Two UI capture journeys produced five opaque RGB 1320 × 2868 images through
   real views with fictional data, preserving source/image hashes and test logs.
-  The workflow still needs integration review and capture against the final
-  candidate. No images or App Store metadata were published.
+  The complete workflow passed again on source `55477d7` after integration with
+  the corrected storage candidate: both UI journeys passed, all 270 tested iOS
+  source hashes matched, and every image was visually inspected. The command
+  rejects PNG transparency, validates dimensions and source identity, and
+  removes its owned build/simulator. An unsigned Release build of the same app
+  sources passed with synthetic markers absent; later differences were confined
+  to tests and the capture script. The workflow is ready for independent review
+  as a focused change based on the storage PR. Both require their own final
+  review and CI before merging. Capture against the selected release source
+  remains required. No images or App Store metadata were published.
 - Source baseline `bb4db9c40675ba6be6a0b8ff42f8cdbabcf14a4c`;
   [main CI](https://github.com/namarks/tres-fort/actions/runs/34486074011) passed.
   The preceding run failed transcript replacement: its helper could delete
