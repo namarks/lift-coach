@@ -25,6 +25,7 @@ struct CoachingContextView: View {
                                 ForEach(["race", "periodization", "trips", "stress_model"], id: \.self) { key in
                                     let value = meta[key] ?? .null
                                     Text("\(key.replacingOccurrences(of: "_", with: " ").capitalized): \(value == .null ? "Not recorded" : value.displayText)")
+                                        .fixedSize(horizontal: false, vertical: true)
                                 }
                             }.padding(.top, 8)
                         }.accessibilityIdentifier("coaching.plan")

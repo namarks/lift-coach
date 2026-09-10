@@ -25,6 +25,11 @@ final class CoachingContextJourneyTests: XCTestCase {
         app.buttons["coaching.plan"].tap()
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Autumn event'")).firstMatch.exists)
         XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS 'Hotel gym only'")).firstMatch.exists)
+        let stress = app.staticTexts.matching(NSPredicate(format: "label BEGINSWITH 'Stress Model:'")).firstMatch
+        for _ in 0..<5 where !stress.isHittable { app.swipeUp() }
+        XCTAssertTrue(stress.label.contains("Discuss back-to-back long days"))
+        XCTAssertTrue(stress.label.contains("Authored, not computed"))
+        XCTAssertGreaterThan(stress.frame.height, 100, "Long authored context must wrap rather than clip to one line")
         let plan = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         plan.name = "coaching-authored-context"; plan.lifetime = .keepAlways; add(plan)
     }
