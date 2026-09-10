@@ -49,6 +49,7 @@ final class LocalPersistenceTests: XCTestCase {
         let h = harness()
         let keys = [SetOutboxStore.scopedKey(userID: "active"),
                     StateSnapshotStore.scopedKey(userID: "inactive"),
+                    PlanChangeDismissalStore.key(userID: "inactive"),
                     AccountLocalState.healthAnchorKey(userID: "inactive"),
                     WorkoutRunnerCheckpointStore.scopedKey(userID: "inactive")]
         for (index, key) in keys.enumerated() { h.preferences.set(Data([UInt8(index)]), forKey: key) }
@@ -56,7 +57,8 @@ final class LocalPersistenceTests: XCTestCase {
         h.preferences.set(true, forKey: AccountLocalState.healthEnabledKey(userID: "active"))
         _ = h.open()
         XCTAssertFalse(h.preferences.dictionaryRepresentation().contains {
-            $0.key.hasPrefix("com.nmarkspdx.liftcoach.") && $0.value is Data
+            ($0.key.hasPrefix("com.nmarkspdx.liftcoach.")
+             || $0.key.hasPrefix("com.nmarkspdx.tresfort.")) && $0.value is Data
         })
         let cold = h.open()
         for (index, key) in keys.enumerated() {
@@ -114,6 +116,58 @@ final class LocalPersistenceTests: XCTestCase {
         XCTAssertFalse(local.hasFailure(userID: "b"))
         XCTAssertEqual(try Data(contentsOf: h.store.fileURL(forKey: queue)), Data([255]))
         XCTAssertTrue(local.set(Data([2]), forKey: cache))
+    }
+
+    func testCorruptDisposableMetadataCanReloadWithoutBlockingTheAccount() throws {
+        let h = harness(), local = h.open()
+        let keys = [PlanChangeDismissalStore.key(userID: "a"),
+                    AccountLocalState.intervalsConnectionKey(userID: "a"),
+                    AccountLocalState.legacyIntervalsConnectionKey]
+        for key in keys {
+            XCTAssertTrue(local.set(Data([1]), forKey: key))
+            h.preferences.set(Data([2]), forKey: key)
+            try Data([255]).write(to: h.store.fileURL(forKey: key))
+            XCTAssertNil(local.data(forKey: key))
+            XCTAssertFalse(local.hasFailure(userID: "a"))
+            XCTAssertNil(h.preferences.data(forKey: key))
+            XCTAssertNil(try h.store.data(forKey: key))
+            XCTAssertTrue(local.set(Data([3]), forKey: key))
+            XCTAssertEqual(h.open().data(forKey: key), Data([3]))
+        }
+    }
+
+    func testDisposableCorruptionRetriesCleanupAfterStorageBecomesWritable() throws {
+        let h = harness(), local = h.open(), key = PlanChangeDismissalStore.key(userID: "a")
+        XCTAssertTrue(local.set(Data([1]), forKey: key))
+        try Data([255]).write(to: h.store.fileURL(forKey: key))
+        h.faults.failWrites = true
+        XCTAssertNil(local.data(forKey: key))
+        XCTAssertTrue(local.hasFailure(userID: "a"))
+        XCTAssertFalse(local.retry(userID: "a"))
+        XCTAssertEqual(try Data(contentsOf: h.store.fileURL(forKey: key)), Data([255]))
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "a"))
+        XCTAssertFalse(local.hasFailure(userID: "a"))
+        XCTAssertNil(try h.store.data(forKey: key))
+        PlanChangeDismissalStore.dismiss(through: 4, userID: "a", planID: "plan", defaults: local)
+        XCTAssertEqual(PlanChangeDismissalStore.load(userID: "a", planID: "plan", defaults: h.open()), 4)
+    }
+
+    func testDisposableRecoveryNeverErasesCorruptDurableWorkOrHealthAnchors() throws {
+        let h = harness(), local = h.open()
+        let keys = [SetOutboxStore.scopedKey(userID: "a"), ActivityOutboxStore.legacyKey,
+                    AccountLocalState.healthAnchorKey(userID: "a"), AccountLocalState.legacyHealthAnchorKey,
+                    WorkoutRunnerCheckpointStore.scopedKey(userID: "a"), AuthModel.pendingEntryKey]
+        for key in keys {
+            XCTAssertTrue(local.set(Data([1]), forKey: key))
+            try Data([255]).write(to: h.store.fileURL(forKey: key))
+            XCTAssertNil(local.data(forKey: key))
+        }
+        XCTAssertFalse(local.retry(userID: "a"))
+        for key in keys {
+            XCTAssertTrue(local.hasFailure(forKey: key))
+            XCTAssertEqual(try Data(contentsOf: h.store.fileURL(forKey: key)), Data([255]))
+        }
     }
 
     func testFailedLegacyMergeKeepsBothQueuesAndCannotTransferToAnotherAccount() throws {

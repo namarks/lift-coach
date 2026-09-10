@@ -66,10 +66,11 @@ public release require separate authorization and are outside this goal.
 ## Next step
 
 **Now (@agent):** Complete verification, independent review and merge of the
-protected-storage integration. Preserve account/revision fencing and demonstrate
-failure recovery before claiming privacy readiness. Continue review-package preparation;
-await the owner's decision on the
-[group-safety proposal](group-safety-proposal.md) before changing group policy.
+protected-storage integration and backend error-privacy fix. Preserve
+account/revision fencing and demonstrate failure recovery before claiming
+privacy readiness. Continue review-package preparation; await the owner's
+decisions on the [group-safety proposal](group-safety-proposal.md) and
+[diagnostics policy](diagnostics-policy-proposal.md) before changing those policies.
 Preserve external release and publication gates.
 
 ## Notes / open questions
@@ -127,15 +128,31 @@ Preserve external release and publication gates.
   installed model container. The regression failed before the fix; afterward,
   72 focused unit tests and all 12 connection/onboarding/workout UI journeys
   passed, with all 268 source-manifest entries matching the final iOS files.
+  A further review found corrupt presentation metadata could gate all feature
+  requests. The follow-up classifies dismissal markers and Intervals connection
+  mirrors as replaceable, retries failed cleanup after storage recovers, and
+  preserves corrupt workout queues, checkpoints, navigation and Health anchors.
+  All 83 focused unit tests and five affected connection/plan-history UI journeys
+  passed, with all 268 source-manifest entries matching. Fresh exact-head review
+  and CI remain required.
+  An unsigned Release build for generic iOS also passed: version 1.0, iPhone-only
+  family, embedded widget and `CA92.1` manifest verified; the synthetic fixture
+  switch was absent. This used the unreserved project build placeholder 29,
+  not an upload candidate. No archive or upload was made.
   The file-protection test must pass on a physical iPhone; simulator results do
   not prove this property. See the release audit for upgrade/rollback constraints.
-- The separate backend diagnostics fix is committed locally as
+- The separate backend diagnostics fix is in [PR #173](https://github.com/namarks/tres-fort/pull/173), initial verified source
   `f6d6bfe7a0f93af9614f2c683ef84feb5df85310` on
   `codex/private-error-diagnostics`. TypeScript and all 972 backend tests passed.
-  Refresh it from main after storage delivery, then complete independent review
-  and CI. It removes raw unexpected error text from application logs and HTTP/MCP
-  responses; provider logging fields/retention and production deployment remain
-  separate, unverified gates.
+  Complete independent review and CI; refresh the comparison before delivery if
+  main advances. It removes raw unexpected error text from application logs and HTTP/MCP
+  responses. Read-only provider metadata at 17:07:31 UTC confirmed persisted
+  invocation logs with 100% sampling and URL query redaction disabled. Tracing
+  is disabled; no tail consumers or export destinations were returned. Logpush
+  is not exposed by the download path. No request logs were opened. The
+  [diagnostics policy proposal](diagnostics-policy-proposal.md) awaits an owner
+  choice; production changes, historical exports and final privacy declarations
+  remain separate gates.
 - [Release audit, 2026-09-10](release-audit-2026-09-10.md): production version
   `c5a298d1-a72a-4fa8-a24f-bd2cf0e27a6b`, source annotation `ff512825779f90b630a4a5dfd11a68e6a113825a`,
   migration ledger through `0045`; source migrations `0046` and `0047` remain

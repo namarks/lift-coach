@@ -31,7 +31,8 @@ final class LocalPersistence: ObservableObject {
         // Include inactive accounts and pre-account-scoping blobs. Moving a
         // legacy key does not change which account may subsequently claim it.
         for (key, value) in preferences.dictionaryRepresentation()
-            where key.hasPrefix("com.nmarkspdx.liftcoach.") && value is Data {
+            where (key.hasPrefix("com.nmarkspdx.liftcoach.")
+                   || key.hasPrefix("com.nmarkspdx.tresfort.")) && value is Data {
             _ = data(forKey: key)
         }
     }
@@ -47,17 +48,20 @@ final class LocalPersistence: ObservableObject {
 
     func data(forKey key: String) -> Data? {
         lock.lock(); defer { lock.unlock() }
+        do { return try readRecoveringReplaceableCache(forKey: key) }
+        catch {
+            record(.read, forKey: key)
+            return nil
+        }
+    }
+
+    private func readRecoveringReplaceableCache(forKey key: String) throws -> Data? {
         do { return try trainingStore.data(forKey: key, migratingFrom: preferences) }
         catch {
-            // A browse cache can be fetched again. Never apply this recovery
-            // to queues, feedback, navigation intents or runner checkpoints.
-            if isReplaceableCache(key), error is ProtectedTrainingStore.StorageError {
-                do {
-                    try trainingStore.removeObject(forKey: key, removingLegacyFrom: preferences)
-                    return nil
-                } catch { }
-            }
-            record(.read, forKey: key)
+            // Only corrupt envelopes of disposable data can be erased. Locked
+            // files and unreadable durable work must survive for a later retry.
+            guard isReplaceableCache(key), error is ProtectedTrainingStore.StorageError else { throw error }
+            try trainingStore.removeObject(forKey: key, removingLegacyFrom: preferences)
             return nil
         }
     }
@@ -159,7 +163,7 @@ final class LocalPersistence: ObservableObject {
         guard !selected.isEmpty else { return true }
         for (key, failure) in selected {
             do {
-                let current = try trainingStore.data(forKey: key, migratingFrom: preferences)
+                let current = try readRecoveringReplaceableCache(forKey: key)
                 if case .invalidData(let unreadable) = failure, current == unreadable { continue }
                 try trainingStore.set(Data(), forKey: "storage-write-probe")
                 try trainingStore.removeObject(forKey: "storage-write-probe")
@@ -185,6 +189,9 @@ final class LocalPersistence: ObservableObject {
     private func isReplaceableCache(_ key: String) -> Bool {
         key.hasPrefix("com.nmarkspdx.liftcoach.state-snapshot.")
             || key.hasPrefix("com.nmarkspdx.liftcoach.exercise-catalog-snapshot.")
+            || key.hasPrefix("com.nmarkspdx.tresfort.plan-changes-dismissed.v1.")
+            || key.hasPrefix("com.nmarkspdx.liftcoach.intervals-connection.v2.")
+            || key == AccountLocalState.legacyIntervalsConnectionKey
     }
 
     private func belongsToAccount(_ key: String, userID: String?) -> Bool {

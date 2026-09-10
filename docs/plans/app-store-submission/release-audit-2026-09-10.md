@@ -106,6 +106,21 @@ container. The regression failed before this change; 72 focused unit tests and
 268-entry source manifest matched. Fresh remote CI and independent review remain
 required; the local result does not retroactively clear the earlier CI run.
 
+Disposable metadata recovery includes corrupt plan-change dismissal markers and
+Intervals connection mirrors, including legacy mirrors. A failed cleanup retries
+after storage becomes writable. Corrupt queues, navigation, runner checkpoints
+and Health anchors remain intact. Eager migration also covers the dismissal
+marker's app namespace. This follow-up passed 83 focused unit tests and all five
+affected UI journeys; the 268-entry iOS source manifest matched.
+
+Unsigned Release-configuration verification at 17:21:39 UTC built for generic
+iOS with version 1.0, minimum iOS 17.0, iPhone-only device family and the widget
+extension. The bundled privacy manifest declares UserDefaults reason `CA92.1`;
+the synthetic fixture environment switch was absent from the Release executable.
+The build used project placeholder 29, which is not reserved or selected for
+upload. Its source manifest matched all 268 iOS inputs. Temporary build products
+were removed. This was a build check, not an archive, upload, or device test.
+
 Before candidate upload, use a physical iPhone to verify file protection on the
 same source, upgrade migration without erasing the install, offline workout
 recovery, lock/unlock and foreground retry, and account deletion. Backup exclusion
@@ -113,10 +128,21 @@ cannot recover unsynced device-only writes from iCloud. Do not downgrade to a
 build that reads only the old preferences while pending work remains; any
 rollback candidate must preserve the new protected-storage reader.
 
-Cloudflare observability is enabled in repository configuration. Most explicit
-service logs are aggregate or error-type-only; the global unhandled-error
-handler still logs the raw error. Provider request-log fields and retention
-remain unverified. App Privacy diagnostic classifications are not finalized.
+Cloudflare service metadata downloaded read-only through Wrangler 4.92.0 at
+17:07:31 UTC confirms persisted invocation logs, 100% sampling and URL query
+redaction disabled. Tracing is disabled; no export destinations or tail consumers
+were returned. This command does not expose Logpush, so that remains unverified.
+No request logs were opened, and temporary downloaded source/configuration was
+deleted. Intervals callback URLs carry temporary `code` and `state` parameters;
+the configuration therefore permits sensitive URL values in retained logs.
+
+The separate backend diagnostics candidate removes raw unexpected error text
+from application logs and HTTP/MCP responses; TypeScript and all 972 backend
+tests passed. It is not deployed and does not sanitize provider-added request
+metadata. See the [owner logging-policy proposal](diagnostics-policy-proposal.md).
+Cloudflare documents up to seven days for Workers Logs; any historical export
+copies require separate verification. Final App Privacy classifications remain
+pending. No retention or production setting has been changed.
 
 ## Public URLs
 
