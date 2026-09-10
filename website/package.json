@@ -6,6 +6,10 @@
   "scripts": {
     "build": "node build.mjs",
     "dev": "node dev.mjs",
+    "deploy": "npm run build && wrangler deploy --config wrangler.jsonc",
     "test": "node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "4.130.0"
   }
 }
