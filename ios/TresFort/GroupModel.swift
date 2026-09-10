@@ -244,7 +244,7 @@ final class GroupModel: ObservableObject {
     // MARK: - Load / refresh
 
     /// Reconcile both group content and the mounted Profile safety screen.
-    func refreshAfterForeground() async {
+    func reloadGroupState() async {
         await load()
         try? await refreshGroupSafety()
     }
@@ -303,7 +303,7 @@ final class GroupModel: ObservableObject {
         if refreshRoster {
             if let index = groups.firstIndex(where: { $0.id == groupID }) {
                 let group = groups[index]
-                groups[index] = GroupSummary(id: group.id, name: "Private group", created_by: group.created_by,
+                groups[index] = GroupSummary(id: group.id, name: "Private group", created_by: "",
                                              created_at: group.created_at, members: [])
             }
             do {
@@ -815,15 +815,14 @@ final class GroupModel: ObservableObject {
             handle(error, jwt: jwt)
             // Reconcile an unavailable member or uncertain write without
             // restoring the old cache. Offline reloads expose the retry state.
-            await load()
+            await reloadGroupState()
             throw error
         }
         guard isCurrentAccount else { return }
         invalidateSharedGroups()
         // A failed refresh cannot turn an acknowledged write into a failed
         // mutation. Retain empty projections until a later successful load.
-        await load()
-        try? await refreshGroupSafety()
+        await reloadGroupState()
     }
 
     // MARK: - Intervals.icu

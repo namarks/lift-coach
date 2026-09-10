@@ -141,8 +141,14 @@ App Store publication remain separately authorized steps.
   274 matching input hashes. Account downloads apply the same masking to other
   members' group names inside the existing export snapshot, preserving a creator's
   own original. The unmasked-export regression reproduced before correction;
-  all 13 safety/export tests and TypeScript checks pass afterward. No production
-  or App Store changes occurred.
+  all 13 safety/export tests and TypeScript checks pass afterward. Shared creator
+  metadata and exported names now honor either-direction blocks and restrictions;
+  unavailable creators use an empty string to retain older clients' wire shape.
+  The app removes unavailable report targets and uses one complete group/safety
+  reload after successful or rejected safety writes and foreground return. These
+  metadata and lost-settings regressions also reproduced before correction. All
+  14 safety/export tests, seven safety unit tests and five safety/Intervals UI
+  journeys passed afterward, with 274 matching iOS input hashes. No production or App Store changes occurred.
 - P1 protected-storage repository work was delivered in
   [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
   `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as

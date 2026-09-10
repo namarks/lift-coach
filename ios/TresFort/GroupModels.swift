@@ -37,6 +37,7 @@ import SwiftUI
 struct GroupSummary: Codable, Identifiable, Equatable {
     let id: String
     let name: String
+    /// Empty when the creator is outside the caller's current visibility.
     let created_by: String
     let created_at: Int
     let members: [GroupMemberRow]

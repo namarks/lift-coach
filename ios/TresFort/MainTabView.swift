@@ -115,7 +115,7 @@ struct MainTabView: View {
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await sync.recoverWorkoutWrites()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
-                    await groupModel.refreshAfterForeground()
+                    await groupModel.reloadGroupState()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     // Pull any workouts recorded while we were backgrounded.
                     await health.sync()

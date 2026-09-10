@@ -119,6 +119,9 @@ final class GroupSafetyTests: XCTestCase {
                 return [] // Server confirms membership ended; only then show no groups.
             }, profileLoader: { _ in throw URLError(.notConnectedToInternet) }, groupBlockWriter: { _, _, _ in
                 throw APIError.http(404, "member_unavailable")
+            }, groupSafetyLoader: { _ in
+                if offline { throw URLError(.notConnectedToInternet) }
+                return .init(blocks: [.init(user_id: "existing-block", created_at: 1)], restriction: nil, can_moderate: true)
             })
             model.phase = .ready
             model.groups = [.init(id: "old-group", name: "Old crew", created_by: "user-b", created_at: 1, members: [])]
@@ -131,9 +134,12 @@ final class GroupSafetyTests: XCTestCase {
             XCTAssertEqual(reloads, 1)
             XCTAssertTrue(model.groups.isEmpty)
             if offline {
+                XCTAssertNil(model.groupSafety)
                 if case .error = model.phase {} else { XCTFail("Unavailable membership must offer retry") }
             } else {
                 XCTAssertEqual(model.phase, .none)
+                XCTAssertEqual(model.groupSafety?.blocks.first?.user_id, "existing-block")
+                XCTAssertEqual(model.groupSafety?.can_moderate, true)
             }
         }
     }
@@ -157,6 +163,8 @@ final class GroupSafetyTests: XCTestCase {
             XCTAssertTrue(model.feed.isEmpty)
             XCTAssertTrue(model.stats.isEmpty)
             throw URLError(.networkConnectionLost)
+        }, groupSafetyLoader: { _ in
+            .init(blocks: [], restriction: .init(active: 1, reason: "harassment", updated_at: 2), can_moderate: true)
         })
         model.phase = .ready
         model.groups = [.init(id: "group", name: "Crew", created_by: "user-b", created_at: 1, members: [])]
@@ -173,6 +181,8 @@ final class GroupSafetyTests: XCTestCase {
         XCTAssertTrue(model.feed.isEmpty)
         XCTAssertTrue(model.stats.isEmpty)
         XCTAssertEqual(model.phase, .none)
+        XCTAssertEqual(model.groupSafety?.restriction?.active, 1)
+        XCTAssertEqual(model.groupSafety?.can_moderate, true)
         model = nil
     }
 
@@ -196,7 +206,7 @@ final class GroupSafetyTests: XCTestCase {
         XCTAssertEqual(model.groupSafety?.blocks.count, 1)
         model.invalidateSharedGroups()
         XCTAssertNil(model.groupSafety, "Old safety settings must disappear before foreground network waits")
-        await model.refreshAfterForeground()
+        await model.reloadGroupState()
         XCTAssertEqual(calls, 2)
         XCTAssertEqual(model.groupSafety?.blocks.count, 0)
         XCTAssertEqual(model.groupSafety?.restriction?.active, 1)
@@ -221,6 +231,7 @@ final class GroupSafetyTests: XCTestCase {
         await model.refreshGroup(groupID: "group")
         XCTAssertNil(model.feed["group"])
         XCTAssertTrue(model.groups[0].members.isEmpty)
+        XCTAssertEqual(model.groups[0].created_by, "")
         if case .error = model.phase {} else { XCTFail("Failed roster verification must show the existing retry screen") }
         await model.load()
         XCTAssertEqual(model.phase, .none, "A successful Retry must leave the error state")

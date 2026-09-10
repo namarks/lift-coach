@@ -172,5 +172,33 @@ describe('private group safety', () => {
     await setGroupSharingRestriction(env.DB,a.id,ownerSub,b.id,false,'other');
     expect(await names(c.jwt)).toMatchObject({group_name:'Weekend'});
     expect(await names(c.jwt)).not.toHaveProperty('owns_group');
+    await block(c.jwt,b.id);
+    expect(await names(c.jwt)).toMatchObject({group_name:'Private group'});
+    expect(await names(b.jwt)).toMatchObject({group_name:'Weekend'});
+  });
+  it('hides creator metadata under either-direction blocks and restrictions, including later group members', async () => {
+    const {a,b,c,groups}=await seed();
+    const group=groups[1]!;
+    const check=async (jwt:string,hidden:boolean) => {
+      const direct=await (await request(jwt,`/groups/${group.id}`)).json<any>();
+      const list=await (await request(jwt,'/groups')).json<any>();
+      for (const item of [direct,list.groups.find((g:any)=>g.id===group.id)]) {
+        expect(item.created_by).toBe(hidden ? '' : b.id);
+        expect(item.name).toBe(hidden ? 'Private group' : 'Weekend');
+      }
+    };
+    await block(a.jwt,b.id);
+    await check(a.jwt,true); await check(c.jwt,false);
+    await block(a.jwt,b.id,false); await block(b.jwt,a.id);
+    await check(a.jwt,true);
+    const mcp=await handleMcp({jsonrpc:'2.0',id:1,method:'tools/call',params:{name:'get_group_feed',arguments:{group_id:group.id}}},env,a.id);
+    const response=mcp.json as {result:{content:{text:string}[]}};
+    expect(JSON.parse(response.result.content[0]!.text).group_name).toBe('Private group');
+    await setGroupSharingRestriction(env.DB,a.id,ownerSub,b.id,true,'other');
+    const newcomer=await user('New member');
+    await env.DB.prepare('INSERT INTO group_members (group_id,user_id,joined_at) VALUES (?1,?2,?3)').bind(group.id,newcomer.id,ts).run();
+    await check(newcomer.jwt,true); await check(c.jwt,true);
+    await setGroupSharingRestriction(env.DB,a.id,ownerSub,b.id,false,'other');
+    await check(newcomer.jwt,false);
   });
 });

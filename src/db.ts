@@ -2294,9 +2294,14 @@ export async function exportUserData(
       .prepare(
         `SELECT gm.group_id, gm.display_name, gm.joined_at,
                 g.created_by = ?1 AS owns_group,
-                CASE WHEN g.created_by <> ?1 AND EXISTS (
-                  SELECT 1 FROM group_sharing_restrictions r
-                   WHERE r.user_id = g.created_by AND r.active = 1
+                CASE WHEN g.created_by <> ?1 AND (
+                  NOT EXISTS (SELECT 1 FROM group_members creator
+                    WHERE creator.group_id = g.id AND creator.user_id = g.created_by)
+                  OR EXISTS (SELECT 1 FROM group_sharing_restrictions r
+                    WHERE r.user_id = g.created_by AND r.active = 1)
+                  OR EXISTS (SELECT 1 FROM group_member_blocks b WHERE b.active = 1 AND (
+                    (b.blocker_id = ?1 AND b.blocked_id = g.created_by)
+                    OR (b.blocker_id = g.created_by AND b.blocked_id = ?1)))
                 ) THEN 'Private group' ELSE g.name END AS group_name
            FROM group_members gm
            JOIN groups g ON g.id = gm.group_id
@@ -2567,7 +2572,13 @@ async function hydrateGroup(
     joined_at: row.joined_at,
     effective_display_name: sharedText(row.per_group_name ?? row.global_name, 'Member'),
   }));
-  return { ...group, name: sharedText(group.name, 'Private group')!, members };
+  const creatorVisible = rows.some((row) => row.user_id === group.created_by);
+  // Retain the existing string wire shape for older clients; an unavailable
+  // creator has no report/block target and contributes no shared group name.
+  return { ...group,
+    created_by: creatorVisible ? group.created_by : '',
+    name: creatorVisible ? sharedText(group.name, 'Private group')! : 'Private group',
+    members };
 }
 
 /**

@@ -134,7 +134,7 @@ struct GroupSettingsView: View {
                     Text("Anyone with this 6-character code can join. Codes expire in 30 days.")
                 }
 
-                if let currentGroup {
+                if let currentGroup, !currentGroup.created_by.isEmpty {
                     Section {
                         HStack {
                             Text("Report this group")
