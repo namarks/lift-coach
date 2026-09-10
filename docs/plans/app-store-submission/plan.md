@@ -126,8 +126,11 @@ App Store publication remain separately authorized steps.
   the app now invalidates every shared projection before authentication waits and
   reloads all rosters. A stale detail task cannot supersede that reload. All
   three safety unit tests and five safety/Intervals journeys passed after the
-  correction, including background/foreground use. No production or App Store
-  changes occurred.
+  correction, including background/foreground use. Rejected block requests now
+  revalidate membership rather than leaving a false empty-group screen; an offline
+  reload exposes retry while preserving the original block error. The regression
+  reproduced both failures before the fix; all four safety unit tests pass after
+  it. No production or App Store changes occurred.
 - P1 protected-storage repository work was delivered in
   [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
   `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as

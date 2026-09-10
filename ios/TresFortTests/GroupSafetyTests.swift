@@ -102,4 +102,40 @@ final class GroupSafetyTests: XCTestCase {
         if case .error = model.phase {} else { XCTFail("Expected the current offline error") }
     }
 
+
+    func testRejectedBlockRevalidatesMembershipOrShowsRetryableLoadError() async throws {
+        for offline in [false, true] {
+            let suite = "GroupSafetyTests.\(UUID().uuidString)"
+            let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
+            defer { defaults.removePersistentDomain(forName: suite) }
+            let auth = AuthModel(tokenStore: TokenStore(), defaults: defaults)
+            auth.userID = "user-a"
+            let payload = try JSONSerialization.data(withJSONObject: ["sub": "user-a", "exp": 4_000_000_000])
+            auth.jwt = "header." + payload.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".signature"
+            var reloads = 0
+            let model = GroupModel(auth: auth, defaults: defaults, groupLister: { _ in
+                reloads += 1
+                if offline { throw URLError(.notConnectedToInternet) }
+                return [] // Server confirms membership ended; only then show no groups.
+            }, profileLoader: { _ in throw URLError(.notConnectedToInternet) }, groupBlockWriter: { _, _, _ in
+                throw APIError.http(404, "member_unavailable")
+            })
+            model.phase = .ready
+            model.groups = [.init(id: "old-group", name: "Old crew", created_by: "user-b", created_at: 1, members: [])]
+            do {
+                try await model.setGroupBlock(userID: "user-b", active: true)
+                XCTFail("The rejected block must remain an error")
+            } catch {
+                guard case APIError.http(404, _) = error else { return XCTFail("Original block error was lost: \(error)") }
+            }
+            XCTAssertEqual(reloads, 1)
+            XCTAssertTrue(model.groups.isEmpty)
+            if offline {
+                if case .error = model.phase {} else { XCTFail("Unavailable membership must offer retry") }
+            } else {
+                XCTAssertEqual(model.phase, .none)
+            }
+        }
+    }
+
 }

@@ -781,6 +781,9 @@ final class GroupModel: ObservableObject {
         } catch {
             guard isCurrentAccount else { return }
             handle(error, jwt: jwt)
+            // Reconcile an unavailable member or uncertain write without
+            // restoring the old cache. Offline reloads expose the retry state.
+            await load()
             throw error
         }
         guard isCurrentAccount else { return }
