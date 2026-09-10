@@ -12,7 +12,7 @@ public release require separate authorization and are outside this goal.
 
 ## Phases
 
-- [ ] **P0 — Submission foundations and release defects**
+- [x] **P0 — Submission foundations and release defects**
   - Add privacy/support links before sign-in and in Profile, and bundle a
     required-reason manifest for actual API use.
   - Explain optional Claude/Anthropic and Apple Health data sharing at the
@@ -53,7 +53,6 @@ public release require separate authorization and are outside this goal.
 
 ## Execution frontier
 
-- P0
 - P1
 - P2
 
@@ -66,9 +65,11 @@ public release require separate authorization and are outside this goal.
 
 ## Next step
 
-**Now (@agent):** Obtain exact-head independent review and required CI for the
-implemented foundations. Continue the HealthKit persistence/account-deletion
-audit and review-package preparation; await the owner's decision on the
+**Now (@agent):** Integrate protected storage with snapshots, queued training,
+runner recovery and account cleanup, preserving account/revision fencing and
+surfacing I/O failures before claiming a durable save. Complete focused and full
+verification, independent review and merge. Continue review-package preparation;
+await the owner's decision on the
 [group-safety proposal](group-safety-proposal.md) before changing group policy.
 Preserve external release and publication gates.
 
@@ -77,6 +78,13 @@ Preserve external release and publication gates.
 - Within this plan, P3 requires P0/P1, and P4 requires P2/P3. These are phase
   order requirements, not cross-plan dependency edges.
 - Owner decision, 2026-09-10: **free, United States only**.
+- P0 delivered in [PR #171](https://github.com/namarks/tres-fort/pull/171),
+  reviewed head `3629ab656ba6b99d8a852d8fdf8473e71480431b`, merged as
+  `95f90307deaf4993a2cadc4546480933d785a048`. Independent Codex review completed
+  without findings; no unresolved threads; [all configured CI checks passed](https://github.com/namarks/tres-fort/actions/runs/34491716466).
+  The merge and reviewed head have identical tree
+  `122d8e9c537ad7e3fb15d2512b419432d2ae9a4c`. Final build-number selection remains
+  part of P3 after the final source and App Store Connect read are established.
 - Foundation implementation: privacy/support links, optional integration
   disclosures, UserDefaults required-reason manifest, marketing version 1.0,
   reliable transcript replacement assertions, and an explicitly selected
@@ -87,13 +95,27 @@ Preserve external release and publication gates.
   onboarding and affected feedback rerun passed all nine tests. The built app
   contained marketing version 1.0 and the UserDefaults `CA92.1` manifest.
   Release-lane boundary tests, verification-script tests, plan validation and
-  whitespace checks passed. Independent review and remote CI remain required.
+  whitespace checks passed. Exact-head independent review and remote CI passed
+  as recorded above.
 - A paired physical iPhone was unavailable on 2026-09-10; simulator evidence
   does not satisfy the P3 physical-device gate.
 - The [review package](review-package.md) is a draft. The proposed group controls
   and daily inbox / 24-hour response commitment await owner approval. Persisted
   HealthKit records in UserDefaults require a protected, backup-excluded
   app-owned store with crash-safe migration; that change remains in P1.
+- P1 prototype: `ProtectedTrainingStore` writes excluded, protected staging
+  files and atomically replaces account-keyed blobs. A committed copy or small
+  deletion marker wins over stale preferences; failed writes retain old data.
+  Eight storage tests pass on iOS 26.2 simulator. A ninth test explicitly skips
+  because that simulator exposes no file-protection attribute; it must pass on
+  a physical iPhone. The utility is not yet connected to app persistence and
+  has not been independently reviewed. No privacy-completion claim follows
+  from these utility tests.
+- [Release audit, 2026-09-10](release-audit-2026-09-10.md): production version
+  `c5a298d1-a72a-4fa8-a24f-bd2cf0e27a6b`, source annotation `ff512825779f90b630a4a5dfd11a68e6a113825a`,
+  migration ledger through `0045`; source migrations `0046` and `0047` remain
+  unapplied. Public URL checks returned HTTP 403 from this environment and do
+  not establish public reachability. No production change was made.
 - Source baseline `bb4db9c40675ba6be6a0b8ff42f8cdbabcf14a4c`;
   [main CI](https://github.com/namarks/tres-fort/actions/runs/34486074011) passed.
   The preceding run failed transcript replacement: its helper could delete

@@ -159,8 +159,10 @@ choice advance `sessions.attempt`, while an identical retry is idempotent.
 **Owner anchor + multi-tenant MCP.** There is always a distinguished **owner**:
 the bootstrap row (`ensureOwnerUser`), which Sign in with Apple later *claims*
 (`claimOrCreateOwner`) so MCP-seeded data and iOS share one `user_id`;
-`OWNER_APPLE_SUB`, when set, locks sign-in to that Apple `sub` and disables
-row-claiming. Other users exist too (group members), so "exactly one user row"
+`OWNER_APPLE_SUB`, when set, pins the owner bootstrap identity and prevents
+other identities from claiming the owner row. Sign-in remains open: other new
+Apple identities receive ordinary accounts with no group memberships. Other
+users exist too (group members), so "exactly one user row"
 is **no longer** true. As of M3 (migration `0025`) the `/mcp` bearer resolves
 to a *specific* user: the static token (`MCP_STATIC_TOKEN`) always maps to the
 owner; an OAuth access token maps to the user it was bound to at
