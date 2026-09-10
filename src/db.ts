@@ -2292,7 +2292,12 @@ export async function exportUserData(
       .bind(userId),
     workoutDB(db)
       .prepare(
-        `SELECT gm.group_id, g.name AS group_name, gm.display_name, gm.joined_at
+        `SELECT gm.group_id, gm.display_name, gm.joined_at,
+                g.created_by = ?1 AS owns_group,
+                CASE WHEN g.created_by <> ?1 AND EXISTS (
+                  SELECT 1 FROM group_sharing_restrictions r
+                   WHERE r.user_id = g.created_by AND r.active = 1
+                ) THEN 'Private group' ELSE g.name END AS group_name
            FROM group_members gm
            JOIN groups g ON g.id = gm.group_id
           WHERE gm.user_id = ?1
@@ -2324,7 +2329,9 @@ export async function exportUserData(
   const externalActivities = rowsAt(12);
   const activities = rowsAt(13);
   const planSnapshots = rowsAt(14);
-  const memberships = rowsAt(15);
+  const memberships = rowsAt(15).map(({ owns_group, ...row }) =>
+    owns_group === 1 ? row : { ...row, group_name: sharedText(row.group_name as string, 'Private group') },
+  );
 
   const auditRows = audit.map((row) => {
     if (row.tool !== 'create_invite' && row.tool !== 'redeem_invite') {

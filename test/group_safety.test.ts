@@ -153,4 +153,24 @@ describe('private group safety', () => {
     expect((await env.DB.prepare('SELECT * FROM group_member_blocks WHERE blocker_id=?1 OR blocked_id=?1').bind(b.id).all()).results).toHaveLength(0);
     expect(await env.DB.prepare('SELECT * FROM group_sharing_restrictions WHERE user_id=?1').bind(b.id).first()).toBeNull();
   });
+  it('masks shared group names in downloads while preserving the creator original', async () => {
+    const {a,b,c,groups}=await seed();
+    const group=groups[1]!;
+    const names=async (jwt:string) => {
+      const response=await request(jwt,'/me/export');
+      expect(response.status).toBe(200);
+      const data=await response.json<any>();
+      return data.group_memberships.find((m:any)=>m.group_id===group.id);
+    };
+    await env.DB.prepare("UPDATE groups SET name='FUCK club' WHERE id=?1").bind(group.id).run();
+    expect(await names(c.jwt)).toMatchObject({group_name:'Private group'});
+    expect(await names(b.jwt)).toMatchObject({group_name:'FUCK club'});
+    await env.DB.prepare("UPDATE groups SET name='Weekend' WHERE id=?1").bind(group.id).run();
+    await setGroupSharingRestriction(env.DB,a.id,ownerSub,b.id,true,'other');
+    expect(await names(c.jwt)).toMatchObject({group_name:'Private group'});
+    expect(await names(b.jwt)).toMatchObject({group_name:'Weekend'});
+    await setGroupSharingRestriction(env.DB,a.id,ownerSub,b.id,false,'other');
+    expect(await names(c.jwt)).toMatchObject({group_name:'Weekend'});
+    expect(await names(c.jwt)).not.toHaveProperty('owns_group');
+  });
 });

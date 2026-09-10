@@ -138,7 +138,11 @@ App Store publication remain separately authorized steps.
   refreshes use the existing retry screen instead of implying an empty group.
   Both additional review regressions reproduced before correction; all seven
   safety unit tests and both safety journeys pass on the corrected source, with
-  274 matching input hashes. No production or App Store changes occurred.
+  274 matching input hashes. Account downloads apply the same masking to other
+  members' group names inside the existing export snapshot, preserving a creator's
+  own original. The unmasked-export regression reproduced before correction;
+  all 13 safety/export tests and TypeScript checks pass afterward. No production
+  or App Store changes occurred.
 - P1 protected-storage repository work was delivered in
   [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
   `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as
