@@ -150,7 +150,15 @@ Preserve external release and publication gates.
   equivalent JWT whose JSON claims serialized in a different key order. It now
   compares the retained token with the exact original fixture token. All 72
   authentication tests passed locally, with all 268 tested iOS source hashes
-  matching. Fresh exact-head independent review and CI remain required.
+  matching. [CI run 34517031117](https://github.com/namarks/tres-fort/actions/runs/34517031117)
+  then passed all configured checks. Independent review identified a corrupt
+  Health anchor that ordinary disconnect could not clear. The follow-up permits
+  an explicit, account-scoped Health reset while preserving unreadable training
+  queues and another account's legacy data. Failed resets remain retryable after
+  relaunch, and disconnected or retired syncs cannot restore their anchors.
+  The regression reproduced before the fix; afterward all 96 focused tests
+  passed with one explicit simulator protection skip and all 268 iOS source
+  hashes matching. Fresh exact-head independent review and CI remain required.
   An unsigned Release build for generic iOS also passed: version 1.0, iPhone-only
   family, embedded widget and `CA92.1` manifest verified; the synthetic fixture
   switch was absent. This used the unreserved project build placeholder 29,

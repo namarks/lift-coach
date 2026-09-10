@@ -149,6 +149,9 @@ An unsuccessful navigation save asks the member to retry storage and reopen
 the link or choose the destination again. Sign-out preserves the account until
 saved navigation can be cleared; confirmed account deletion can explicitly
 erase unreadable local data.
+An explicit Apple Health disconnect can reset an unreadable sync cursor without
+erasing workouts. Failed resets stop Health syncing and retain a retry control
+across relaunch; a later connection rebuilds its cursor through idempotent import.
 
 Verify protection on a physical iPhone and audit the final archive before
 finalizing privacy answers. The old TestFlight build cannot read the new local

@@ -144,6 +144,19 @@ survive the rejected account switch. All 72 authentication tests passed locally;
 all 268 tested iOS source hashes matched. The simulator file-protection skip
 remains explicit. Fresh independent review and CI must pass the corrected head.
 
+[CI run 34517031117](https://github.com/namarks/tres-fort/actions/runs/34517031117)
+passed every configured check at `2aba039ae7c34157e84844cb90705ced06ebd360`.
+Independent review found that an invalid Health anchor could block feature
+requests while its ordinary disconnect path refused to erase it. A regression
+reproduced the retained cursor and blocked token. Explicit Health disconnect now
+clears only the account's scoped/owned legacy anchors, keeps failed reset intent
+and its retry control across relaunch, and fences older sync checkpoints after
+disconnect or storage recovery. Ordinary disconnect keeps the current screen;
+recovering a failed anchor remounts feature models. Other accounts and unreadable
+workout queues remain intact. All 96 focused authentication/storage tests passed
+with one explicit simulator protection skip, and all 268 iOS source hashes
+matched. This follow-up requires fresh independent review and CI before merge.
+
 Unsigned Release-configuration verification at 17:21:39 UTC built for generic
 iOS with version 1.0, minimum iOS 17.0, iPhone-only device family and the widget
 extension. The bundled privacy manifest declares UserDefaults reason `CA92.1`;

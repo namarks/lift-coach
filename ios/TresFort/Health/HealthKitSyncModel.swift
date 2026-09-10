@@ -48,6 +48,8 @@ final class HealthKitSyncModel: ObservableObject {
     /// have (Apple hides read-auth status). Drives the Connections UI and gates
     /// background sync. Persisted so it survives relaunch; reset on disconnect.
     @Published var enabled: Bool
+    @Published private(set) var anchorResetPending: Bool
+    private(set) var syncGeneration: UInt64 = 0
 
     @Published private(set) var isSyncing = false
     @Published private(set) var lastSyncedAt: Date?
@@ -64,6 +66,7 @@ final class HealthKitSyncModel: ObservableObject {
     private unowned let auth: AuthModel
     private let accountID: String?
     private let defaults: LocalPersistence
+    private let storageGeneration: UInt64
 
     /// Held so we can stop it on disconnect / sign-out.
     private var observerQuery: HKObserverQuery?
@@ -72,22 +75,29 @@ final class HealthKitSyncModel: ObservableObject {
         self.auth = auth
         self.accountID = auth.userID
         self.defaults = defaults
+        self.storageGeneration = defaults.recoveryGeneration
         if let userID = auth.userID {
             AccountLocalState.bindLegacyState(userID: userID, defaults: defaults)
             self.enabled = defaults.bool(forKey: Self.enabledKey(userID: userID))
+            self.anchorResetPending = defaults.bool(forKey: AccountLocalState.healthResetPendingKey(userID: userID))
         } else {
             self.enabled = false
+            self.anchorResetPending = false
         }
     }
 
     private var currentJWT: String? {
-        guard let accountID, auth.userID == accountID else { return nil }
+        guard let accountID, auth.userID == accountID,
+              defaults.recoveryGeneration == storageGeneration else { return nil }
         return auth.featureJWT
     }
 
     private func isCurrentAccount(using jwt: String) -> Bool {
-        guard let accountID, auth.userID == accountID else { return false }
-        return auth.featureJWT == jwt
+        currentJWT == jwt
+    }
+
+    private func isCurrentSync(using jwt: String, generation: UInt64) -> Bool {
+        enabled && !anchorResetPending && generation == syncGeneration && isCurrentAccount(using: jwt)
     }
 
     private var isCurrentBoundAccount: Bool {
@@ -129,18 +139,23 @@ final class HealthKitSyncModel: ObservableObject {
     /// connect spinner spinning through the whole backfill (which read as a
     /// hang/failure).
     func connect() async {
+        guard !anchorResetPending else {
+            lastError = "Finish resetting Apple Health before connecting again."
+            return
+        }
         guard isAvailable else {
             lastError = "Apple Health isn’t available on this device."
             return
         }
         guard let jwt = currentJWT else { return }
+        let generation = syncGeneration
         do {
             try await store.requestAuthorization(toShare: [], read: readTypes)
         } catch {
             lastError = "Couldn’t access Apple Health. \(error.localizedDescription)"
             return
         }
-        guard isCurrentAccount(using: jwt) else { return }
+        guard generation == syncGeneration, isCurrentAccount(using: jwt) else { return }
         enabled = true
         if let accountID {
             defaults.set(true, forKey: Self.enabledKey(userID: accountID))
@@ -155,17 +170,27 @@ final class HealthKitSyncModel: ObservableObject {
     /// (and the coach keeps the history). A later reconnect re-backfills from a
     /// fresh anchor; the idempotent push means re-seen workouts just no-op.
     func disconnect() {
+        guard let accountID, auth.userID == accountID,
+              defaults.recoveryGeneration == storageGeneration else { return }
+        syncGeneration &+= 1
         enabled = false
-        if let accountID {
-            defaults.set(false, forKey: Self.enabledKey(userID: accountID))
-            defaults.removeObject(forKey: Self.anchorKey(userID: accountID))
-        }
+        defaults.set(false, forKey: Self.enabledKey(userID: accountID))
+        anchorResetPending = true
+        defaults.set(true, forKey: AccountLocalState.healthResetPendingKey(userID: accountID))
         if let q = observerQuery {
             store.stop(q)
             observerQuery = nil
         }
         if isAvailable {
             store.disableAllBackgroundDelivery { _, _ in }
+        }
+        lastSyncedAt = nil
+        if defaults.resetHealthAnchors(userID: accountID) {
+            anchorResetPending = false
+            defaults.removeObject(forKey: AccountLocalState.healthResetPendingKey(userID: accountID))
+            lastError = nil
+        } else {
+            lastError = "Apple Health is disconnected. Retry the reset after unlocking your iPhone and checking its storage."
         }
     }
 
@@ -174,7 +199,7 @@ final class HealthKitSyncModel: ObservableObject {
     /// Called on launch + foreground. No-op unless connected; otherwise
     /// (re)registers the observer and kicks an incremental sync.
     func start() {
-        guard enabled, isAvailable, currentJWT != nil else { return }
+        guard enabled, !anchorResetPending, isAvailable, currentJWT != nil else { return }
         registerObserver()
         Task { await sync() }
     }
@@ -183,8 +208,6 @@ final class HealthKitSyncModel: ObservableObject {
     /// and same-user reauthentication retain the account-scoped values.
     func reset() {
         disconnect()
-        lastSyncedAt = nil
-        lastError = nil
     }
 
     // MARK: - Sync
@@ -200,7 +223,8 @@ final class HealthKitSyncModel: ObservableObject {
     /// leaves that page's anchor put for a clean retry (the push is idempotent,
     /// so re-sending already-saved rows is harmless).
     func sync() async {
-        guard enabled, isAvailable, let jwt = currentJWT, !isSyncing else { return }
+        guard enabled, !anchorResetPending, isAvailable, let jwt = currentJWT, !isSyncing else { return }
+        let generation = syncGeneration
         isSyncing = true
         var persistedAny = false
         defer {
@@ -222,10 +246,10 @@ final class HealthKitSyncModel: ObservableObject {
         var pushedAny = false
         do {
             while true {
-                guard isCurrentAccount(using: jwt) else { return }
+                guard isCurrentSync(using: jwt, generation: generation) else { return }
                 let (workouts, newAnchor) =
                     try await fetchNewWorkouts(anchor: anchor, limit: Self.pageLimit)
-                guard isCurrentAccount(using: jwt) else { return }
+                guard isCurrentSync(using: jwt, generation: generation) else { return }
                 if workouts.isEmpty {
                     // Only checkpoint an empty result once we KNOW reads work —
                     // i.e. we already had a stored anchor, or we've pushed a page
@@ -235,37 +259,39 @@ final class HealthKitSyncModel: ObservableObject {
                     // later grants permission in Settings. Leaving it unset means
                     // the next sync retries from scratch and backfills.
                     if (hadStoredAnchor || pushedAny), let newAnchor {
-                        guard saveAnchor(newAnchor) else { return }
+                        guard saveAnchor(newAnchor, generation: generation) else { return }
                         anchor = newAnchor
                     }
                     break
                 }
                 for w in workouts {
                     let body = await buildPush(for: w)
-                    guard isCurrentAccount(using: jwt) else { return }
+                    guard isCurrentSync(using: jwt, generation: generation) else { return }
                     _ = try await api.pushHealthKitActivity(body, jwt: jwt)
                     persistedAny = true
                 }
                 // Whole page pushed — checkpoint the anchor before the next page.
-                guard isCurrentAccount(using: jwt) else { return }
+                guard isCurrentSync(using: jwt, generation: generation) else { return }
                 if let newAnchor {
-                    guard saveAnchor(newAnchor) else { return }
+                    guard saveAnchor(newAnchor, generation: generation) else { return }
                     anchor = newAnchor
                 }
                 pushedAny = true
                 if workouts.count < Self.pageLimit { break } // last page
             }
-            guard isCurrentAccount(using: jwt) else { return }
+            guard isCurrentSync(using: jwt, generation: generation) else { return }
             lastSyncedAt = Date()
             lastError = nil
         } catch let APIError.http(code, _) where code == 401 {
             // Token died mid-sync — let AuthModel handle it. Anchor is already
             // checkpointed at the last good page, so a re-auth resumes cleanly.
-            if isCurrentAccount(using: jwt) {
+            if isCurrentSync(using: jwt, generation: generation) {
                 auth.requireReauthentication()
             }
         } catch {
-            lastError = "Apple Health sync didn’t finish. It’ll retry."
+            if isCurrentSync(using: jwt, generation: generation) {
+                lastError = "Apple Health sync didn’t finish. It’ll retry."
+            }
         }
     }
 
@@ -399,7 +425,7 @@ final class HealthKitSyncModel: ObservableObject {
 
     // MARK: - Anchor persistence
 
-    private func loadAnchor() -> HKQueryAnchor? {
+    func loadAnchor() -> HKQueryAnchor? {
         guard let accountID,
               let data = defaults.data(forKey: Self.anchorKey(userID: accountID))
         else { return nil }
@@ -410,10 +436,11 @@ final class HealthKitSyncModel: ObservableObject {
         return nil
     }
 
-    private func saveAnchor(_ anchor: HKQueryAnchor) -> Bool {
+    func saveAnchor(_ anchor: HKQueryAnchor, generation: UInt64) -> Bool {
         guard let accountID,
               auth.userID == accountID,
-              auth.featureJWT != nil else { return false }
+              let jwt = auth.featureJWT,
+              isCurrentSync(using: jwt, generation: generation) else { return false }
         guard let data = try? NSKeyedArchiver.archivedData(
             withRootObject: anchor, requiringSecureCoding: true) else {
             defaults.recordWriteFailure(forKey: Self.anchorKey(userID: accountID))

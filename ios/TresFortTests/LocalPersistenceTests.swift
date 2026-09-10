@@ -170,6 +170,31 @@ final class LocalPersistenceTests: XCTestCase {
         }
     }
 
+    func testExplicitHealthResetErasesOnlyOwnedAnchorsAndPreservesFailedTraining() throws {
+        let h = harness(), local = h.open()
+        XCTAssertTrue(AccountLocalState.claimLegacyState(userID: "a", defaults: local))
+        let legacy = AccountLocalState.legacyHealthAnchorKey
+        let anchorA = AccountLocalState.healthAnchorKey(userID: "a")
+        let anchorB = AccountLocalState.healthAnchorKey(userID: "b")
+        let queue = SetOutboxStore.scopedKey(userID: "a")
+        for key in [legacy, anchorA, anchorB, queue] {
+            XCTAssertTrue(local.set(Data([1]), forKey: key))
+            try Data([255]).write(to: h.store.fileURL(forKey: key))
+            XCTAssertNil(local.data(forKey: key))
+        }
+        XCTAssertTrue(local.resetHealthAnchors(userID: "b"))
+        XCTAssertNil(try h.store.data(forKey: anchorB))
+        for key in [legacy, anchorA, queue] {
+            XCTAssertEqual(try Data(contentsOf: h.store.fileURL(forKey: key)), Data([255]))
+        }
+        XCTAssertTrue(local.resetHealthAnchors(userID: "a"))
+        XCTAssertNil(try h.store.data(forKey: legacy))
+        XCTAssertNil(try h.store.data(forKey: anchorA))
+        XCTAssertTrue(local.hasFailure(forKey: queue))
+        XCTAssertFalse(local.retry(userID: "a"))
+        XCTAssertEqual(try Data(contentsOf: h.store.fileURL(forKey: queue)), Data([255]))
+    }
+
     func testFailedLegacyMergeKeepsBothQueuesAndCannotTransferToAnotherAccount() throws {
         let h = harness(), local = h.open()
         var legacy = ActivityOutbox(), scoped = ActivityOutbox()

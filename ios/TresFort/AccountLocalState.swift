@@ -47,6 +47,10 @@ enum AccountLocalState {
         "com.nmarkspdx.liftcoach.healthkit-anchor.v2.\(userID)"
     }
 
+    static func healthResetPendingKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.healthkit-reset-pending.v1.\(userID)"
+    }
+
     static func appleCredentialUserKey(userID: String) -> String {
         "com.nmarkspdx.liftcoach.apple-credential-user.v1.\(userID)"
     }
@@ -114,6 +118,7 @@ enum AccountLocalState {
             intervalsConnectionKey(userID: userID),
             healthEnabledKey(userID: userID),
             healthAnchorKey(userID: userID),
+            healthResetPendingKey(userID: userID),
         ]
         var erased = true
         for key in protectedKeys {

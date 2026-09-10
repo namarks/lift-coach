@@ -111,11 +111,33 @@ final class LocalPersistence: ObservableObject {
         return eraseObject(forKey: key)
     }
 
-    /// Only acknowledged account deletion may erase unreadable durable data.
+    /// Acknowledged account deletion may erase unreadable durable work.
     @discardableResult
     func eraseAfterAccountDeletion(forKey key: String) -> Bool {
         lock.lock(); defer { lock.unlock() }
         return eraseObject(forKey: key)
+    }
+
+    /// An explicit Health disconnect may discard its rebuildable cursor.
+    /// Keep this capability restricted to the account's Health anchors: it
+    /// must never erase a workout queue or another account's legacy data.
+    @discardableResult
+    func resetHealthAnchors(userID: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        var keys = [AccountLocalState.healthAnchorKey(userID: userID)]
+        if AccountLocalState.legacyStateBelongs(to: userID, defaults: self) {
+            keys.append(AccountLocalState.legacyHealthAnchorKey)
+        }
+        let hadFailure = keys.contains { failures[$0] != nil }
+        var cleared = true
+        for key in keys {
+            if !eraseObject(forKey: key) { cleared = false }
+        }
+        if cleared && hadFailure {
+            recoveryGeneration &+= 1
+            publishChange()
+        }
+        return cleared
     }
 
     private func eraseObject(forKey key: String) -> Bool {

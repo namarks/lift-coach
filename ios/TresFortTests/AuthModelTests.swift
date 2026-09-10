@@ -1,4 +1,5 @@
 import Foundation
+import HealthKit
 import XCTest
 @testable import TresFort
 
@@ -770,6 +771,97 @@ final class AuthModelTests: XCTestCase {
         XCTAssertFalse(healthB.enabled)
         XCTAssertNil(
             defaults.data(forKey: HealthKitSyncModel.anchorKey(userID: "user-b")))
+    }
+
+    func testDisconnectClearsInvalidHealthAnchorWithoutErasingTraining() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(), defaults: local)
+        auth.userID = "user-a"
+        auth.jwt = sessionToken(for: "user-a")
+        let key = HealthKitSyncModel.anchorKey(userID: "user-a")
+        let otherKey = HealthKitSyncModel.anchorKey(userID: "user-b")
+        let queueKey = SetOutboxStore.scopedKey(userID: "user-a")
+        let original = Data("undecodable Health anchor".utf8)
+        XCTAssertTrue(local.set(original, forKey: key))
+        XCTAssertTrue(local.set(Data([2]), forKey: otherKey))
+        XCTAssertTrue(local.set(Data([3]), forKey: queueKey))
+        XCTAssertTrue(local.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-a")))
+        let health = HealthKitSyncModel(auth: auth, defaults: local)
+        XCTAssertNil(health.loadAnchor())
+        XCTAssertNil(auth.featureJWT)
+        XCTAssertFalse(local.retry(userID: "user-a"))
+
+        health.disconnect()
+
+        XCTAssertFalse(health.enabled)
+        XCTAssertNil(try h.store.data(forKey: key))
+        XCTAssertFalse(local.hasFailure(userID: "user-a"))
+        XCTAssertEqual(auth.featureJWT, auth.jwt)
+        XCTAssertEqual(h.open().data(forKey: otherKey), Data([2]))
+        XCTAssertEqual(h.open().data(forKey: queueKey), Data([3]))
+    }
+
+    func testFailedHealthDisconnectKeepsResetReachableAcrossRelaunch() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(), defaults: local)
+        auth.userID = "user-a"
+        auth.jwt = sessionToken(for: "user-a")
+        let key = HealthKitSyncModel.anchorKey(userID: "user-a")
+        let original = Data("undecodable Health anchor".utf8)
+        XCTAssertTrue(local.set(original, forKey: key))
+        XCTAssertTrue(local.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-a")))
+        let health = HealthKitSyncModel(auth: auth, defaults: local)
+        XCTAssertNil(health.loadAnchor())
+        h.faults.failWrites = true
+
+        health.disconnect()
+
+        XCTAssertFalse(health.enabled)
+        XCTAssertTrue(health.anchorResetPending)
+        XCTAssertNotNil(health.lastError)
+        XCTAssertEqual(try h.store.data(forKey: key), original)
+        h.faults.failWrites = false
+        // A generic write retry must not lose the explicit reset's retry action.
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        let cold = h.open()
+        let replacement = HealthKitSyncModel(auth: auth, defaults: cold)
+        XCTAssertFalse(replacement.enabled)
+        XCTAssertTrue(replacement.anchorResetPending)
+        replacement.disconnect()
+        XCTAssertFalse(replacement.anchorResetPending)
+        XCTAssertNil(replacement.lastError)
+        XCTAssertNil(try h.store.data(forKey: key))
+        XCTAssertFalse(h.open().bool(forKey: AccountLocalState.healthResetPendingKey(userID: "user-a")))
+    }
+
+    func testDisconnectedHealthSyncCannotRestoreItsAnchorAfterReconnect() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(), defaults: local)
+        auth.userID = "user-a"
+        auth.jwt = sessionToken(for: "user-a")
+        XCTAssertTrue(local.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-a")))
+        let old = HealthKitSyncModel(auth: auth, defaults: local)
+        let generation = old.syncGeneration
+        let anchor = HKQueryAnchor(fromValue: 1)
+        XCTAssertTrue(old.saveAnchor(anchor, generation: generation))
+
+        old.disconnect()
+
+        XCTAssertEqual(local.recoveryGeneration, 0, "Ordinary disconnect must keep the current screen mounted")
+        XCTAssertFalse(old.saveAnchor(anchor, generation: generation))
+        // A fresh model represents the next successful, explicit connection.
+        let replacement = HealthKitSyncModel(auth: auth, defaults: local)
+        replacement.enabled = true
+        XCTAssertFalse(old.saveAnchor(anchor, generation: generation))
+        XCTAssertNil(replacement.loadAnchor())
+        XCTAssertTrue(replacement.saveAnchor(anchor, generation: replacement.syncGeneration))
+        XCTAssertNotNil(replacement.loadAnchor())
     }
 
     func testAccountExportUsesCurrentFeatureBearer() async {
