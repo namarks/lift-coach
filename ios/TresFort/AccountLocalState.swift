@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// One owner for every account-scoped value persisted outside the Keychain.
@@ -6,6 +7,27 @@ import Foundation
 /// Keeping the namespace in one pure type makes account switching and
 /// permanent deletion auditable.
 enum AccountLocalState {
+    private static let legacyOwnerKey = "com.nmarkspdx.liftcoach.legacy-state-owner.v1"
+
+    /// A failed migration must never let a later Apple account claim the
+    /// original install's queue or Health anchor on the next load.
+    static func claimLegacyState(userID: String, defaults: LocalPersistence) -> Bool {
+        if defaults.string(forKey: legacyOwnerKey) != nil {
+            return legacyStateBelongs(to: userID, defaults: defaults)
+        }
+        defaults.set(legacyOwnerDigest(userID), forKey: legacyOwnerKey)
+        return true
+    }
+
+    static func legacyStateBelongs(to userID: String, defaults: LocalPersistence) -> Bool {
+        guard let owner = defaults.string(forKey: legacyOwnerKey) else { return true }
+        return owner == legacyOwnerDigest(userID)
+    }
+
+    private static func legacyOwnerDigest(_ userID: String) -> String {
+        SHA256.hash(data: Data(userID.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
     static let legacyIntervalsConnectionKey =
         "com.nmarkspdx.liftcoach.intervals-connection.v1"
     static let legacyHealthEnabledKey =
@@ -23,6 +45,10 @@ enum AccountLocalState {
 
     static func healthAnchorKey(userID: String) -> String {
         "com.nmarkspdx.liftcoach.healthkit-anchor.v2.\(userID)"
+    }
+
+    static func healthResetPendingKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.healthkit-reset-pending.v1.\(userID)"
     }
 
     static func appleCredentialUserKey(userID: String) -> String {
@@ -43,8 +69,9 @@ enum AccountLocalState {
     /// Apple sign-in cannot transfer the prior account's local data.
     static func bindLegacyState(
         userID: String,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) {
+        guard claimLegacyState(userID: userID, defaults: defaults) else { return }
         ActivityOutboxStore.bindLegacyState(userID: userID, defaults: defaults)
         bindLegacyValue(
             legacyKey: legacyIntervalsConnectionKey,
@@ -63,44 +90,67 @@ enum AccountLocalState {
     private static func bindLegacyValue(
         legacyKey: String,
         scopedKey: String,
-        defaults: UserDefaults
+        defaults: LocalPersistence
     ) {
         guard let legacy = defaults.object(forKey: legacyKey) else { return }
         // If a scoped value already exists it is newer and authoritative. The
         // legacy value still belongs to this account, so consume it rather
         // than leaving it available for a later account to claim.
         if defaults.object(forKey: scopedKey) == nil {
-            defaults.set(legacy, forKey: scopedKey)
+            guard defaults.set(legacy, forKey: scopedKey) else { return }
         }
+        guard !defaults.hasFailure(forKey: scopedKey) else { return }
         defaults.removeObject(forKey: legacyKey)
     }
 
     @MainActor
-    static func clear(userID: String, defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: PlanChangeDismissalStore.key(userID: userID))
-        ActivityOutboxStore.clear(userID: userID, defaults: defaults)
-        SetOutboxStore.clear(userID: userID, defaults: defaults)
-        SetCorrectionOutboxStore.clear(userID: userID, defaults: defaults)
-        WorkoutTerminalOutboxStore.clear(userID: userID, defaults: defaults)
-        WorkoutWriteRetryDeadlineStore.clear(
-            userID: userID, defaults: defaults)
-        WorkoutRunnerCheckpointStore.clear(userID: userID, defaults: defaults)
-        StateSnapshotStore.clear(userID: userID, defaults: defaults)
-        StateSyncAccountStore.clearIfActive(userID: userID, defaults: defaults)
-        ExerciseCatalogSnapshotStore.clear(userID: userID, defaults: defaults)
-        defaults.removeObject(forKey: intervalsConnectionKey(userID: userID))
-        defaults.removeObject(forKey: healthEnabledKey(userID: userID))
-        defaults.removeObject(forKey: healthAnchorKey(userID: userID))
-        defaults.removeObject(forKey: appleCredentialUserKey(userID: userID))
-        defaults.removeObject(forKey: accountDeletionKey(userID: userID))
-        defaults.removeObject(forKey: onboardedKey(userID: userID))
+    @discardableResult
+    static func clear(userID: String, defaults: LocalPersistence = .standard) -> Bool {
+        let protectedKeys = [
+            PlanChangeDismissalStore.key(userID: userID),
+            ActivityOutboxStore.scopedKey(userID: userID),
+            SetOutboxStore.scopedKey(userID: userID),
+            SetCorrectionOutboxStore.key(userID: userID),
+            WorkoutTerminalOutboxStore.scopedKey(userID: userID),
+            WorkoutRunnerCheckpointStore.scopedKey(userID: userID),
+            ExerciseCatalogSnapshotStore.scopedKey(userID: userID),
+            WorkoutWriteRetryDeadlineStore.scopedKey(userID: userID),
+            intervalsConnectionKey(userID: userID),
+            healthEnabledKey(userID: userID),
+            healthAnchorKey(userID: userID),
+            healthResetPendingKey(userID: userID),
+        ]
+        var erased = true
+        for key in protectedKeys {
+            if !defaults.eraseAfterAccountDeletion(forKey: key) { erased = false }
+        }
+        if !StateSnapshotStore.clear(userID: userID, defaults: defaults, afterAccountDeletion: true) {
+            erased = false
+        }
+        if defaults.string(forKey: StateSyncAccountStore.activeAccountKey) == userID,
+           !defaults.removeObject(forKey: StateSyncAccountStore.activeAccountKey) {
+            erased = false
+        }
 
         // Defensive upgrade cleanup: if this account never mounted the feature
         // models after updating, the process-global v1 values may not have been
         // migrated yet. They must not survive permanent deletion for a future
         // Apple account to inherit.
-        defaults.removeObject(forKey: legacyIntervalsConnectionKey)
-        defaults.removeObject(forKey: legacyHealthEnabledKey)
-        defaults.removeObject(forKey: legacyHealthAnchorKey)
+        let ownsLegacy = claimLegacyState(userID: userID, defaults: defaults)
+        if ownsLegacy {
+            for key in [ActivityOutboxStore.legacyKey, legacyIntervalsConnectionKey,
+                        legacyHealthEnabledKey, legacyHealthAnchorKey] {
+                if !defaults.eraseAfterAccountDeletion(forKey: key) { erased = false }
+            }
+        }
+        // Retain the deletion receipt key and auth context until protected
+        // cleanup succeeds. Retrying DELETE safely resumes its server receipt.
+        // Check only this cleanup's keys: a replacement account's global
+        // navigation failure cannot prevent the deleted account's completion.
+        guard erased else { return false }
+        if ownsLegacy, !defaults.removeObject(forKey: legacyOwnerKey) { return false }
+        guard defaults.removeObject(forKey: appleCredentialUserKey(userID: userID)),
+              defaults.removeObject(forKey: onboardedKey(userID: userID)) else { return false }
+        return defaults.removeObject(forKey: accountDeletionKey(userID: userID))
     }
 }

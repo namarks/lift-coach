@@ -40,9 +40,9 @@ private final class FixtureTokenStore: AppTokenStore {
 enum UIFixtureModel {
     // One synthetic namespace; reset before every launch. Never load Keychain
     // or the standard defaults used by an installed user's account.
-    static let defaults: UserDefaults = {
+    static let defaults: LocalPersistence = {
         let name = "com.nmarkspdx.tresfort.synthetic-ui"
-        let value = UserDefaults(suiteName: name)!
+        let value = LocalPersistence(suiteName: name)!
         if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_PLAN_CHANGES"] != "1"
             && ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] != "1"
             && !(UIFixtureScenario.selected?.isHistory == true && ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_HISTORY"] == "1") {

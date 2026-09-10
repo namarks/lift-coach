@@ -62,20 +62,23 @@ enum SetCorrectionOutboxStore {
         "com.nmarkspdx.liftcoach.set-corrections.v1.\(userID)"
     }
 
-    static func load(userID: String?, defaults: UserDefaults) -> [PendingSetCorrection] {
+    static func load(userID: String?, defaults: LocalPersistence) -> [PendingSetCorrection] {
         guard let userID, let data = defaults.data(forKey: key(userID: userID)) else { return [] }
-        return (try? JSONDecoder().decode([PendingSetCorrection].self, from: data)) ?? []
+        do { return try JSONDecoder().decode([PendingSetCorrection].self, from: data) }
+        catch { defaults.recordInvalidData(data, forKey: key(userID: userID)); return [] }
     }
 
-    static func enqueue(_ intent: PendingSetCorrection, userID: String?, defaults: UserDefaults) {
-        update(userID: userID, defaults: defaults) { pending in
+    @discardableResult
+    static func enqueue(_ intent: PendingSetCorrection, userID: String?, defaults: LocalPersistence) -> Bool {
+        return update(userID: userID, defaults: defaults) { pending in
             guard !pending.contains(where: { $0.setID == intent.setID }) else { return }
             pending.append(intent)
         }
     }
 
-    static func replace(_ intent: PendingSetCorrection, userID: String?, defaults: UserDefaults) {
-        update(userID: userID, defaults: defaults) { pending in
+    @discardableResult
+    static func replace(_ intent: PendingSetCorrection, userID: String?, defaults: LocalPersistence) -> Bool {
+        return update(userID: userID, defaults: defaults) { pending in
             guard let i = pending.firstIndex(where: { $0.id == intent.id }) else { return }
             var replacement = intent
             // Bind once after the original create ACK; a stale callback must
@@ -92,30 +95,38 @@ enum SetCorrectionOutboxStore {
         }
     }
 
-    static func remove(id: String, userID: String?, defaults: UserDefaults) {
-        update(userID: userID, defaults: defaults) { $0.removeAll { $0.id == id } }
+    @discardableResult
+    static func remove(id: String, userID: String?, defaults: LocalPersistence) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.removeAll { $0.id == id } }
     }
 
-    static func remove(date: String, userID: String?, defaults: UserDefaults) {
-        update(userID: userID, defaults: defaults) { $0.removeAll { $0.date == date } }
+    @discardableResult
+    static func remove(date: String, userID: String?, defaults: LocalPersistence) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.removeAll { $0.date == date } }
     }
 
-    static func clear(userID: String, defaults: UserDefaults) {
-        defaults.removeObject(forKey: key(userID: userID))
+    @discardableResult
+    static func clear(userID: String, defaults: LocalPersistence) -> Bool {
+        return defaults.removeObject(forKey: key(userID: userID))
     }
 
-    private static func update(userID: String?, defaults: UserDefaults,
-                               mutation: (inout [PendingSetCorrection]) -> Void) {
-        guard let userID else { return }
+    @discardableResult
+    private static func update(userID: String?, defaults: LocalPersistence,
+                               mutation: (inout [PendingSetCorrection]) -> Void) -> Bool {
+        guard let userID else { return false }
         var pending = load(userID: userID, defaults: defaults)
+        guard !defaults.hasFailure(forKey: key(userID: userID)) else { return false }
         let before = pending
         mutation(&pending)
-        guard pending != before else { return }
+        guard pending != before else { return true }
         if pending.isEmpty {
-            clear(userID: userID, defaults: defaults)
-        } else if let data = try? JSONEncoder().encode(pending) {
-            defaults.set(data, forKey: key(userID: userID))
+            return clear(userID: userID, defaults: defaults)
         }
+        guard let data = try? JSONEncoder().encode(pending) else {
+            defaults.recordWriteFailure(forKey: key(userID: userID))
+            return false
+        }
+        return defaults.set(data, forKey: key(userID: userID))
     }
 }
 

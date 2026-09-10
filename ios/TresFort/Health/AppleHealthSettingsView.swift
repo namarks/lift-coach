@@ -35,7 +35,7 @@ struct AppleHealthSettingsView: View {
                 if health.enabled || sharing {
                     sharingSection
                 }
-                if health.enabled {
+                if health.enabled || health.anchorResetPending {
                     disconnectSection
                 }
             }
@@ -150,7 +150,7 @@ struct AppleHealthSettingsView: View {
             Button(role: .destructive) {
                 health.disconnect()
             } label: {
-                Text("Disconnect Apple Health")
+                Text(health.anchorResetPending ? "Retry Apple Health reset" : "Disconnect Apple Health")
             }
         } footer: {
             Text("Stops syncing new workouts. Already-synced activities stay in your history.")

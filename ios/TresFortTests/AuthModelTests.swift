@@ -1,4 +1,5 @@
 import Foundation
+import HealthKit
 import XCTest
 @testable import TresFort
 
@@ -107,10 +108,14 @@ private actor AsyncLatch {
 
 @MainActor
 final class AuthModelTests: XCTestCase {
-    private func defaults() -> UserDefaults {
+    private func defaults() -> LocalPersistence {
         let name = "AuthModelTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = LocalPersistence(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
+        addTeardownBlock { [preferences = defaults.preferences, directory = defaults.trainingStore.directory] in
+            preferences.removePersistentDomain(forName: name)
+            try? FileManager.default.removeItem(at: directory)
+        }
         return defaults
     }
 
@@ -171,6 +176,23 @@ final class AuthModelTests: XCTestCase {
         XCTAssertNotNil(model.reauthenticationReason)
     }
 
+    func testUninstalledTabViewDoesNotSupersedeMountedModelsStateRequest() throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(),
+            tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let ticket = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
+            userID: "user-a", defaults: defaults))
+        XCTAssertTrue(StateSnapshotStore.isCurrent(ticket, defaults: defaults))
+
+        // SwiftUI can construct and discard view descriptions without mounting
+        // their state. That must not create a competing SyncModel or advance
+        // the account snapshot while the installed model's pull is in flight.
+        _ = MainTabView(auth: auth, defaults: defaults)
+
+        XCTAssertNil(defaults.string(forKey: StateSyncAccountStore.activeAccountKey))
+        XCTAssertTrue(StateSnapshotStore.isCurrent(ticket, defaults: defaults))
+    }
+
     func testLaunchMigratesBearerSubjectIntoMissingAccountPointer() {
         let defaults = defaults()
         let token = sessionToken(for: "user-a")
@@ -221,7 +243,7 @@ final class AuthModelTests: XCTestCase {
             authorizationCode: "single-use-authorization-code",
             fullName: "Test User")])
         XCTAssertEqual(model.phase, .signedIn)
-        XCTAssertFalse(defaults.dictionaryRepresentation().values.contains {
+        XCTAssertFalse(defaults.preferences.dictionaryRepresentation().values.contains {
             ($0 as? String) == "single-use-authorization-code"
         })
     }
@@ -751,6 +773,97 @@ final class AuthModelTests: XCTestCase {
             defaults.data(forKey: HealthKitSyncModel.anchorKey(userID: "user-b")))
     }
 
+    func testDisconnectClearsInvalidHealthAnchorWithoutErasingTraining() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(), defaults: local)
+        auth.userID = "user-a"
+        auth.jwt = sessionToken(for: "user-a")
+        let key = HealthKitSyncModel.anchorKey(userID: "user-a")
+        let otherKey = HealthKitSyncModel.anchorKey(userID: "user-b")
+        let queueKey = SetOutboxStore.scopedKey(userID: "user-a")
+        let original = Data("undecodable Health anchor".utf8)
+        XCTAssertTrue(local.set(original, forKey: key))
+        XCTAssertTrue(local.set(Data([2]), forKey: otherKey))
+        XCTAssertTrue(local.set(Data([3]), forKey: queueKey))
+        XCTAssertTrue(local.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-a")))
+        let health = HealthKitSyncModel(auth: auth, defaults: local)
+        XCTAssertNil(health.loadAnchor())
+        XCTAssertNil(auth.featureJWT)
+        XCTAssertFalse(local.retry(userID: "user-a"))
+
+        health.disconnect()
+
+        XCTAssertFalse(health.enabled)
+        XCTAssertNil(try h.store.data(forKey: key))
+        XCTAssertFalse(local.hasFailure(userID: "user-a"))
+        XCTAssertEqual(auth.featureJWT, auth.jwt)
+        XCTAssertEqual(h.open().data(forKey: otherKey), Data([2]))
+        XCTAssertEqual(h.open().data(forKey: queueKey), Data([3]))
+    }
+
+    func testFailedHealthDisconnectKeepsResetReachableAcrossRelaunch() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(), defaults: local)
+        auth.userID = "user-a"
+        auth.jwt = sessionToken(for: "user-a")
+        let key = HealthKitSyncModel.anchorKey(userID: "user-a")
+        let original = Data("undecodable Health anchor".utf8)
+        XCTAssertTrue(local.set(original, forKey: key))
+        XCTAssertTrue(local.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-a")))
+        let health = HealthKitSyncModel(auth: auth, defaults: local)
+        XCTAssertNil(health.loadAnchor())
+        h.faults.failWrites = true
+
+        health.disconnect()
+
+        XCTAssertFalse(health.enabled)
+        XCTAssertTrue(health.anchorResetPending)
+        XCTAssertNotNil(health.lastError)
+        XCTAssertEqual(try h.store.data(forKey: key), original)
+        h.faults.failWrites = false
+        // A generic write retry must not lose the explicit reset's retry action.
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        let cold = h.open()
+        let replacement = HealthKitSyncModel(auth: auth, defaults: cold)
+        XCTAssertFalse(replacement.enabled)
+        XCTAssertTrue(replacement.anchorResetPending)
+        replacement.disconnect()
+        XCTAssertFalse(replacement.anchorResetPending)
+        XCTAssertNil(replacement.lastError)
+        XCTAssertNil(try h.store.data(forKey: key))
+        XCTAssertFalse(h.open().bool(forKey: AccountLocalState.healthResetPendingKey(userID: "user-a")))
+    }
+
+    func testDisconnectedHealthSyncCannotRestoreItsAnchorAfterReconnect() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(), defaults: local)
+        auth.userID = "user-a"
+        auth.jwt = sessionToken(for: "user-a")
+        XCTAssertTrue(local.set(true, forKey: HealthKitSyncModel.enabledKey(userID: "user-a")))
+        let old = HealthKitSyncModel(auth: auth, defaults: local)
+        let generation = old.syncGeneration
+        let anchor = HKQueryAnchor(fromValue: 1)
+        XCTAssertTrue(old.saveAnchor(anchor, generation: generation))
+
+        old.disconnect()
+
+        XCTAssertEqual(local.recoveryGeneration, 0, "Ordinary disconnect must keep the current screen mounted")
+        XCTAssertFalse(old.saveAnchor(anchor, generation: generation))
+        // A fresh model represents the next successful, explicit connection.
+        let replacement = HealthKitSyncModel(auth: auth, defaults: local)
+        replacement.enabled = true
+        XCTAssertFalse(old.saveAnchor(anchor, generation: generation))
+        XCTAssertNil(replacement.loadAnchor())
+        XCTAssertTrue(replacement.saveAnchor(anchor, generation: replacement.syncGeneration))
+        XCTAssertNotNil(replacement.loadAnchor())
+    }
+
     func testAccountExportUsesCurrentFeatureBearer() async {
         let defaults = defaults()
         defaults.set("user-a", forKey: AuthModel.userIDKey)
@@ -872,6 +985,69 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(model.userID, "user-b")
         XCTAssertEqual(model.jwt, tokenB)
         XCTAssertEqual(api.exportCalls, 1)
+    }
+
+    func testActivitySaveFailureDoesNotPostAndRetryIsDurableBeforeNetwork() async {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let defaults = h.open()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let pending = PendingActivity(id: "activity-a", date: "2026-09-10", type: "walk",
+                                      title: nil, duration_minutes: 10, notes: nil, logged_at: 2_000_000_000_000)
+        var postCount = 0
+        let group = GroupModel(auth: auth, defaults: defaults, activityLogger: { activity, _ in
+            postCount += 1
+            XCTAssertEqual(ActivityOutboxStore.load(userID: "user-a", defaults: defaults).pending.map(\.id), [activity.id])
+            throw URLError(.notConnectedToInternet)
+        })
+        group.selectedGroupID = "group-a"
+        h.faults.failWrites = true
+        await group.logActivity(pending)
+        XCTAssertEqual(postCount, 0)
+        XCTAssertTrue(group.feed["group-a"]?.isEmpty ?? true)
+        XCTAssertNotNil(group.lastError)
+        h.faults.failWrites = false
+        XCTAssertTrue(defaults.retry(userID: "user-a"))
+        await group.logActivity(pending)
+        XCTAssertEqual(postCount, 1)
+        XCTAssertEqual(ActivityOutboxStore.load(userID: "user-a", defaults: h.open()).pending.map(\.id), [pending.id])
+        XCTAssertEqual(group.feed["group-a"]?.count, 1)
+    }
+
+    func testDeletionCleanupFailurePreservesReceiptAndRetriesAfterColdLaunch() async throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let defaults = h.open()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let api = AuthAPIStub()
+        api.deletionResult = .success(.init(ok: true, owner_tombstoned: false, apple_revocation: .revoked))
+        let keyA = SetOutboxStore.scopedKey(userID: "user-a")
+        let keyB = SetOutboxStore.scopedKey(userID: "user-b")
+        XCTAssertTrue(defaults.set(Data("account A training".utf8), forKey: keyA))
+        XCTAssertTrue(defaults.set(Data("account B training".utf8), forKey: keyB))
+        let auth = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+        h.faults.failedFiles = [h.store.fileURL(forKey: keyA).lastPathComponent]
+        do { try await auth.deleteAccount(); XCTFail("Local cleanup must not be claimed complete") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("saved data")) }
+        let receipt = try XCTUnwrap(defaults.string(forKey: AccountLocalState.accountDeletionKey(userID: "user-a")))
+        XCTAssertTrue(auth.accountDeletionPending)
+        XCTAssertEqual(auth.userID, "user-a")
+        XCTAssertEqual(auth.jwt, tokens.token)
+        XCTAssertNotNil(tokens.token)
+        XCTAssertNil(auth.featureJWT)
+        XCTAssertEqual(try h.store.data(forKey: keyA), Data("account A training".utf8))
+
+        let cold = AuthModel(api: api, tokenStore: tokens, defaults: h.open())
+        XCTAssertTrue(cold.accountDeletionPending)
+        h.faults.failedFiles = []
+        try await cold.deleteAccount()
+        XCTAssertEqual(api.deletionKeys, [receipt, receipt])
+        XCTAssertNil(tokens.token)
+        XCTAssertNil(cold.userID)
+        XCTAssertNil(try h.store.data(forKey: keyA))
+        XCTAssertEqual(try h.store.data(forKey: keyB), Data("account B training".utf8))
     }
 
     func testAcknowledgedDeletionClearsOnlyCurrentAccountLocalState() async {
@@ -1390,6 +1566,40 @@ final class AuthModelTests: XCTestCase {
         XCTAssertTrue(model.postDeletionAppleRevocationRequired)
     }
 
+    func testDeletionCompletionIgnoresReplacementAccountsNavigationFailure() async throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open(), api = AuthAPIStub()
+        local.set("user-a", forKey: AuthModel.userIDKey)
+        local.set("apple-a", forKey: AccountLocalState.appleCredentialUserKey(userID: "user-a"))
+        let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let started = AsyncLatch(), release = AsyncLatch()
+        api.deletionHandler = { _, _ in
+            await started.open(); await release.wait()
+            return .init(ok: true, owner_tombstoned: false, apple_revocation: .revoked)
+        }
+        let model = AuthModel(api: api, tokenStore: tokens, defaults: local)
+        let deletion = Task { try await model.deleteAccount() }
+        await started.wait()
+        let tokenB = sessionToken(for: "user-b")
+        api.authResult = .success(response(jwt: tokenB, userID: "user-b"))
+        await model.exchange(identityToken: "apple-b", fullName: nil, appleUserID: "apple-b")
+        XCTAssertTrue(model.requestEntry(.coach))
+        let savedB = try h.store.data(forKey: AuthModel.pendingEntryKey)
+        h.faults.failedFiles = [h.store.fileURL(forKey: AuthModel.pendingEntryKey).lastPathComponent]
+        XCTAssertFalse(model.requestEntry(.workouts))
+        XCTAssertTrue(local.hasFailure(forKey: AuthModel.pendingEntryKey))
+        await release.open()
+        try await deletion.value
+        XCTAssertNil(local.string(forKey: AccountLocalState.accountDeletionKey(userID: "user-a")))
+        XCTAssertNil(local.string(forKey: AccountLocalState.appleCredentialUserKey(userID: "user-a")))
+        XCTAssertNil(local.object(forKey: AccountLocalState.onboardedKey(userID: "user-a")))
+        XCTAssertEqual(model.userID, "user-b")
+        XCTAssertEqual(tokens.token, tokenB)
+        XCTAssertEqual(try h.store.data(forKey: AuthModel.pendingEntryKey), savedB)
+        XCTAssertTrue(local.hasFailure(forKey: AuthModel.pendingEntryKey))
+    }
+
     func testDeletionCompletionAfterAccountSwitchOnlyClearsInitiatingAccount() async {
         let defaults = defaults()
         defaults.set("user-a", forKey: AuthModel.userIDKey)
@@ -1889,6 +2099,148 @@ final class AuthModelTests: XCTestCase {
 
 
 extension AuthModelTests {
+    func testUnreadableEntrySurvivesLaunchSignOutAndRetryUntilExplicitDeletion() async throws {
+        for invalidEnvelope in [false, true] {
+            let h = LocalPersistenceTestHarness()
+            addTeardownBlock { h.cleanup() }
+            let local = h.open(), key = AuthModel.pendingEntryKey
+            local.set("user-a", forKey: AuthModel.userIDKey)
+            let corrupt = Data("unreadable saved navigation".utf8)
+            XCTAssertTrue(local.set(corrupt, forKey: key))
+            if invalidEnvelope { try corrupt.write(to: h.store.fileURL(forKey: key)) }
+            let originalFile = try Data(contentsOf: h.store.fileURL(forKey: key))
+            let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+            let api = AuthAPIStub()
+            api.deletionResult = .success(.init(ok: true, owner_tombstoned: false, apple_revocation: .revoked))
+            let auth = AuthModel(api: api, tokenStore: tokens, defaults: local)
+            XCTAssertTrue(local.hasFailure(userID: "user-a"))
+            XCTAssertNil(auth.featureJWT)
+            XCTAssertFalse(auth.requestEntry(.coach))
+            auth.signOut()
+            XCTAssertEqual(auth.userID, "user-a")
+            XCTAssertFalse(local.retry(userID: "user-a"))
+            XCTAssertEqual(try Data(contentsOf: h.store.fileURL(forKey: key)), originalFile)
+            try await auth.deleteAccount()
+            XCTAssertNil(try h.store.data(forKey: key))
+            XCTAssertNil(tokens.token)
+            XCTAssertNil(auth.userID)
+        }
+    }
+
+    func testFailedEntryRequestDoesNotAcceptUnsavedNavigation() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open(), tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: local)
+        XCTAssertTrue(auth.requestEntry(.invite("ABC234")))
+        let original = auth.pendingEntryIntents
+        let bytes = try h.store.data(forKey: AuthModel.pendingEntryKey)
+        h.faults.failWrites = true
+        XCTAssertFalse(auth.requestEntry(.coach))
+        XCTAssertEqual(auth.pendingEntryIntents, original)
+        XCTAssertNotNil(auth.entryPersistenceError)
+        XCTAssertNil(auth.nextEntryIntent)
+        XCTAssertEqual(try h.store.data(forKey: AuthModel.pendingEntryKey), bytes)
+        let cold = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: h.open())
+        XCTAssertEqual(cold.pendingEntryIntents, original)
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        XCTAssertTrue(auth.requestEntry(.coach))
+        XCTAssertNil(auth.entryPersistenceError)
+        let restored = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: h.open())
+        XCTAssertEqual(restored.pendingEntryIntents.map(\.destination), [.invite("ABC234"), .coach])
+    }
+
+    func testFailedEntryDismissalKeepsDurableDestinationForRetry() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open(), tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: local)
+        XCTAssertTrue(auth.requestEntry(.coach))
+        let intent = try XCTUnwrap(auth.nextEntryIntent)
+        h.faults.failWrites = true
+        XCTAssertFalse(auth.finishEntry(intent, epoch: auth.featureSessionEpoch))
+        XCTAssertEqual(auth.pendingEntryIntents, [intent])
+        let cold = AuthModel(api: AuthAPIStub(), tokenStore: tokens, defaults: h.open())
+        XCTAssertEqual(cold.nextEntryIntent, intent)
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        XCTAssertTrue(auth.finishEntry(intent, epoch: auth.featureSessionEpoch))
+        XCTAssertNil(try h.store.data(forKey: AuthModel.pendingEntryKey))
+    }
+
+    func testFailedEntryBindRecoversWithoutTransferringToAnotherAccount() async throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open(), api = AuthAPIStub(), tokens = MemoryTokenStore()
+        let originalToken = sessionToken(for: "user-a")
+        let auth = AuthModel(api: api, tokenStore: tokens, defaults: local)
+        XCTAssertTrue(auth.requestEntry(.invite("ABC234")))
+        let original = try h.store.data(forKey: AuthModel.pendingEntryKey)
+        h.faults.failWrites = true
+        api.authResult = .success(AuthResponse(jwt: originalToken,
+            user: UserDTO(id: "user-a", display_name: nil, email: nil)))
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        XCTAssertEqual(auth.userID, "user-a")
+        XCTAssertNil(auth.featureJWT)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        XCTAssertEqual(try h.store.data(forKey: AuthModel.pendingEntryKey), original)
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-b"),
+            user: UserDTO(id: "user-b", display_name: nil, email: nil)))
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        XCTAssertEqual(auth.userID, "user-a")
+        XCTAssertEqual(tokens.token, originalToken)
+        auth.signOut()
+        XCTAssertEqual(auth.userID, "user-a")
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        XCTAssertEqual(auth.pendingEntryIntents.map(\.accountID), ["user-a"])
+        let cold = AuthModel(api: api, tokenStore: tokens, defaults: h.open())
+        XCTAssertEqual(cold.pendingEntryIntents, auth.pendingEntryIntents)
+    }
+
+    func testEntryRecoveryReloadsNavigationAfterFailedLegacyRead() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let intent = MemberEntryIntent(id: UUID(), destination: .invite("ABC234"), accountID: "user-a")
+        h.preferences.set(try JSONEncoder().encode([intent]), forKey: AuthModel.pendingEntryKey)
+        h.faults.failWrites = true
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: local)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        XCTAssertNil(auth.featureJWT)
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        XCTAssertEqual(auth.nextEntryIntent, intent)
+    }
+
+    func testOnboardingDoesNotAdvanceWhenDestinationCannotBeSaved() {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let local = h.open()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: local)
+        auth.onboardingComplete = false
+        let flow = OnboardingFlow(auth: auth)
+        flow.advance(from: flow.checkpoint)
+        flow.advance(from: flow.checkpoint)
+        flow.advance(from: flow.checkpoint)
+        h.faults.failWrites = true
+        flow.finish(from: flow.checkpoint, destination: .workouts)
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(flow.step, .coach)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        h.faults.failWrites = false
+        XCTAssertTrue(local.retry(userID: "user-a"))
+        auth.recoverEntryIntents()
+        flow.finish(from: flow.checkpoint, destination: .workouts)
+        XCTAssertTrue(auth.onboardingComplete)
+        XCTAssertEqual(auth.nextEntryIntent?.destination, .workouts)
+    }
+
     func testMemberEntrySurvivesFailedSignInRelaunchAndOnboarding() async {
         let defaults = defaults()
         let api = AuthAPIStub()

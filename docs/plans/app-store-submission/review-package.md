@@ -137,13 +137,28 @@ blocking and objectionable-content handling; keep enforcement shared across
 REST/MCP feed and statistics. Owner policy must specify report handling and
 retention before storing reports or changing another member's visibility.
 
-StateSnapshotStore persists imported HealthKit rows in UserDefaults. Apple says
-persistent defaults are included in device backups. Do not modify cfprefsd's
-files directly, silently discard queued training, or rely on a cosmetic
-isExcludedFromBackup flag on the system-managed preferences file. Move affected
-persisted training state to an app-owned store with explicit backup exclusion
-and protected writes, preserving account isolation, revision fencing, offline
-recovery and crash-safe migration. Audit group caches/outboxes as well.
+The candidate migrates training snapshots, queued writes, runner recovery,
+HealthKit anchors and Intervals metadata into app-owned files with complete
+file protection and backup exclusion. Ordinary settings and account identifiers
+remain in UserDefaults. Protected copies and deletion markers take precedence
+over stale preference values; a failed migration preserves its source bytes.
+Unreadable durable work pauses feature requests, and failed saves do not claim
+a queued write. Foreground return retries storage after a normal device unlock;
+unresolved failures expose Retry and support controls.
+An unsuccessful navigation save asks the member to retry storage and reopen
+the link or choose the destination again. Sign-out preserves the account until
+saved navigation can be cleared; confirmed account deletion can explicitly
+erase unreadable local data.
+An explicit Apple Health disconnect can reset an unreadable sync cursor without
+erasing workouts. Failed resets stop Health syncing and retain a retry control
+across relaunch; a later connection rebuilds its cursor through idempotent import.
+
+Verify protection on a physical iPhone and audit the final archive before
+finalizing privacy answers. The old TestFlight build cannot read the new local
+format: a rollback must retain the protected-storage reader or first reconcile
+all pending work. Backup exclusion also means unsynced device-only work is not
+recoverable from an iCloud device backup; server-acknowledged history can sync
+again after sign-in.
 
 Sources checked 2026-09-10: [Apple review guidelines](https://developer.apple.com/app-store/review/guidelines/),
 [UserDefaults](https://developer.apple.com/documentation/Foundation/UserDefaults),

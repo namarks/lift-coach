@@ -30,11 +30,10 @@ final class AuthModel: ObservableObject {
     /// the key-bound deletion receipt after a lost response, so background
     /// 401s and explicit sign-out must not discard it.
     @Published private(set) var accountDeletionPending = false
-    /// Ordinary feature models must not use the bearer while DELETE /api/me
-    /// is unresolved. `jwt` itself remains available only so AuthModel can
-    /// replay the key-bound deletion receipt after a lost response.
+    /// Pause ordinary requests while deletion or protected local storage needs
+    /// recovery. Keep the bearer available to AuthModel for deletion retries.
     var featureJWT: String? {
-        accountDeletionPending ? nil : jwt
+        accountDeletionPending || defaults.hasFailure(userID: userID) ? nil : jwt
     }
     /// Process-local identity for one continuously active feature session.
     /// It changes across sign-out, reauthentication teardown, deletion, and a
@@ -47,7 +46,7 @@ final class AuthModel: ObservableObject {
     /// SyncModel can refresh when an older Group/Health task finishes late.
     @Published private(set) var activityPersistenceGeneration: UInt64 = 0
     /// Server user id, captured from /auth/apple's `user.id` and persisted
-    /// in UserDefaults so GroupModel can survive an app relaunch with the
+    /// in LocalPersistence so GroupModel can survive an app relaunch with the
     /// keychain JWT alone. Used as the fallback for `is_me` comparisons
     /// against /api/groups members (the M2 list endpoint doesn't stamp
     /// `is_me` — only /feed and /stats do).
@@ -75,6 +74,7 @@ final class AuthModel: ObservableObject {
     @Published var onboardingComplete = false
 
     @Published private(set) var pendingEntryIntents: [MemberEntryIntent] = []
+    @Published private(set) var entryPersistenceError: String?
     static let pendingEntryKey = "com.nmarkspdx.liftcoach.pending-entry.v1"
     private var signInRequestID = UUID()
 
@@ -94,43 +94,93 @@ final class AuthModel: ObservableObject {
         accountID != nil && userID == accountID && featureJWT != nil && featureSessionEpoch == epoch
     }
 
-    func requestEntry(_ destination: MemberEntryIntent.Destination) {
+    @discardableResult
+    func requestEntry(_ destination: MemberEntryIntent.Destination) -> Bool {
+        guard let current = readEntryIntents() else { return entrySaveFailed() }
         // Repeated Universal Link delivery does not duplicate a sheet.
-        guard !pendingEntryIntents.contains(where: {
+        guard !current.contains(where: {
             $0.destination == destination && $0.accountID == userID
-        }) else { return }
-        pendingEntryIntents.append(MemberEntryIntent(id: UUID(), destination: destination, accountID: userID))
-        persistEntryIntents()
+        }) else { return true }
+        let replacement = current + [MemberEntryIntent(id: UUID(), destination: destination, accountID: userID)]
+        guard persistEntryIntents(replacement) else { return false }
+        pendingEntryIntents = replacement
+        entryPersistenceError = nil
+        return true
     }
 
-    func finishEntry(_ intent: MemberEntryIntent, epoch: UInt64) {
-        guard isCurrentFeatureSession(accountID: intent.accountID, epoch: epoch) else { return }
-        pendingEntryIntents.removeAll { $0.id == intent.id }
-        persistEntryIntents()
+    @discardableResult
+    func finishEntry(_ intent: MemberEntryIntent, epoch: UInt64) -> Bool {
+        guard isCurrentFeatureSession(accountID: intent.accountID, epoch: epoch) else { return false }
+        guard let current = readEntryIntents() else { return entrySaveFailed() }
+        let replacement = current.filter { $0.id != intent.id }
+        guard persistEntryIntents(replacement) else { return false }
+        pendingEntryIntents = replacement
+        entryPersistenceError = nil
+        return true
     }
 
-    private func persistEntryIntents() {
-        if pendingEntryIntents.isEmpty { defaults.removeObject(forKey: Self.pendingEntryKey) }
-        else if let data = try? JSONEncoder().encode(pendingEntryIntents) {
-            defaults.set(data, forKey: Self.pendingEntryKey)
+    private func readEntryIntents() -> [MemberEntryIntent]? {
+        let data = defaults.data(forKey: Self.pendingEntryKey)
+        guard !defaults.hasFailure(forKey: Self.pendingEntryKey) else { return nil }
+        guard let data else { return [] }
+        guard let intents = try? JSONDecoder().decode([MemberEntryIntent].self, from: data) else {
+            defaults.recordInvalidData(data, forKey: Self.pendingEntryKey)
+            return nil
+        }
+        return intents
+    }
+
+    private func persistEntryIntents(_ intents: [MemberEntryIntent]) -> Bool {
+        let saved: Bool
+        if intents.isEmpty { saved = defaults.removeObject(forKey: Self.pendingEntryKey) }
+        else if let data = try? JSONEncoder().encode(intents) {
+            saved = defaults.set(data, forKey: Self.pendingEntryKey)
+        } else {
+            defaults.recordWriteFailure(forKey: Self.pendingEntryKey)
+            saved = false
+        }
+        return saved ? true : entrySaveFailed()
+    }
+
+    @discardableResult
+    private func entrySaveFailed() -> Bool {
+        entryPersistenceError = "Your navigation change could not be saved. Retry saved data, then open the link or choose the destination again."
+        return false
+    }
+
+    func dismissEntryPersistenceError() { entryPersistenceError = nil }
+
+    /// AuthModel survives the feature-view remount after storage recovery.
+    /// Reload its navigation state too, including an interrupted account bind.
+    func recoverEntryIntents() {
+        if let accountID = userID, jwt != nil { bindEntryIntents(to: accountID) }
+        else if let current = readEntryIntents() {
+            pendingEntryIntents = current.filter { $0.accountID == nil || $0.accountID == userID }
         }
     }
 
     private func bindEntryIntents(to accountID: String) {
-        pendingEntryIntents = pendingEntryIntents.filter {
+        guard let current = readEntryIntents() else { entrySaveFailed(); return }
+        let replacement = current.filter {
             $0.accountID == nil || $0.accountID == accountID
         }.map { intent in
             var bound = intent
             bound.accountID = accountID
             return bound
         }
-        persistEntryIntents()
+        guard replacement == current || persistEntryIntents(replacement) else {
+            // Do not expose the previous account's destinations while the
+            // durable bind is waiting for storage recovery.
+            pendingEntryIntents = []
+            return
+        }
+        pendingEntryIntents = replacement
     }
 
     private let api: any AuthAPI
     private let tokenStore: any AppTokenStore
     private let appleCredentialChecker: any AppleCredentialStateChecking
-    private let defaults: UserDefaults
+    private let defaults: LocalPersistence
     private let now: () -> Date
     /// Weak-owner callbacks registered by mounted feature models. AuthModel
     /// invokes them immediately before an account boundary makes their epoch
@@ -170,7 +220,7 @@ final class AuthModel: ObservableObject {
         tokenStore: any AppTokenStore = KeychainTokenStore(),
         appleCredentialChecker: any AppleCredentialStateChecking =
             AppleCredentialStateChecker(),
-        defaults: UserDefaults = .standard,
+        defaults: LocalPersistence = .standard,
         now: @escaping () -> Date = Date.init
     ) {
         self.api = api
@@ -178,15 +228,14 @@ final class AuthModel: ObservableObject {
         self.appleCredentialChecker = appleCredentialChecker
         self.defaults = defaults
         self.now = now
-        if let data = defaults.data(forKey: Self.pendingEntryKey),
-           let intents = try? JSONDecoder().decode([MemberEntryIntent].self, from: data) {
-            pendingEntryIntents = intents
-        }
         postDeletionAppleRevocationRequired = defaults.bool(
             forKey: Self.postDeletionAppleRevocationKey)
         let token = tokenStore.load()
         let persistedUserID = defaults.string(forKey: Self.userIDKey)
         userID = persistedUserID
+        if let current = readEntryIntents() {
+            pendingEntryIntents = current.filter { $0.accountID == nil || $0.accountID == userID }
+        }
         if let persistedUserID {
             // Bind process-global values to their preexisting owner before a
             // mismatched or malformed bearer can be rejected and replaced by
@@ -196,7 +245,7 @@ final class AuthModel: ObservableObject {
         }
         if let token, let tokenUserID = Self.subject(of: token) {
             if let persistedUserID, persistedUserID != tokenUserID {
-                // A crash between the separate Keychain and UserDefaults
+                // A crash between the separate Keychain and LocalPersistence
                 // writes can leave account A's local namespace beside account
                 // B's bearer. Never enter the signed-in surface with that
                 // mixed pair; preserve A's pointer for explicit recovery.
@@ -330,6 +379,15 @@ final class AuthModel: ObservableObject {
                 // prefix.
                 phase = .error("session identity mismatch")
                 return
+            }
+            // A failed bind may leave previously unbound links on disk. Do
+            // not let a different account claim them after reauthentication.
+            if let previousAccount = userID, previousAccount != res.user.id {
+                guard persistEntryIntents([]) else {
+                    phase = .error("Saved navigation needs recovery before changing accounts.")
+                    return
+                }
+                pendingEntryIntents = []
             }
             if featureJWT != nil {
                 notifyFeatureSessionBoundary()
@@ -478,12 +536,13 @@ final class AuthModel: ObservableObject {
                 "Account deletion is awaiting confirmation. Retry account deletion to finish."
             return
         }
+        guard persistEntryIntents([]) else { return }
         notifyFeatureSessionBoundary()
         featureSessionEpoch &+= 1
         tokenStore.clear()
         defaults.removeObject(forKey: Self.userIDKey)
         pendingEntryIntents = []
-        persistEntryIntents()
+        entryPersistenceError = nil
         onboardingComplete = false
         jwt = nil
         userID = nil
@@ -544,7 +603,7 @@ final class AuthModel: ObservableObject {
             // training while the server account may still exist. The explicit
             // confirmation that started this request authorizes cleanup once
             // this exact absence is returned.
-            completeAccountDeletion(
+            try completeAccountDeletion(
                 for: accountID,
                 requiresManualAppleRevocation: true)
             return
@@ -553,7 +612,7 @@ final class AuthModel: ObservableObject {
             throw APIError.decoding("account deletion was not acknowledged")
         }
 
-        completeAccountDeletion(
+        try completeAccountDeletion(
             for: accountID,
             requiresManualAppleRevocation:
                 response.apple_revocation != .revoked)
@@ -565,8 +624,11 @@ final class AuthModel: ObservableObject {
     private func completeAccountDeletion(
         for accountID: String,
         requiresManualAppleRevocation: Bool
-    ) {
-        AccountLocalState.clear(userID: accountID, defaults: defaults)
+    ) throws {
+        let entryCleanup = userID != accountID || defaults.eraseAfterAccountDeletion(forKey: Self.pendingEntryKey)
+        guard entryCleanup, AccountLocalState.clear(userID: accountID, defaults: defaults) else {
+            throw APIError.decoding("The account was deleted, but saved data could not be removed from this iPhone. Unlock it, check available storage, and retry Delete account.")
+        }
         // The explicitly confirmed deletion event owns this handoff even if a
         // different account became current while the request was in flight.
         // The UI handoff never mutates the replacement account.
@@ -581,7 +643,7 @@ final class AuthModel: ObservableObject {
         defaults.removeObject(forKey: Self.userIDKey)
         defaults.removeObject(forKey: Self.onboardedKey)
         pendingEntryIntents = []
-        persistEntryIntents()
+        entryPersistenceError = nil
         jwt = nil
         userID = nil
         appleCredentialUserID = nil

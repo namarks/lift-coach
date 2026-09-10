@@ -41,7 +41,7 @@ struct ActivityOutbox: Codable {
     var count: Int { pending.count }
 }
 
-/// UserDefaults-backed persistence for the outbox. Encoded as a JSON blob
+/// LocalPersistence-backed persistence for the outbox. Encoded as a JSON blob
 /// under a versioned key so a future schema bump can introduce v2 without
 /// silently mis-decoding v1 entries.
 enum ActivityOutboxStore {
@@ -53,7 +53,7 @@ enum ActivityOutboxStore {
 
     static func load(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> ActivityOutbox {
         guard let userID else { return ActivityOutbox() }
         bindLegacyState(userID: userID, defaults: defaults)
@@ -61,56 +61,67 @@ enum ActivityOutboxStore {
         guard let data = defaults.data(forKey: key) else {
             return ActivityOutbox()
         }
-        return (try? JSONDecoder().decode(ActivityOutbox.self, from: data))
-            ?? ActivityOutbox()
+        do { return try JSONDecoder().decode(ActivityOutbox.self, from: data) }
+        catch {
+            defaults.recordInvalidData(data, forKey: key)
+            return ActivityOutbox()
+        }
     }
 
+    @discardableResult
     static func save(
         _ outbox: ActivityOutbox,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        guard let userID else { return }
-        guard let data = try? JSONEncoder().encode(outbox) else { return }
-        defaults.set(data, forKey: scopedKey(userID: userID))
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        guard let userID else { return false }
+        guard let data = try? JSONEncoder().encode(outbox) else {
+            defaults.recordWriteFailure(forKey: scopedKey(userID: userID))
+            return false
+        }
+        return defaults.set(data, forKey: scopedKey(userID: userID))
     }
 
     /// Reload-before-mutate helpers prevent a stale GroupModel from replacing
     /// a newer same-account model's whole queue after reauthentication. The
     /// activity id is the server idempotency key, so enqueue never duplicates
     /// an existing id and a late acknowledgement removes only that exact row.
+    @discardableResult
     static func enqueue(
         _ activity: PendingActivity,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) { outbox in
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) { outbox in
             guard !outbox.pending.contains(where: { $0.id == activity.id })
             else { return }
             outbox.enqueue(activity)
         }
     }
 
+    @discardableResult
     static func remove(
         id: String,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) { $0.remove(id: id) }
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.remove(id: id) }
     }
 
     private static func update(
         userID: String?,
-        defaults: UserDefaults,
+        defaults: LocalPersistence,
         mutation: (inout ActivityOutbox) -> Void
-    ) {
-        guard let userID else { return }
+    ) -> Bool {
+        guard let userID else { return false }
         var current = load(userID: userID, defaults: defaults)
+        guard !defaults.hasFailure(forKey: scopedKey(userID: userID)),
+              !defaults.hasFailure(forKey: legacyKey) else { return false }
         mutation(&current)
         if current.isEmpty {
-            clear(userID: userID, defaults: defaults)
+            return clear(userID: userID, defaults: defaults)
         } else {
-            save(current, userID: userID, defaults: defaults)
+            return save(current, userID: userID, defaults: defaults)
         }
     }
 
@@ -120,35 +131,39 @@ enum ActivityOutboxStore {
     /// sign-in that could claim the first account's pending writes.
     static func bindLegacyState(
         userID: String,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) {
-        guard let legacyData = defaults.data(forKey: legacyKey) else { return }
+        guard AccountLocalState.claimLegacyState(userID: userID, defaults: defaults),
+              let legacyData = defaults.data(forKey: legacyKey) else { return }
         let key = scopedKey(userID: userID)
+        guard let legacy = try? JSONDecoder().decode(ActivityOutbox.self, from: legacyData) else {
+            defaults.recordInvalidData(legacyData, forKey: legacyKey)
+            return
+        }
         if let scopedData = defaults.data(forKey: key) {
-            let decoder = JSONDecoder()
-            if var scoped = try? decoder.decode(ActivityOutbox.self, from: scopedData),
-               let legacy = try? decoder.decode(ActivityOutbox.self, from: legacyData) {
-                scoped.merge(legacy)
-                if let merged = try? JSONEncoder().encode(scoped) {
-                    defaults.set(merged, forKey: key)
-                }
-            } else if (try? decoder.decode(ActivityOutbox.self, from: legacyData)) != nil {
-                // A corrupt scoped value is unusable; retain the decodable
-                // legacy queue under the correct account instead.
-                defaults.set(legacyData, forKey: key)
+            guard var scoped = try? JSONDecoder().decode(ActivityOutbox.self, from: scopedData) else {
+                defaults.recordInvalidData(scopedData, forKey: key)
+                return
             }
+            scoped.merge(legacy)
+            guard save(scoped, userID: userID, defaults: defaults) else { return }
         } else {
-            defaults.set(legacyData, forKey: key)
+            guard defaults.set(legacyData, forKey: key) else { return }
         }
         // Move, don't copy, so no later Apple account can inherit this queue.
         defaults.removeObject(forKey: legacyKey)
     }
 
-    static func clear(userID: String, defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: scopedKey(userID: userID))
+    @discardableResult
+    static func clear(userID: String, defaults: LocalPersistence = .standard) -> Bool {
+        let scopedCleared = defaults.removeObject(forKey: scopedKey(userID: userID))
         // Defensive for an upgraded install that has not loaded/migrated the
         // legacy queue yet. Account deletion must not leave it for a future
         // Apple account to claim.
-        defaults.removeObject(forKey: legacyKey)
+        guard AccountLocalState.claimLegacyState(userID: userID, defaults: defaults) else {
+            return scopedCleared
+        }
+        let legacyCleared = defaults.removeObject(forKey: legacyKey)
+        return scopedCleared && legacyCleared
     }
 }

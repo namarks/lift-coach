@@ -257,83 +257,96 @@ enum WorkoutTerminalOutboxStore {
 
     static func load(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> WorkoutTerminalOutbox {
         guard let userID,
               let data = defaults.data(forKey: scopedKey(userID: userID))
         else { return WorkoutTerminalOutbox() }
-        return (try? JSONDecoder().decode(WorkoutTerminalOutbox.self, from: data))
-            ?? WorkoutTerminalOutbox()
+        do { return try JSONDecoder().decode(WorkoutTerminalOutbox.self, from: data) }
+        catch {
+            defaults.recordInvalidData(data, forKey: scopedKey(userID: userID))
+            return WorkoutTerminalOutbox()
+        }
     }
 
+    @discardableResult
     static func save(
         _ outbox: WorkoutTerminalOutbox,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        guard let userID,
-              let data = try? JSONEncoder().encode(outbox)
-        else { return }
-        defaults.set(data, forKey: scopedKey(userID: userID))
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        guard let userID else { return false }
+        guard let data = try? JSONEncoder().encode(outbox) else {
+            defaults.recordWriteFailure(forKey: scopedKey(userID: userID))
+            return false
+        }
+        return defaults.set(data, forKey: scopedKey(userID: userID))
     }
 
+    @discardableResult
     static func enqueue(
         _ intent: WorkoutTerminalIntent,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) { $0.enqueue(intent) }
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.enqueue(intent) }
     }
 
+    @discardableResult
     static func replace(
         _ intent: WorkoutTerminalIntent,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) { $0.replace(intent) }
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.replace(intent) }
     }
 
+    @discardableResult
     static func resolveFeedbackConflict(id: String, replacement: WorkoutTerminalIntent,
-                                        userID: String?, defaults: UserDefaults = .standard) {
-        update(userID: userID, defaults: defaults) { $0.resolveFeedbackConflict(id: id, replacement: replacement) }
+                                        userID: String?, defaults: LocalPersistence = .standard) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.resolveFeedbackConflict(id: id, replacement: replacement) }
     }
 
+    @discardableResult
     static func remove(
         id: String,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) { $0.remove(id: id) }
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.remove(id: id) }
     }
 
+    @discardableResult
     static func clearAcknowledgedDiscard(
         date: String,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) {
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) {
             $0.clearAcknowledgedDiscard(date: date)
         }
     }
 
+    @discardableResult
     static func retireSupersededDiscard(
         id: String,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) {
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) {
             $0.retireSupersededDiscard(id: id)
         }
     }
 
+    @discardableResult
     static func acknowledgeDiscard(
         id: String,
         resolvedSessionID: String,
         expectedAttempt: Int?,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) {
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) {
             $0.acknowledgeDiscard(
                 id: id,
                 resolvedSessionID: resolvedSessionID,
@@ -341,14 +354,15 @@ enum WorkoutTerminalOutboxStore {
         }
     }
 
+    @discardableResult
     static func requeueAcknowledgedDiscard(
         date: String,
         resolvedSessionID: String,
         expectedAttempt: Int?,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) {
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) {
             $0.requeueAcknowledgedDiscard(
                 date: date,
                 resolvedSessionID: resolvedSessionID,
@@ -356,24 +370,27 @@ enum WorkoutTerminalOutboxStore {
         }
     }
 
+    @discardableResult
     private static func update(
         userID: String?,
-        defaults: UserDefaults,
+        defaults: LocalPersistence,
         mutation: (inout WorkoutTerminalOutbox) -> Void
-    ) {
-        guard let userID else { return }
+    ) -> Bool {
+        guard let userID else { return false }
         var current = load(userID: userID, defaults: defaults)
+        guard !defaults.hasFailure(forKey: scopedKey(userID: userID)) else { return false }
         let previous = current
         mutation(&current)
-        guard current != previous else { return }
+        guard current != previous else { return true }
         if current.isEmpty {
-            clear(userID: userID, defaults: defaults)
+            return clear(userID: userID, defaults: defaults)
         } else {
-            save(current, userID: userID, defaults: defaults)
+            return save(current, userID: userID, defaults: defaults)
         }
     }
 
-    static func clear(userID: String, defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: scopedKey(userID: userID))
+    @discardableResult
+    static func clear(userID: String, defaults: LocalPersistence = .standard) -> Bool {
+        return defaults.removeObject(forKey: scopedKey(userID: userID))
     }
 }

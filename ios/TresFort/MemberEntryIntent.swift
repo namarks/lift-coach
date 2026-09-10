@@ -52,7 +52,7 @@ final class OnboardingFlow: ObservableObject {
 
     func finish(from checkpoint: Checkpoint, destination: MemberEntryIntent.Destination? = nil) {
         guard isCurrent(checkpoint), step == .coach else { return }
-        if let destination { auth.requestEntry(destination) }
+        if let destination, !auth.requestEntry(destination) { return }
         auth.completeOnboarding()
     }
 }

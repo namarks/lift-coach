@@ -81,7 +81,12 @@ final class MemberActivationJourneyTests: XCTestCase {
         tap(app.buttons["Sign in with Apple"], in: app)
         onboard(app, invited: true)
         tap(app.buttons["Enter Très Fort"], in: app)
-        tap(app.buttons["Try again"], in: app)
+        let retry = app.buttons["Try again"]
+        XCTAssertTrue(retry.waitForExistence(timeout: 10))
+        XCTAssertGreaterThanOrEqual(retry.frame.height, 44, "The retry button itself must own its full touch target")
+        // Tap below the text, inside the button's expanded touch target.
+        XCTAssertTrue(retry.isHittable)
+        retry.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.85)).tap()
         tap(app.buttons["Join Synthetic Crew"], in: app)
         XCTAssertTrue(app.tabBars.buttons["Group"].isSelected)
         tap(app.tabBars.buttons["Today"], in: app)
