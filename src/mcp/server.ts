@@ -72,6 +72,7 @@ import {
   writeNote,
 } from '../db';
 import { parsePlanMeta, WEEKDAYS } from '../types';
+import { logUnexpectedError, publicToolErrorCode } from '../errors';
 import type {
   PeriodizationPhase,
   RaceGoal,
@@ -1850,8 +1851,12 @@ async function dispatch(
           content: [{ type: 'text', text: JSON.stringify(workoutWire(result), null, 2) }],
         });
       } catch (e) {
+        const code = publicToolErrorCode(e);
+        if (code === null) logUnexpectedError('mcp_tool', e);
         return ok(req.id, {
-          content: [{ type: 'text', text: `error: ${(e as Error).message}` }],
+          content: [{ type: 'text', text: code === null
+            ? 'error: internal. Check current state before retrying a write.'
+            : `error: ${code}` }],
           isError: true,
         });
       }

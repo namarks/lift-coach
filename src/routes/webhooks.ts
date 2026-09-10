@@ -29,6 +29,7 @@
 //     CALENDAR_UPDATED triggers BOTH an events sync AND an activities sync
 //     (the latter covers a Strava-routed completed ride).
 import { Hono } from 'hono';
+import { diagnosticErrorType } from '../errors';
 import type { HonoEnv } from '../types';
 import { getUserByIntervalsAthleteId, syncExternalActivities, syncExternalEvents } from '../db';
 
@@ -122,7 +123,7 @@ webhookRoutes.post('/intervals', async (c) => {
             console.error({
               event: 'intervals_webhook_sync_failed',
               cache: 'events',
-              error_type: error instanceof Error ? error.name : 'unknown',
+              error_type: diagnosticErrorType(error),
             });
           }
         }
@@ -133,7 +134,7 @@ webhookRoutes.post('/intervals', async (c) => {
             console.error({
               event: 'intervals_webhook_sync_failed',
               cache: 'activities',
-              error_type: error instanceof Error ? error.name : 'unknown',
+              error_type: diagnosticErrorType(error),
             });
           }
         }
