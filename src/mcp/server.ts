@@ -1714,7 +1714,9 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const catalog = await getExercises(env.DB);
   const last = recent[0] ?? null;
   // Resolve metadata and names from this exact plan tree, not a later read.
-  const schedule = tree ? Object.fromEntries(WEEKDAYS.map(day => {
+  const authoredContext = tree ? coachingPlanMeta(tree.meta) : null;
+  const hasSchedule = authoredContext?.schedule != null;
+  const schedule = tree && hasSchedule ? Object.fromEntries(WEEKDAYS.map(day => {
     const id = parsePlanMeta(tree.meta).schedule.week[day];
     return [day, id ? tree.workouts.find(workout => workout.id === id)?.name ?? null : null];
   })) : null;
@@ -1742,7 +1744,7 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
           id: tree.id,
           name: tree.name,
           version: tree.version,
-          authored_context: coachingPlanMeta(tree.meta),
+          authored_context: authoredContext,
           weekly_schedule: schedule,
           workouts: tree.workouts.map((d) => ({
             label: d.day_label,

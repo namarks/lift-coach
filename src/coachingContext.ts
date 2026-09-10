@@ -58,7 +58,8 @@ export function coachingSession(session: CoachingSession, sets: CoachingSet[], c
       .map(([unit, v]) => ({ unit, value: v.value, contributing_sets: v.sets })),
     // Keep the legacy string array, now carrying explicit semantics.
     key_sets: keySets.map(s => s.label), sets: keySets,
-    comparable_cohorts: cohorts.map(c => ({ exercise_id: c.exercise_id, weight: c.weight, unit: c.unit,
+    comparable_cohorts: cohorts.map(c => ({ exercise_id: c.exercise_id, weight: c.modality === 'cardio' ? null : c.weight,
+        unit: c.modality === 'cardio' ? null : c.unit === 'sec' ? 'lb' : c.unit,
         laterality: c.laterality, load_mode: c.load_mode, is_timed: c.is_timed,
         best_reps: c.best_reps, best_duration_s: c.best_duration_s, set_count: c.set_count })),
   };
