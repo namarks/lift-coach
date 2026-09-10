@@ -10,6 +10,15 @@ if [[ $# -gt 1 || -e "$output" ]]; then
 fi
 scratch="$(mktemp -d "${TMPDIR:-/tmp}/tres-fort-app-store-capture.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
+python3 - "$repo_root" "$scratch/source-identity.json" <<'PY'
+import json, pathlib, subprocess, sys
+def git(*args):
+    return subprocess.check_output(['git', '-C', sys.argv[1], *args], text=True).strip()
+pathlib.Path(sys.argv[2]).write_text(json.dumps({
+    'source_head': git('rev-parse', 'HEAD'),
+    'source_tree': git('rev-parse', 'HEAD^{tree}'),
+    'working_tree_changes': git('status', '--porcelain')}))
+PY
 if ! IOS_KEEP_RESULTS=1 IOS_EVIDENCE_DIR="$scratch/results" \
   bash "$repo_root/scripts/verify-ios.sh" \
     --runtime com.apple.CoreSimulator.SimRuntime.iOS-26-2 \
@@ -29,16 +38,14 @@ bundles=("$scratch"/results/*/Tests.xcresult)
 evidence="$(dirname "${bundles[0]}")"
 xcrun xcresulttool export attachments --path "${bundles[0]}" \
   --output-path "$scratch/attachments" --test-id AppStoreScreenshotTests
-python3 - "$repo_root" "$evidence" "$scratch/attachments" "$output" <<'PY'
-import datetime, hashlib, json, pathlib, re, shutil, struct, subprocess, sys
-def require(condition, message):
-    if not condition:
-        raise SystemExit(message)
-
-repo, evidence, attachments, output = map(pathlib.Path, sys.argv[1:])
+python3 -B - "$repo_root" "$evidence" "$scratch/attachments" "$output" "$scratch/source-identity.json" <<'PY'
+import datetime, hashlib, json, pathlib, re, shutil, subprocess, sys
+repo, evidence, attachments, output, identity_path = map(pathlib.Path, sys.argv[1:])
+sys.path.insert(0, str(repo / 'scripts'))
+from ios_sources import require_unchanged_sources
+from app_store_assets import require, validate_png
 sources = json.loads((evidence / 'sources.json').read_text())
-for name, digest in sources.items():
-    require(hashlib.sha256((repo / 'ios' / name).read_bytes()).hexdigest() == digest, f'Source changed during capture: {name}')
+require_unchanged_sources(repo / 'ios', sources)
 images = {}
 for test in json.loads((attachments / 'manifest.json').read_text()):
     for item in test['attachments']:
@@ -49,30 +56,25 @@ for test in json.loads((attachments / 'manifest.json').read_text()):
         require(name not in images, f'Duplicate screenshot: {name}')
         source = attachments / item['exportedFileName']
         data = source.read_bytes()
-        require(data[:8] == b'\x89PNG\r\n\x1a\n', f'Not PNG: {name}')
-        require(struct.unpack('>II', data[16:24]) == (1320, 2868), f'Unexpected size: {name}')
-        require(data[25] == 2, f'Expected opaque RGB: {name}')
-        offset = 8
-        while offset < len(data):
-            length = struct.unpack('>I', data[offset:offset + 4])[0]
-            require(data[offset + 4:offset + 8] != b'tRNS', f'Transparency is not allowed: {name}')
-            offset += length + 12
-        require(offset == len(data), f'Invalid PNG chunk length: {name}')
+        validate_png(data)
         images[name] = (source, hashlib.sha256(data).hexdigest())
 expected = {'01-today.png', '02-runner.png', '03-workouts.png', '04-history.png', '05-feedback.png'}
 require(set(images) == expected, f'Wrong screenshot set: {set(images)}')
+def git(*args):
+    return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
+identity = json.loads(identity_path.read_text())
+require(identity == {'source_head': git('rev-parse', 'HEAD'),
+                     'source_tree': git('rev-parse', 'HEAD^{tree}'),
+                     'working_tree_changes': git('status', '--porcelain')},
+        'Checkout identity changed during capture')
 output.mkdir(parents=True, exist_ok=False)
 for name, (source, _) in images.items():
     shutil.copy2(source, output / name)
 shutil.copy2(evidence / 'sources.json', output / 'sources.json')
 shutil.copy2(evidence / 'xcodebuild.log', output / 'capture-tests.log')
-def git(*args):
-    return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
 manifest = {
     'captured_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
-    'source_head': git('rev-parse', 'HEAD'),
-    'source_tree': git('rev-parse', 'HEAD^{tree}'),
-    'working_tree_changes': git('status', '--porcelain'),
+    **identity,
     'ios_source_manifest': 'sources.json',
     'test_evidence': 'capture-tests.log',
     'device': 'iPhone 17 Pro Max', 'runtime': 'iOS 26.2', 'locale': 'en_US',
