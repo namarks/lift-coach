@@ -4,9 +4,42 @@ Small, dependency-free static site for `tresfort.app` with an app landing page
 and `/privacy`. The iOS API, database, and authentication stay in the existing
 Worker. The website does not receive app credentials or training data.
 
-Run `npm ci`, `npm run dev`, `npm run build`, or `npm test` in this directory.
-The build produces only public files in `dist/`. Node 20 or later is supported.
-The Sites project is recorded in `.openai/hosting.json`; reuse that ID.
+Run `npm ci` in this directory to install the website's pinned Wrangler CLI.
+Run `npm run dev`, `npm run build`, or `npm test` here as well.
+The build produces only public files in `dist/`. Static builds and tests support
+Node 20 or later; the pinned Cloudflare deployment CLI requires Node 22 or later.
+
+## Cloudflare hosting
+
+`wrangler.jsonc` configures the standalone `tres-fort-website` Worker in the
+operator's Cloudflare account. It serves static files at `tresfort.app`, with
+no Worker script, database, credentials, cron, or application bindings.
+
+From this directory:
+
+```sh
+npm run build
+npx wrangler deploy --config wrangler.jsonc --dry-run
+npm run deploy
+```
+
+The repository-root `deploy:website` command also builds and deploys only this
+website, after installing this directory's dependencies. Do not use the root
+`deploy` or `release` command to publish website changes; those target the app
+backend. The custom-domain route lets Cloudflare provision the website DNS
+and HTTPS certificate. Preserve the existing iCloud MX, SPF, DKIM, and Apple
+verification records. Check the homepage, `/privacy`, an asset, and a missing
+URL after deployment; compare the email DNS records before and after.
+
+## App download availability
+
+On 2026-09-10, App Store Connect reported version 1.0 as
+`PREPARE_FOR_SUBMISSION`. The existing Alpha Testers public link was enabled,
+but its public page said it was not accepting new testers. The hero therefore
+shows “Coming soon on iPhone” without linking to email or an unavailable
+download. Replace that status with a working App Store link after publication,
+or with an available public TestFlight link labelled as a beta. Recheck Apple's
+live status before changing it; an enabled invitation URL alone is insufficient.
 
 ## Policy source
 
@@ -31,10 +64,9 @@ Disclosures were checked against source at `69729d6`:
   deletion, retained deletion receipts, and group transfer. No invented backup
   deletion deadline or automatic history purge on disconnect.
 
-Before public release, review operational retention and current deployment
-behavior with the operator. Repository behavior is not proof that the newest
-Worker or iPhone build has been released. No new consent or retention policy
-is activated by this website change. Direct Garmin integration is not advertised.
+Repository behavior is not proof that the newest app Worker or iPhone build
+has been released. No new consent or retention policy is activated by this
+website change. Direct Garmin integration is not advertised.
 
 ## Assets
 
@@ -56,12 +88,8 @@ The simulator is disposable and the verification script removes it afterward.
 
 ## Publication boundary
 
-Private preview is authorized by the website build request. Public access,
-custom-domain DNS changes, and deployment of the existing app Worker are
-separate release actions. The email MX, SPF, DKIM and Apple verification records
-must be preserved when connecting the website domain.
-
-Only this directory is the Sites source repository. A subtree split of
-`website/` can be pushed to the Sites source remote without publishing the
-backend repository or its history. Build and package that exact source state
-using the Sites packaging helper before saving a version.
+The operator authorized moving this website to Cloudflare at `tresfort.app`
+on 2026-09-10. Deployment of the existing app Worker, database migrations,
+TestFlight distribution changes, and App Store publication remain separate
+release actions. The earlier owner-private ChatGPT Sites preview is not the
+website's hosting configuration or deployment target.
