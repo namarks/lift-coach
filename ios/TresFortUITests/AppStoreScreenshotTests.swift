@@ -20,14 +20,15 @@ final class AppStoreScreenshotTests: XCTestCase {
 
     private func capture(_ name: String) {
         // A freshly created iOS 26 simulator can announce Apple Intelligence.
-        // Dismiss that observed system banner through its UI before capture.
+        // Wait for that transient banner to disappear. Swiping its text can
+        // open Settings, so capture must also require the app in foreground.
         let banner = XCUIApplication(bundleIdentifier: "com.apple.springboard")
             .staticTexts["Ready for Apple Intelligence"]
         if banner.exists {
-            banner.swipeUp()
             let gone = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: banner)
-            XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 5), .completed)
+            XCTAssertEqual(XCTWaiter.wait(for: [gone], timeout: 15), .completed)
         }
+        XCTAssertEqual(XCUIApplication().state, .runningForeground)
         let attachment = XCTAttachment(screenshot: XCUIScreen.main.screenshot())
         attachment.name = "app-store-\(name)"
         attachment.lifetime = .keepAlways
