@@ -1,6 +1,6 @@
 # Workouts and Multi-Session Days
 
-Slug: workouts-and-multi-session · Status: active · Updated: 2026-09-09 · Theme: gym-floor
+Slug: workouts-and-multi-session · Status: active · Updated: 2026-09-10 · Theme: gym-floor
 
 ## Goal
 
@@ -214,22 +214,29 @@ P1 additional-session authoring preserves the completed [atomic prescription wri
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P0(b) | gated_by | external:owner-workout-testflight-release | Backend deployment and migration are complete. TestFlight distribution and the later canonical-writing client release require separate authorization and evidence; complete the deferred live REST write checks during client rollout. |
+| P0(b) | gated_by | external:workout-legacy-client-canary | Backend deployment and migration are complete, and legacy-writing 1.0 (35) is authorized. Its live REST checks and five-minute observation remain pending before upload. Later canonical-writing release authority and evidence remain separate. |
 | P0(c) | gated_by | external:workout-client-compatibility-cycle | Cleanup requires P0(b) release evidence and the observed released-client compatibility cycle. |
 | P1 | feeds | plan:workout-library#P2 | A freestyle session is the most common second session of a day; P2 should allocate a slot rather than fail on the primary. |
 
 ## Next step
 
-**Now (@owner):** Begin the separately authorized client rollout with the
-deferred legacy-route REST checks, including disposable-workout authoring,
-date assignment and set/finish/discard behavior, before distributing the first
-compatible Workouts TestFlight build. That build still sends legacy routes and
-fields. Complete the canonical-route checks before distributing a later
-canonical-writing build. Record the supported-client compatibility cycle here
-in `plan.md`, following [the rollout sequence](rollout.md). Backend release A
-and migration 0045 are complete under the approved verification exception;
-do not repeat them. P0(b) remains open for client rollout; P0(c) and multiple
-sessions per date (P1) remain later work.
+**Now (@owner, agent verifies and uploads afterward):** Complete the deferred legacy-route REST checks on an
+owner-approved disposable workout, including authoring, date assignment and
+set/finish/discard behavior, then the five-minute observation described in
+[the rollout sequence](rollout.md). The 2026-09-10 approval authorizes uploading
+legacy-writing 1.0 (35) once those checks pass; its signed archive is ready.
+The matching adaptive Worker is now version
+`722fbf91-4b13-48e2-b233-747b1d437ca6` at 100%, from source
+`361cf2ba9d40ef6572de700b65cf649c665559ba`. Additive migrations 0046–0048 are applied,
+with no foreign-key violations; do not repeat 0045 or earlier rollout stages.
+See [the candidate release record](../app-store-submission/plan.md#next-step).
+The owner was asked to run the check in the existing authenticated app because
+the paired iPhone is unavailable from the release host. Upload has not occurred.
+
+Keep the adaptive Worker, old routes and legacy outgoing fields. Canonical-route
+checks precede a later, separately authorized canonical-writing build. P0(b)
+remains open for client rollout and its observed compatibility cycle; P0(c) and
+multiple sessions per date (P1) remain later work.
 
 Production release evidence (2026-09-09):
 
