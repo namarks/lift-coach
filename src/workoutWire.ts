@@ -4,7 +4,7 @@
 const legacyKeys: Readonly<Record<string, string>> = {
   workout_id: 'day_template_id', workouts: 'days', plan_workouts: 'plan_days',
 };
-const opaqueKeys = new Set(['meta', 'progression', 'args', 'result', 'document', 'notes', 'runner_targets']);
+const opaqueKeys = new Set(['meta', 'progression', 'args', 'result', 'document', 'notes', 'runner_targets', 'authored_context']);
 
 export function workoutWire<T>(value: T): T {
   if (Array.isArray(value)) return value.map(workoutWire) as T;

@@ -1,3 +1,4 @@
+import { coachingSession, coachingPlanMeta } from '../coachingContext';
 import { workoutInput, workoutWire } from '../workoutWire';
 import { workoutDB } from '../workoutSchema';
 // Minimal, spec-correct MCP server over Streamable HTTP (JSON-RPC 2.0,
@@ -70,7 +71,7 @@ import {
   writeAudit,
   writeNote,
 } from '../db';
-import { parsePlanMeta } from '../types';
+import { parsePlanMeta, WEEKDAYS } from '../types';
 import type {
   PeriodizationPhase,
   RaceGoal,
@@ -476,7 +477,7 @@ const TOOLS: Record<string, Tool> = {
   },
   get_volume_trend: {
     description:
-      'Get weekly hard-set count and positive external-load volume (tonnage_basis=external_load) for a muscle group (e.g. "chest","quads","back") over a range. Tonnage is null when a bucket contains only strict-bodyweight, assisted, or timed work; negative assistance never subtracts from it.',
+      'Get weekly logged working-set counts (legacy hard_sets), primary-muscle attribution and recorded-effort coverage, plus positive external-load volume (tonnage_basis=external_load) for a muscle group (e.g. "chest","quads","back") over a range. Tonnage is null for unsupported work or mixed units. external_load_volume keeps each unit separate; negative assistance never subtracts. Counts are logged rows, not measured stimulus or complete muscle volume.',
     inputSchema: obj(
       {
         muscle_group: { type: 'string' },
@@ -511,7 +512,7 @@ const TOOLS: Record<string, Tool> = {
 
   get_upcoming_rides: {
     description:
-      "Get planned cycling/endurance events (from intervals.icu) and where they conflict with the lift calendar. `range` is a day count from today (default 30, max 90). Conflicts are interference-aware: severity 'clash' = a lift the SAME day as a HARD/key endurance session (training_load >= 150 or planned_duration_sec >= 9000) — real interference worth resolving; 'heavy-next-day' = a lift the calendar day BEFORE such a hard ride; 'brick' = a lift the same day as an EASY/short endurance session — a benign, intended brick/double, NOT a problem (informational only). Use this to coordinate lifting around riding.",
+      "Get cached intervals.icu planned endurance events and a scheduling heuristic against projected lift dates. Range is days from today (default 30, max 90). Legacy clash/heavy-next-day mean training_load >=150 or planned_duration_sec >=9000 on the same/next civil day. Brick means both measures are known below thresholds; unknown means inputs are incomplete without threshold evidence. These labels do not prove easy work, intended pairing, individualized safety or interference; strength load/muscle data is not an input.",
     inputSchema: obj(
       { range: { type: 'integer', minimum: 1, maximum: 90, description: 'days ahead (default 30)' } },
       [],
@@ -534,6 +535,7 @@ const TOOLS: Record<string, Tool> = {
           training_load: r.training_load,
         })),
         conflicts,
+        conflict_basis: 'scheduling_heuristic',
       };
     },
   },
@@ -1707,17 +1709,20 @@ const STATE_URI = 'coach://state/current';
 
 async function buildStateBrief(env: Env, userId: string): Promise<string> {
   const tree = await getPlanTree(env.DB, userId);
-  const recent = await getRecentSessions(env.DB, userId, 1);
-  const last = recent[0] ?? null;
-  const lastSets = last ? await getSetsForSession(env.DB, last.id) : [];
-  const schedule = tree ? await getResolvedScheduleNames(env.DB, userId) : null;
   const today = await ownerToday(env, userId);
-  // Most recent COMPLETED session — the real training context, unobscured
-  // by an intervening skip/planned row that getRecentSessions surfaces.
-  const lastCompleted = await getLastCompletedSession(env.DB, userId);
-  const lastCompletedSets = lastCompleted
-    ? await getSetsForSession(env.DB, lastCompleted.id)
-    : [];
+  const recent = await getRecentSessions(env.DB, userId, 7, today);
+  const catalog = await getExercises(env.DB);
+  const last = recent[0] ?? null;
+  // Resolve metadata and names from this exact plan tree, not a later read.
+  const schedule = tree ? Object.fromEntries(WEEKDAYS.map(day => {
+    const id = parsePlanMeta(tree.meta).schedule.week[day];
+    return [day, id ? tree.workouts.find(workout => workout.id === id)?.name ?? null : null];
+  })) : null;
+  const lastCompleted = await getLastCompletedSession(env.DB, userId, undefined, today);
+  const summaryRows = [...recent];
+  if (lastCompleted && !summaryRows.some(s => s.id === lastCompleted.id)) summaryRows.push(lastCompleted);
+  const summaries = new Map(await Promise.all(summaryRows.map(async session =>
+    [session.id, coachingSession(session, await getSetsForSession(env.DB, session.id), catalog)] as const)));
   // Cycling awareness, zero extra Claude calls: a compact 28-day ride
   // window + conflicts folded straight into the auto-loaded brief.
   const horizon = addDaysIso(today, 28);
@@ -1734,8 +1739,10 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
     today,
     active_plan: tree
       ? {
+          id: tree.id,
           name: tree.name,
           version: tree.version,
+          authored_context: coachingPlanMeta(tree.meta),
           weekly_schedule: schedule,
           workouts: tree.workouts.map((d) => ({
             label: d.day_label,
@@ -1745,32 +1752,28 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
           })),
         }
       : null,
-    last_session: last
-      ? {
-          date: last.date,
-          status: last.status,
-          perceived_fatigue: last.perceived_fatigue,
-          notes: last.notes,
-          key_sets: lastSets
-            .filter((s) => !s.is_warmup)
-            .map((s) => `ex:${s.exercise_id} ${s.weight}x${s.reps}${s.rpe ? `@${s.rpe}` : ''}`),
-        }
-      : null,
-    last_completed_session:
-      lastCompleted && lastCompleted.id !== last?.id
-        ? {
-            date: lastCompleted.date,
-            status: lastCompleted.status,
-            perceived_fatigue: lastCompleted.perceived_fatigue,
-            notes: lastCompleted.notes,
-            key_sets: lastCompletedSets
-              .filter((s) => !s.is_warmup)
-              .map((s) => `ex:${s.exercise_id} ${s.weight}x${s.reps}${s.rpe ? `@${s.rpe}` : ''}`),
-          }
-        : null,
+    last_session: last ? summaries.get(last.id) : null,
+    last_completed_session: lastCompleted ? summaries.get(lastCompleted.id) : null,
+    recent_sessions: recent.map(session => summaries.get(session.id)),
+    measures: {
+      source: 'Persisted session/set logs and exercise catalog; feedback is member-authored.',
+      logged_working_sets: 'Non-warm-up logged sets, counted once; primary muscle only, not measured stimulus or complete muscle volume.',
+      effort_coverage: 'sets_with_effort counts recorded per-set RPE; missing effort is unknown.',
+      external_load_volume: 'Positive external load times reps, with implement/side multipliers, grouped by unit; excludes timed, assisted and zero-load work. No system load or body mass.',
+      key_sets: 'Best observed rep/hold set per exact comparable condition; not a PR. Counts and effort coverage include all logged working sets.',
+      comparisons: 'Same exercise, execution mode, external load, units and side/implement convention only; no automatic readiness or strength conversion.',
+    },
+    scheduling_context: {
+      basis: 'scheduling_heuristic',
+      sources: ['projected strength dates', 'cached intervals.icu planned events'],
+      thresholds: { training_load: 150, planned_duration_sec: 9000 },
+      limitation: 'No strength-day load or muscle inputs. Unknown load/duration is incomplete context; thresholds do not establish easy work, individualized safety or interference.',
+    },
     // Upcoming endurance load + lift/ride conflicts (next 28 days). Empty
     // arrays when the intervals.icu integration is dormant or clear.
     upcoming_rides: rides.map((r) => ({
+      id: r.id,
+      source: r.source,
       date: r.date,
       kind: r.kind,
       title: r.title,
@@ -1780,6 +1783,8 @@ async function buildStateBrief(env: Env, userId: string): Promise<string> {
     ride_conflicts: conflicts,
     // Recently COMPLETED endurance work (actuals from intervals.icu).
     recent_activities: recentActivities.map((a) => ({
+      id: a.id,
+      source: a.source,
       date: a.date,
       kind: a.kind,
       name: a.name,

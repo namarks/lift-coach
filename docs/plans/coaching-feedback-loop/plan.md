@@ -1,6 +1,6 @@
 # Coaching Feedback Loop
 
-Slug: coaching-feedback-loop · Status: paused · Updated: 2026-09-09 · Theme: coaching
+Slug: coaching-feedback-loop · Status: active · Updated: 2026-09-09 · Theme: coaching
 
 ## Goal
 
@@ -106,17 +106,24 @@ P0(b) reuses the completed [superset runner/editor integration](../completed/sup
 
 ## Next step
 
-**Now (@owner):** P1 implementation and local verification are complete. Its
-repository delivery requires the P1 pull request's exact-head independent review,
-green CI, merge and integration evidence; the active delivery goal closes only
-after those gates. Keep P2 paused until explicitly activated. Production
-deployment, migrations and TestFlight distribution require separate authorization.
+**Now (@agent):** Complete activated P2 in the isolated coaching-feedback-p2
+branch: shared semantic session/context projections, accurate working-set and
+external-load labels, unknown scheduling inputs, TS/Swift fixture parity, then
+exact-head independent review, terminal-green CI, merge and integration proof.
+Production deployment, migrations and TestFlight remain separately authorized.
 
 The [physical iPhone feedback checks](device-verification.md) remain deferred to
 an eventual separately authorized build containing P0. They are a release
 follow-up and do not block P1 repository delivery.
 
 ## Notes / open questions
+
+- P2 activation (2026-09-09): remote HEAD and fetched main verified at
+  `48288420313ec745016d36bf12da42af484af36c`, the merge of P1 PR #164.
+  The owner authorized P2 through repository delivery. Member Activation P0
+  continues in its separate managed worktree; coordinate shared Swift and
+  fixture wiring while preserving its onboarding ownership. P0/P1 feedback,
+  history, request guards and physical-device release follow-up remain intact.
 
 - P1 activation (2026-09-09): live main and fetched `origin/main` both verified at
   `4ec8a9ef43b377c76458f57f32cd94e9d63da4ef`, the merge of P0 PR #163.

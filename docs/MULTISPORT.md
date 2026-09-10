@@ -1,5 +1,16 @@
 # tres-fort — Multisport Coaching Design
 
+> Coaching Feedback Loop P2 projection contract (2026-09-09): conflict output is
+> a **scheduling heuristic** based only on projected lift dates and cached
+> planned endurance load/duration. Legacy `clash` / `heavy-next-day` names mean
+> a fixed threshold was met (load ≥150 or duration ≥9000 seconds). `brick` means
+> both values are present below those thresholds; it does not prove easy work,
+> an intended pairing, safety or absence of interference. Missing values without
+> threshold evidence return `unknown`, including next-day events. Same-day
+> precedence and civil-date/trip suppression remain unchanged. Authored stress
+> settings are context, not calculations. This contract supersedes older
+> physiological/"benign brick" labels below.
+
 Companion to [`DESIGN.md`](DESIGN.md). Read that first — this doc assumes its
 vocabulary (consistency classes, the versioned plan tree vs. the append-only
 log, `projectCalendar`, the MCP-is-the-product framing) and only describes

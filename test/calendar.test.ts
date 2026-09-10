@@ -385,7 +385,7 @@ describe('projectCalendar — composite (bricks / trips / endurance)', () => {
       { id: 'intervals:spin', date: '2026-05-18', training_load: 60, planned_duration_sec: null },
     ]);
     expect(conflicts).toEqual([
-      { date: '2026-05-18', conflicts: ['intervals:spin'], severity: 'brick' },
+      { date: '2026-05-18', conflicts: ['intervals:spin'], severity: 'unknown' },
     ]);
   });
 
@@ -978,19 +978,18 @@ describe('detectConflicts — truth table (iOS mirrors this byte-for-byte)', () 
     planned_duration_sec: over.planned_duration_sec ?? null,
   });
 
-  it('same-day lift + EASY ride → brick (benign), lists every same-day event', () => {
-    // Neither same-day event is hard (null load/duration) → an intended
-    // brick/double, NOT a clash. Lists every same-day event id.
+  it('same-day lift + unknown ride → unknown, lists every same-day event', () => {
+    // Missing values cannot establish low load. Lists every same-day event id.
     const out = detectConflicts(
       ['2026-05-20'],
       [evt('intervals:a', '2026-05-20'), evt('intervals:b', '2026-05-20')],
     );
     expect(out).toEqual([
-      { date: '2026-05-20', conflicts: ['intervals:a', 'intervals:b'], severity: 'brick' },
+      { date: '2026-05-20', conflicts: ['intervals:a', 'intervals:b'], severity: 'unknown' },
     ]);
   });
 
-  it('same-day lift + HARD ride → clash (real interference)', () => {
+  it('same-day lift + threshold evidence → clash (scheduling heuristic)', () => {
     // A key/long endurance session (>=150 TSS) on a lift day is a real
     // clash. Mixed easy+hard same-day still escalates to clash, and lists
     // every same-day event id.
@@ -1067,10 +1066,10 @@ describe('detectConflicts — truth table (iOS mirrors this byte-for-byte)', () 
       ],
     );
     // Same-day wins over the day-before-hard branch (first match wins). The
-    // same-day event is easy → 'brick' (the next-day hard ride is NOT also
+    // same-day event is unknown → 'unknown' (the next-day hard ride is NOT also
     // emitted for this date).
     expect(out).toEqual([
-      { date: '2026-05-20', conflicts: ['intervals:today'], severity: 'brick' },
+      { date: '2026-05-20', conflicts: ['intervals:today'], severity: 'unknown' },
     ]);
   });
 

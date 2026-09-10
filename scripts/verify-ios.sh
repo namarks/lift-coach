@@ -41,6 +41,7 @@ if [[ "$ui_suite" == smoke ]]; then
     test_args+=("-only-testing:TresFortTests")
     test_args+=("-only-testing:TresFortUITests/WorkoutFeedbackJourneyTests")
     test_args+=("-only-testing:TresFortUITests/PlanChangeJourneyTests")
+    test_args+=("-only-testing:TresFortUITests/CoachingContextJourneyTests")
     for method in testVerifiedEmptyPlanCanCreateRoutineAndFirstWorkout \
       testOrdinarySetLogsAndCompletesThroughAcknowledgement \
       testCorrectionRecoveryRemainsReachable testWeightEntryAndKeyboardCanSaveExactLoad; do

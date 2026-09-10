@@ -208,6 +208,7 @@ struct TodayView: View {
     /// Full member-owned plan/day/schedule editor.
     @State private var showRoutine = false
     @State private var showPlanHistory = false
+    @State private var showCoachingContext = false
     /// Keeps a double tap from starting twice while iOS is presenting the
     /// one-time notification permission prompt before a new workout.
     @State private var isPreparingWorkoutStart = false
@@ -282,6 +283,7 @@ struct TodayView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         Button("Refresh") { Task { await sync.load() } }
+                        Button("Coaching context") { showCoachingContext = true }
                         Button {
                             showRoutine = true
                         } label: {
@@ -368,6 +370,9 @@ struct TodayView: View {
             }
             .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
                 await sync.refreshRecentPlanChanges()
+            }
+            .sheet(isPresented: $showCoachingContext) {
+                CoachingContextView(sync: sync)
             }
             .sheet(isPresented: $showPlanHistory) {
                 PlanHistoryView(sync: sync)
