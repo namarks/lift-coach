@@ -36,6 +36,9 @@ passed every backend, plan and iOS check. Reviewed and merged trees both equal
   rows written. `0046_activity_source_time.sql` and
   `0047_intervals_connect_state_fence.sql` are present in source but not in
   that ledger. Neither migration nor deployment was run.
+- A read-only refresh at 17:47 UTC returned the same deployment/version and
+  the latest five migration names through `0045`, with `changed_db=false` and
+  zero rows written.
 - Wrangler 4.92.0's `d1 migrations list` internally runs
   `CREATE TABLE IF NOT EXISTS`; it was not used against production. The audit
   used an explicit SELECT to preserve its read-only boundary.
@@ -121,6 +124,16 @@ after the fix all 328 affected unit tests and the ordinary workout-completion
 UI journey passed. A timed-set start also stops before creating its notification
 or Live Activity if its checkpoint cannot be saved. Fresh independent review
 and required CI must pass this revision before merging.
+
+CI run [34509607642](https://github.com/namarks/tres-fort/actions/runs/34509607642)
+failed at invite preview retry: the synthesized tap left the error sheet visible.
+The failure hierarchy exposed a 20.3-point-high retry button despite its outer
+44-point frame. A local regression reproduced that undersized target. Moving
+the frame and content shape into the button label makes the full area tappable.
+All eight onboarding/invite journeys then passed, including a tap below the text,
+successful joining and workout completion. All 268 tested iOS source hashes
+matched. This proves the target defect and local recovery behavior; fresh remote
+CI must also pass before clearing the failed run's delivery gate.
 
 Unsigned Release-configuration verification at 17:21:39 UTC built for generic
 iOS with version 1.0, minimum iOS 17.0, iPhone-only device family and the widget

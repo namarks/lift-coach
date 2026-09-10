@@ -102,8 +102,13 @@ struct JoinInviteConfirmSheet: View {
                 .font(.title3.weight(.bold)).foregroundStyle(Theme.text)
             Text("Check your connection and try again to review this invite.")
                 .font(.subheadline).foregroundStyle(Theme.muted).multilineTextAlignment(.center)
-            Button("Try again") { Task { await load() } }
-                .frame(minHeight: 44)
+            Button {
+                Task { await load() }
+            } label: {
+                Text("Try again")
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
         case let .invalid(message):
             Text("Invite unavailable")
                 .font(.title3.weight(.bold))

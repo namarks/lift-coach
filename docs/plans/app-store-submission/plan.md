@@ -139,6 +139,12 @@ Preserve external release and publication gates.
   during storage retry. A regression reproduced the prior behavior; all 328
   affected unit tests and the workout-completion UI journey passed after the fix.
   The storage branch was refreshed onto the reviewed backend merge below.
+  The next remote run failed at invite preview retry. Its hierarchy exposed a
+  20.3-point button inside a 44-point container; a local regression reproduced
+  the undersized target. The button label now owns the full touch area. All
+  eight onboarding journeys passed, including retry from the expanded area,
+  group joining and workout completion; all 268 tested iOS source hashes match.
+  Fresh exact-head independent review and CI remain required for this follow-up.
   An unsigned Release build for generic iOS also passed: version 1.0, iPhone-only
   family, embedded widget and `CA92.1` manifest verified; the synthetic fixture
   switch was absent. This used the unreserved project build placeholder 29,
@@ -165,6 +171,13 @@ Preserve external release and publication gates.
   unapplied. Normal-browser checks successfully rendered both public marketing
   and privacy pages with support links; HTTP clients still returned 403.
   Mailbox delivery is untested. No production change was made.
+  A SELECT-only refresh at 17:47 UTC confirmed the same deployment and ledger
+  through `0045`, with zero rows written.
+- P2 draft screenshot preparation is isolated in `codex/app-store-screenshots`.
+  Two UI capture journeys produced five opaque RGB 1320 × 2868 images through
+  real views with fictional data, preserving source/image hashes and test logs.
+  The workflow still needs integration review and capture against the final
+  candidate. No images or App Store metadata were published.
 - Source baseline `bb4db9c40675ba6be6a0b8ff42f8cdbabcf14a4c`;
   [main CI](https://github.com/namarks/tres-fort/actions/runs/34486074011) passed.
   The preceding run failed transcript replacement: its helper could delete
