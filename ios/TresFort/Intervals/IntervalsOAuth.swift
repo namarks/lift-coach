@@ -27,7 +27,8 @@ extension APIClient {
 
 struct IntervalsOAuthResult: Equatable {
     let connected: Bool
-    var importStatus: IntervalsImportStatus? = nil
+    var credentialGeneration: Int? = nil
+    var activitySyncAfter: Int? = nil
 
     static func parse(_ url: URL) throws -> Self {
         guard url.scheme == "tresfort", url.host == "intervals-connected" else {
@@ -37,9 +38,11 @@ struct IntervalsOAuthResult: Equatable {
         guard items.first(where: { $0.name == "ok" })?.value == "1" else {
             throw APIError.http(0, "intervals connection was not accepted")
         }
-        let status = items.first(where: { $0.name == "sync" })?.value
-            .flatMap(IntervalsImportStatus.init(rawValue:))
-        return Self(connected: true, importStatus: status)
+        let generation = items.first(where: { $0.name == "generation" })?.value.flatMap(Int.init)
+        let syncAfter = items.first(where: { $0.name == "sync_after" })?.value.flatMap(Int.init)
+        return Self(connected: true,
+                    credentialGeneration: generation.flatMap { $0 >= 0 ? $0 : nil },
+                    activitySyncAfter: syncAfter)
     }
 }
 

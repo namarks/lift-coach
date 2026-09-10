@@ -2024,11 +2024,11 @@ extension AuthModelTests {
 }
 
 extension AuthModelTests {
-    private func intervalsProfile(connected: Bool = true, pending: Bool = false, generation: Int = 1) -> MeProfile {
+    private func intervalsProfile(connected: Bool = true, pending: Bool = false, generation: Int = 1, lastSyncedAt: Int = 1) -> MeProfile {
         MeProfile(display_name: nil, email: nil,
             intervals: .init(connected: connected, athlete_id: connected ? "athlete-a" : nil,
                 needs_reauth: false, credential_generation: generation, sync_pending: pending,
-                last_synced_at: pending ? nil : 1),
+                last_synced_at: pending ? nil : lastSyncedAt),
             claude: .init(is_owner: false, connected: false, last_active: nil), health: nil)
     }
 
@@ -2036,17 +2036,16 @@ extension AuthModelTests {
         let defaults = defaults()
         let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
         var writes = 0, imports = 0, refreshes = 0
-        let pending = intervalsProfile(pending: true).intervals, complete = intervalsProfile().intervals
+        let pending = intervalsProfile(pending: true), complete = intervalsProfile().intervals
         let group = GroupModel(auth: auth, defaults: defaults,
-            profileLoader: { _ in throw URLError(.notConnectedToInternet) },
+            profileLoader: { _ in pending },
             intervalsConnector: { _, athlete, _ in
                 writes += 1; XCTAssertEqual(athlete, "0")
-                return .init(connected: true, credential_generation: 1,
-                    initial_sync: .init(status: .retry, connection: pending))
+                return .init(connected: true, credential_generation: 1)
             }, intervalsImporter: { generation, _ in
                 imports += 1; XCTAssertEqual(generation, 1)
                 return .init(status: .synced, connection: complete)
-            })
+            }, intervalsPollDelays: [0])
         group.onActivityPersisted = { refreshes += 1 }
         try await group.setIntervalsCredentials(apiKey: "synthetic-key", athleteID: "")
         XCTAssertEqual(group.intervalsStatus?.connected, true)
@@ -2114,10 +2113,9 @@ extension AuthModelTests {
             let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
             let started = AsyncLatch(), release = AsyncLatch(), profile = intervalsProfile()
             var refreshes = 0
-            let group = GroupModel(auth: auth, defaults: defaults, intervalsConnector: { _, _, _ in
+            let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in profile }, intervalsConnector: { _, _, _ in
                 await started.open(); await release.wait()
-                return .init(connected: true, credential_generation: 1,
-                    initial_sync: .init(status: .synced, connection: profile.intervals))
+                return .init(connected: true, credential_generation: 1)
             })
             group.onActivityPersisted = { refreshes += 1 }
             let saving = Task { try await group.setIntervalsCredentials(apiKey: "synthetic", athleteID: "athlete-a") }
@@ -2137,7 +2135,7 @@ extension AuthModelTests {
         var authorizations = 0, reads = 0
         let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in
             reads += 1; throw URLError(.notConnectedToInternet)
-        }, intervalsAuthorizer: { _ in authorizations += 1; return .init(connected: true, importStatus: .retry) })
+        }, intervalsAuthorizer: { _ in authorizations += 1; return .init(connected: true) })
         let connected = try await group.connectIntervalsViaOAuth()
         XCTAssertTrue(connected)
         XCTAssertTrue(group.intervalsStatusUnavailable)
@@ -2156,7 +2154,7 @@ extension AuthModelTests {
             intervalsAuthorizer: { _ in
                 if cancelled { return .init(connected: false) }
                 await started.open(); await release.wait()
-                return .init(connected: true, importStatus: .synced)
+                return .init(connected: true)
             })
         await group.refreshMe()
         let result = try await group.connectIntervalsViaOAuth()
@@ -2170,9 +2168,71 @@ extension AuthModelTests {
 
     func testIntervalsOAuthParserSeparatesAcceptedImportFailureFromAuthorizationFailure() throws {
         let result = try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1&sync=retry")!)
-        XCTAssertTrue(result.connected); XCTAssertEqual(result.importStatus, .retry)
+        XCTAssertTrue(result.connected); XCTAssertNil(result.credentialGeneration)
         XCTAssertThrowsError(try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?error=bad_state")!))
         XCTAssertThrowsError(try IntervalsOAuthResult.parse(URL(string: "https://untrusted.example?ok=1")!))
-        XCTAssertNil(try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1")!).importStatus)
+        XCTAssertNil(try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1")!).credentialGeneration)
+    }
+}
+
+
+extension AuthModelTests {
+    func testIntervalsAcknowledgementObservesBackgroundImportWithoutRepeatingProviderRequest() async throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let pending = intervalsProfile(pending: true), complete = intervalsProfile()
+        var reads = 0, writes = 0, notifications = 0
+        let group = GroupModel(auth: auth, defaults: defaults,
+            profileLoader: { _ in reads += 1; return reads == 1 ? pending : complete },
+            intervalsConnector: { _, _, _ in writes += 1; return .init(connected: true, credential_generation: 1) },
+            intervalsImporter: { _, _ in XCTFail("Initial observation must not start a competing import"); return .init(status: .retry, connection: nil) },
+            intervalsPollDelays: [0, 0])
+        group.onActivityPersisted = { notifications += 1 }
+        try await group.setIntervalsCredentials(apiKey: "synthetic", athleteID: "athlete-a")
+        XCTAssertEqual(writes, 1); XCTAssertEqual(reads, 2); XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(group.intervalsImportStatus, .synced)
+        XCTAssertFalse(group.intervalsBusy)
+    }
+
+    func testIntervalsBackgroundImportOutageRemainsRetryableAfterAcknowledgement() async throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let pending = intervalsProfile(pending: true), complete = intervalsProfile()
+        var writes = 0, imports = 0
+        let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in pending },
+            intervalsConnector: { _, _, _ in writes += 1; return .init(connected: true, credential_generation: 1) },
+            intervalsImporter: { generation, _ in
+                imports += 1; XCTAssertEqual(generation, 1)
+                return .init(status: .synced, connection: complete.intervals)
+            }, intervalsPollDelays: [0, 0])
+        try await group.setIntervalsCredentials(apiKey: "synthetic", athleteID: "athlete-a")
+        XCTAssertEqual(group.intervalsImportStatus, .retry)
+        XCTAssertEqual(group.intervalsStatus?.connected, true)
+        XCTAssertFalse(group.intervalsBusy)
+        await group.retryIntervalsSync()
+        XCTAssertEqual(writes, 1); XCTAssertEqual(imports, 1)
+        XCTAssertEqual(group.intervalsStatus?.sync_pending, false)
+        let callback = try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1&generation=7")!)
+        XCTAssertEqual(callback.credentialGeneration, 7)
+    }
+}
+
+
+extension AuthModelTests {
+    func testIntervalsIdenticalReconnectWaitsForANewerSyncBeyondTheAcknowledgedWatermark() async throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let old = intervalsProfile(), fresh = intervalsProfile(lastSyncedAt: 2)
+        var reads = 0, notifications = 0
+        let group = GroupModel(auth: auth, defaults: defaults,
+            profileLoader: { _ in reads += 1; return reads == 1 ? old : fresh },
+            intervalsConnector: { _, _, _ in .init(connected: true, credential_generation: 1, activity_sync_after: 1) },
+            intervalsPollDelays: [0, 0])
+        group.onActivityPersisted = { notifications += 1 }
+        try await group.setIntervalsCredentials(apiKey: "unchanged-synthetic", athleteID: "athlete-a")
+        XCTAssertEqual(reads, 2); XCTAssertEqual(notifications, 1)
+        XCTAssertEqual(group.intervalsStatus?.last_synced_at, 2)
+        let callback = try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1&generation=7&sync_after=42")!)
+        XCTAssertEqual(callback.activitySyncAfter, 42)
     }
 }

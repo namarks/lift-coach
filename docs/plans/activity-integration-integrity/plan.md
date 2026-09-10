@@ -80,22 +80,25 @@ evidence. Rollout and HealthKit write-back remain separate owner decisions.
 
 - P1 adds immediate 90-day activity reconciliation after API-key or OAuth
   connect, using the member's stored timezone and existing source fences. A
-  saved credential is acknowledged separately from import success. Failed
+  saved credential is acknowledged before its background import. The app
+  observes status for a bounded period using the acknowledged freshness watermark;
+  identical-credential reconnects require a newer successful sync. Failed
   imports can retry with the server's current credential generation; auth
   rejection follows existing recovery, and auth failure/disconnect retain
   imported history. Planned-event ingestion keeps its existing webhook/cron.
-- Migration `0047` cancels pending OAuth states on credential changes; consumed
-  callbacks use a generation claim so an in-flight token exchange cannot undo
-  disconnect. Apply this additive migration before a later authorized Worker
-  release. No production migration, deployment, client distribution or provider
+- Migration `0047` binds OAuth states to their creation generation and cancels
+  them on credential changes. State insertion and the consumed callback's token
+  write both claim that original generation, so neither can cross disconnect.
+  Unbound states created by an older Worker require a fresh connect attempt.
+  Apply this additive migration before a later authorized Worker release. No production migration, deployment, client distribution or provider
   write occurred in this slice.
 - iOS displays current server connection authority, pending import, retry and
   reconnect actions. Old persisted mirrors and late profile/import/OAuth
   responses cannot restore a disconnected account. Successful imports notify
   the account-scoped activity bridge so calendar/history refresh immediately.
-- P1 validation includes the full 960-test backend suite, 11 focused connection
-  tests (including two additional OAuth failure cases), 445 Swift unit tests,
-  synthetic connect/retry/reconnect-disconnect calendar journeys, the iOS
+- P1 validation covers the full backend suite and 15 focused connection cases,
+  Swift unit tests including acknowledgement, watermark and account-boundary
+  regressions, synthetic connect/retry/reconnect-disconnect calendar journeys, the iOS
   verification-script tests, typecheck and plan compilation. The implementation
   PR records terminal CI and independent review against its final source head.
 - P1 was activated by the owner's explicit goal from verified main `86dd9b6`

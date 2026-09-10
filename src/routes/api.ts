@@ -1425,10 +1425,12 @@ apiRoutes.patch('/me/integrations/intervals', async (c) => {
     result.connected ? 'connected' : 'disconnected',
     'ios',
   );
-  const initialSync = result.connected
-    ? await reconcileIntervalsConnection(c.env.DB, c.env, userId, result.credential_generation)
-    : undefined;
-  return c.json(workoutWire({ ...result, ...(initialSync ? { initial_sync: initialSync } : {}) }));
+  if (result.connected) {
+    c.executionCtx.waitUntil(reconcileIntervalsConnection(
+      c.env.DB, c.env, userId, result.credential_generation,
+    ));
+  }
+  return c.json(workoutWire(result));
 });
 
 apiRoutes.post('/me/integrations/intervals/sync', async (c) => {

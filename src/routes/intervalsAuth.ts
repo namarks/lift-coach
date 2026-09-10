@@ -43,9 +43,9 @@ function callbackUrl(env: Env, reqUrl: string): string {
 
 /** Deep-link back into the iOS app; ASWebAuthenticationSession intercepts the
  *  `tresfort` scheme to close the web sheet and hand control back. */
-function appReturn(ok: boolean, detail?: string, importStatus?: string): string {
+function appReturn(ok: boolean, detail?: string, generation?: number, syncAfter?: number | null): string {
   const q = ok ? 'ok=1' : `error=${encodeURIComponent(detail ?? 'failed')}`;
-  return `tresfort://intervals-connected?${q}${importStatus ? `&sync=${encodeURIComponent(importStatus)}` : ''}`;
+  return `tresfort://intervals-connected?${q}${generation !== undefined ? `&generation=${generation}` : ''}${syncAfter != null ? `&sync_after=${syncAfter}` : ''}`;
 }
 
 // POST /auth/intervals/start — authenticated; returns the authorize URL.
@@ -57,7 +57,14 @@ intervalsAuthRoutes.post('/start', requireAppJwt, async (c) => {
     return c.json({ error: 'oauth_not_configured' }, 503);
   }
   const userId = c.get('userId');
-  const state = await createIntervalsOAuthState(c.env.DB, userId);
+  let state: string;
+  try { state = await createIntervalsOAuthState(c.env.DB, userId); }
+  catch (error) {
+    if (error instanceof Error && error.message === 'intervals_connection_changed') {
+      return c.json({ error: 'connection_changed' }, 409);
+    }
+    throw error;
+  }
   const authorize = new URL('https://intervals.icu/oauth/authorize');
   authorize.searchParams.set('client_id', clientId);
   authorize.searchParams.set('redirect_uri', callbackUrl(c.env, c.req.url));
@@ -138,11 +145,11 @@ intervalsAuthRoutes.get('/callback', async (c) => {
       ? Date.now() + body.expires_in * 1000
       : null;
 
-  const generation = await setUserIntervalsOAuth(
+  const receipt = await setUserIntervalsOAuth(
     c.env.DB, userId, accessToken, refreshToken, expiresAt, athleteId,
     attempt.credential_generation,
   );
-  if (generation === null) return c.redirect(appReturn(false, 'connection_changed'), 302);
+  if (receipt === null) return c.redirect(appReturn(false, 'connection_changed'), 302);
   // Mirror the API-key path's audit row so the connect is visible/reversible.
   await writeAudit(
     c.env.DB,
@@ -152,6 +159,6 @@ intervalsAuthRoutes.get('/callback', async (c) => {
     'connected',
     'ios',
   );
-  const imported = await reconcileIntervalsConnection(c.env.DB, c.env, userId, generation);
-  return c.redirect(appReturn(true, undefined, imported.status), 302);
+  c.executionCtx.waitUntil(reconcileIntervalsConnection(c.env.DB, c.env, userId, receipt.credential_generation));
+  return c.redirect(appReturn(true, undefined, receipt.credential_generation, receipt.activity_sync_after), 302);
 });

@@ -356,11 +356,7 @@ private struct UIFixtureServer {
             intervalsReauth = false
             intervalsPending = intervalsConnected && scenario == .intervalsRetry
             if intervalsConnected && !intervalsPending { importIntervalsActivity() }
-            var result: [String: Any] = ["connected": intervalsConnected, "credential_generation": intervalsGeneration]
-            if intervalsConnected {
-                result["initial_sync"] = ["status": intervalsPending ? "retry" : "synced", "connection": intervalsStatus]
-            }
-            response = result
+            response = ["connected": intervalsConnected, "credential_generation": intervalsGeneration]
         case ("POST", "/api/me/integrations/intervals/sync") where scenario.isIntervals:
             guard body["expected_generation"] as? Int == intervalsGeneration, intervalsConnected
             else { throw URLError(.badServerResponse) }

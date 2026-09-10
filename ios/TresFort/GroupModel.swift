@@ -69,6 +69,7 @@ final class GroupModel: ObservableObject {
     @Published private(set) var intervalsImportStatus: IntervalsImportStatus?
     @Published private(set) var intervalsStatusUnavailable = false
     private var intervalsOperation = 0
+    private let intervalsPollDelays: [UInt64]
 
     // MARK: Activity outbox (the one persisted piece)
 
@@ -114,7 +115,8 @@ final class GroupModel: ObservableObject {
         profileLoader: ((String) async throws -> MeProfile)? = nil,
         intervalsConnector: ((String?, String?, String) async throws -> APIClient.IntervalsConnectResult)? = nil,
         intervalsImporter: ((Int, String) async throws -> IntervalsImportResult)? = nil,
-        intervalsAuthorizer: ((String) async throws -> IntervalsOAuthResult)? = nil
+        intervalsAuthorizer: ((String) async throws -> IntervalsOAuthResult)? = nil,
+        intervalsPollDelays: [UInt64] = [0, 500_000_000, 1_500_000_000, 3_000_000_000, 5_000_000_000]
     ) {
         self.auth = auth
         self.accountID = auth.userID
@@ -126,6 +128,7 @@ final class GroupModel: ObservableObject {
         self.intervalsConnector = intervalsConnector
         self.intervalsImporter = intervalsImporter
         self.intervalsAuthorizer = intervalsAuthorizer
+        self.intervalsPollDelays = intervalsPollDelays
         self.intervalsConnection = Self.loadIntervalsConnection(
             userID: auth.userID, defaults: defaults)
         self.outbox = ActivityOutboxStore.load(
@@ -766,11 +769,8 @@ final class GroupModel: ObservableObject {
             acceptIntervalsStatus(.init(connected: receipt.connected,
                 athlete_id: receipt.connected ? resolvedAthlete : nil, needs_reauth: false,
                 credential_generation: receipt.credential_generation, sync_pending: receipt.connected))
-            if let imported = receipt.initial_sync {
-                await publishIntervalsImport(imported, operation: operation)
-            } else {
-                await loadIntervalsAfterAcknowledgement(jwt: jwt, operation: operation)
-            }
+            await loadIntervalsAfterAcknowledgement(jwt: jwt, operation: operation,
+                expectedGeneration: receipt.credential_generation, syncAfter: receipt.activity_sync_after)
         } catch {
             guard isCurrentIntervalsOperation(operation) else { return }
             handle(error, jwt: jwt)
@@ -813,18 +813,39 @@ final class GroupModel: ObservableObject {
         }
     }
 
-    private func loadIntervalsAfterAcknowledgement(jwt: String, operation: Int) async {
-        do {
-            let profile = try await loadProfile(jwt: jwt)
-            guard isCurrentIntervalsOperation(operation) else { return }
-            acceptIntervalsStatus(profile.intervals)
-        } catch {
-            guard isCurrentIntervalsOperation(operation) else { return }
-            intervalsStatusUnavailable = true
-            // The write was already acknowledged. A failed status read must
-            // never become a connect failure or invite a duplicate submission.
-            handle(error, jwt: jwt)
+    /// Observe the bounded background import after the write was acknowledged.
+    /// Polls never repeat credentials or start a competing provider import.
+    private func loadIntervalsAfterAcknowledgement(
+        jwt: String, operation: Int, expectedGeneration: Int?, syncAfter: Int?
+    ) async {
+        for delay in intervalsPollDelays {
+            var requestJWT = jwt
+            do {
+                if delay > 0 { try await Task.sleep(nanoseconds: delay) }
+                guard isCurrentIntervalsOperation(operation) else { return }
+                requestJWT = currentJWT ?? jwt
+                let profile = try await loadProfile(jwt: requestJWT)
+                guard isCurrentIntervalsOperation(operation) else { return }
+                let connection = profile.intervals
+                acceptIntervalsStatus(connection)
+                if let expectedGeneration, connection.credential_generation != expectedGeneration { return }
+                if !connection.connected { return }
+                let hasNewSync = connection.last_synced_at.map { $0 > (syncAfter ?? -1) } ?? false
+                if connection.sync_pending != true && (syncAfter == nil || hasNewSync) {
+                    if connection.sync_pending == false && hasNewSync {
+                        await publishIntervalsImport(.init(status: .synced, connection: connection), operation: operation)
+                    }
+                    return
+                }
+            } catch {
+                guard isCurrentIntervalsOperation(operation) else { return }
+                intervalsStatusUnavailable = true
+                // A status read failure cannot become a second connect attempt.
+                handle(error, jwt: requestJWT)
+                return
+            }
         }
+        intervalsImportStatus = .retry
     }
 
     @discardableResult
@@ -844,11 +865,8 @@ final class GroupModel: ObservableObject {
             // The redirect acknowledges a saved connection, but only a fresh
             // profile can say whether it remains connected after import.
             intervalsStatus = nil
-            await loadIntervalsAfterAcknowledgement(jwt: jwt, operation: operation)
+            await loadIntervalsAfterAcknowledgement(jwt: jwt, operation: operation, expectedGeneration: result.credentialGeneration, syncAfter: result.activitySyncAfter)
             guard isCurrentIntervalsOperation(operation) else { return false }
-            if let status = result.importStatus {
-                await publishIntervalsImport(.init(status: status, connection: intervalsStatus), operation: operation)
-            }
             return true
         } catch {
             guard isCurrentIntervalsOperation(operation) else { return false }

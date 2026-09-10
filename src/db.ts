@@ -1787,7 +1787,7 @@ export async function setUserIntervalsCreds(
   userId: string,
   apiKey: string | null,
   athleteId: string | null,
-): Promise<{ connected: boolean; credential_generation: number }> {
+): Promise<{ connected: boolean; credential_generation: number; activity_sync_after: number | null }> {
   const connect = !!(apiKey && athleteId);
   // The API-key and OAuth schemes are mutually exclusive: writing an API key
   // clears any OAuth token, and a disconnect (nulls) clears BOTH schemes'
@@ -1838,12 +1838,13 @@ export async function setUserIntervalsCreds(
               intervals_protocol_write_seq = intervals_protocol_write_seq
                 + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
         WHERE id = ?1
-        RETURNING intervals_credential_generation AS credential_generation`,
+        RETURNING intervals_credential_generation AS credential_generation,
+                  intervals_activities_synced_at AS activity_sync_after`,
     )
     .bind(userId, connect ? apiKey : null, connect ? athleteId : null, connect ? 1 : 0)
-    .run<{ credential_generation: number }>();
+    .run<{ credential_generation: number; activity_sync_after: number | null }>();
   if (!row) throw new Error('intervals_user_not_found');
-  return { connected: connect, credential_generation: row.credential_generation };
+  return { connected: connect, ...row };
 }
 
 /**
@@ -1864,7 +1865,7 @@ async function writeUserIntervalsOAuth(
   expiresAt: number | null,
   athleteId: string,
   expectedGeneration?: number,
-): Promise<number | null> {
+): Promise<{ credential_generation: number; activity_sync_after: number | null } | null> {
   const { results: [row] } = await workoutDB(db)
     .prepare(
       `UPDATE users
@@ -1907,7 +1908,8 @@ async function writeUserIntervalsOAuth(
                 + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
         WHERE id = ?1
           AND (?6 IS NULL OR intervals_credential_generation = ?6)
-        RETURNING intervals_credential_generation AS credential_generation`,
+        RETURNING intervals_credential_generation AS credential_generation,
+                  intervals_activities_synced_at AS activity_sync_after`,
     )
     .bind(
       userId,
@@ -1917,8 +1919,8 @@ async function writeUserIntervalsOAuth(
       athleteId,
       expectedGeneration ?? null,
     )
-    .run<{ credential_generation: number }>();
-  return row?.credential_generation ?? null;
+    .run<{ credential_generation: number; activity_sync_after: number | null }>();
+  return row ?? null;
 }
 
 export async function setUserIntervalsOAuth(
@@ -1929,7 +1931,7 @@ export async function setUserIntervalsOAuth(
   expiresAt: number | null,
   athleteId: string,
   expectedGeneration?: number,
-): Promise<number | null> {
+): Promise<{ credential_generation: number; activity_sync_after: number | null } | null> {
   return writeUserIntervalsOAuth(
     db,
     userId,
@@ -1955,13 +1957,19 @@ export async function createIntervalsOAuthState(
   const state =
     crypto.randomUUID().replace(/-/g, '') + crypto.randomUUID().replace(/-/g, '');
   const ts = now();
-  await workoutDB(db)
+  const account = await workoutDB(db).prepare(
+    'SELECT intervals_credential_generation AS generation FROM users WHERE id = ?1',
+  ).bind(userId).first<{ generation: number }>();
+  if (!account) throw new Error('intervals_user_not_found');
+  const inserted = await workoutDB(db)
     .prepare(
-      `INSERT INTO intervals_oauth_states (state, user_id, created_at, expires_at)
-       VALUES (?1, ?2, ?3, ?4)`,
+      `INSERT INTO intervals_oauth_states (state, user_id, created_at, expires_at, credential_generation)
+       SELECT ?1, ?2, ?3, ?4, ?5 FROM users
+        WHERE id = ?2 AND intervals_credential_generation = ?5`,
     )
-    .bind(state, userId, ts, ts + ttlMs)
+    .bind(state, userId, ts, ts + ttlMs, account.generation)
     .run();
+  if (inserted.meta.changes !== 1) throw new Error('intervals_connection_changed');
   return state;
 }
 
@@ -1978,9 +1986,8 @@ export async function consumeIntervalsOAuthState(
   return (await consumeIntervalsOAuthAttempt(db, state))?.user_id ?? null;
 }
 
-/** Consume the state and capture its user's credential generation atomically.
- * Migration 0047 cancels unconsumed states on generation changes. The callback
- * uses this captured generation to reject replacement/disconnect during I/O. */
+/** Consume the state with the generation recorded when the attempt began.
+ * Migration 0047 also cancels pending states on credential changes. */
 export async function consumeIntervalsOAuthAttempt(
   db: D1Database,
   state: string,
@@ -1992,15 +1999,13 @@ export async function consumeIntervalsOAuthAttempt(
   // the row, the other gets nothing.
   const row = await workoutDB(db)
     .prepare(`DELETE FROM intervals_oauth_states WHERE state = ?1
-      RETURNING user_id, expires_at,
-        (SELECT intervals_credential_generation FROM users
-          WHERE id = intervals_oauth_states.user_id) AS credential_generation`)
+      RETURNING user_id, expires_at, credential_generation`)
     .bind(state)
-    .first<{ user_id: string; expires_at: number; credential_generation: number }>();
+    .first<{ user_id: string; expires_at: number; credential_generation: number | null }>();
   // Best-effort sweep of any OTHER now-expired rows (kept out of the atomic
   // statement above so it never affects the single-use result).
   await workoutDB(db).prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
-  if (!row || row.expires_at < ts) return null;
+  if (!row || row.expires_at < ts || row.credential_generation === null) return null;
   return { user_id: row.user_id, credential_generation: row.credential_generation };
 }
 

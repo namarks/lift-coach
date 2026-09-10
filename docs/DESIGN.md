@@ -512,18 +512,25 @@ is never a sync cursor.
 
 Connecting by API key or OAuth immediately reconciles the member's last 90 days
 of completed Intervals activity, using their stored timezone for the window.
-The credential acknowledgement is separate from the import result: an outage
-returns a saved connection with a retry action. `GET /api/me` exposes the current
-credential generation, whether initial activity sync is pending, and its last
+The credential acknowledgement returns before the import, which runs in
+`waitUntil` with a bounded provider deadline. iOS briefly observes its status,
+then offers retry if still pending; observation never repeats credentials or
+starts a competing provider request. The acknowledgement includes the previous
+successful-sync watermark so an identical-credential reconnect waits for a newer
+import rather than treating old freshness as completion. `GET /api/me` exposes
+the current credential generation, whether initial activity sync is pending, and its last
 successful timestamp. `POST /api/me/integrations/intervals/sync` accepts only
 `expected_generation` for the authenticated member and cannot import with a
 replacement connection. Provider rejection follows the existing credential
 recovery path; disconnect and auth failure retain the activity cache.
 
 Migration `0047` cancels pending OAuth states when the credential generation
-changes. A consumed callback also captures that generation and conditionally
-stores its token, so a disconnect during token exchange cannot reconnect the
-member. Apply this additive migration before a later authorized Worker release;
+changes. Each state stores the generation read when creation began, and its
+insertion claims that generation; consumption preserves it for the conditional
+token write. A disconnect during state insertion or token exchange cannot
+reconnect the member. Unbound states minted by an older Worker require a fresh
+connect attempt after the new Worker is deployed. Apply this additive migration
+before a later authorized Worker release;
 repository delivery does not apply it in production. The iOS connection screens
 use server status, reject late operation/profile responses, and refresh shared
 activity state after a successful import. A saved local connection is historical
