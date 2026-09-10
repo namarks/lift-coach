@@ -60,16 +60,60 @@ public release require separate authorization and are outside this goal.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P3 | gated_by | external:owner-appstore-candidate-release | Production changes, TestFlight upload and device actions need a concrete authorized proposal. |
+| P3 | gated_by | external:appstore-candidate-device-verification | Candidate release is authorized; complete the live legacy-client canary before upload and physical-iPhone checks before submission readiness. |
 | P4 | gated_by | external:owner-appstore-metadata-publication | Publish only the concrete approved package. |
 
 ## Next step
 
-**Now (@agent):** Prepare the exact candidate-release proposal from PR #175 after
-its required independent review, CI and merge. Resolve any remaining review
-findings in that same PR. Keep the existing service, email and Profile screens;
-production changes, TestFlight distribution, physical-device verification and
-App Store publication remain separately authorized steps.
+**Now (@owner, agent verifies and uploads afterward):** Complete the deferred live legacy-route workout
+check with the existing authenticated TestFlight app, then observe its value-free
+request results and aggregate metrics for five minutes. The owner authorized the
+candidate release on 2026-09-10; the backend and matching privacy page are live.
+Build 1.0 (35) is signed and exported but **not uploaded**. Once the canary passes,
+recheck build-number availability and upload the retained, verified IPA; confirm
+Apple processing and internal Testers availability. Release authorization remains
+valid. Physical-device/group-support checks and the App Store package remain
+open; agreements are still deferred. Do not submit to review or release publicly.
+
+Candidate release record (2026-09-10):
+
+- [PR #175](https://github.com/namarks/tres-fort/pull/175) passed independent review
+  at `88bb610352973a08d6d8dd9b9810adf86fbd1720`, with all eight review threads
+  resolved and [all eight required checks green](https://github.com/namarks/tres-fort/actions/runs/34533893828).
+  Merge `361cf2ba9d40ef6572de700b65cf649c665559ba` has identical tree
+  `8cde9125232d605b4988ce9986abae9234537856`. The release uses that exact source.
+- After saving a private native D1 recovery bookmark, only migrations 0046,
+  0047 and 0048 were applied. The ledger confirms all three; no pending migrations
+  or foreign-key violations remain. Migration 0045 was not repeated.
+- Worker version `722fbf91-4b13-48e2-b233-747b1d437ca6`, deployment
+  `33658947-639c-4a54-b94a-f3cc7167883b` at 22:36:27 UTC, serves 100% of traffic.
+  Its annotation identifies the source and tree above. Existing bindings,
+  credentials, runtime compatibility and hourly cron are preserved. Owner
+  identity is configured and development auth is absent (presence checks only).
+  The approved configuration disables detailed observability persistence and
+  export; live metadata omits the disabled observability subtree, reports
+  Logpush false and no tail consumers. Aggregate metrics remain available.
+- Website version `37485aa6-6045-48d0-aabf-b951af4f5e21` publishes the matching
+  policy. Both privacy URLs, health, OAuth discovery, homepage and icon pass;
+  protected endpoints return 401 without authentication and a missing website
+  URL returns 404. Public policy content matches the built source after excluding
+  Cloudflare's observed appended security script. Mail DNS is unchanged.
+- The signed archive/export is 1.0 (35), bundle `com.nmarkspdx.tresfort`, iPhone
+  only, with the required-reason manifest and no synthetic fixture markers.
+  All 279 tracked iOS/upload inputs match the release source; code signing
+  verifies. IPA SHA-256:
+  `33dd3018a83a05d00afee9522a3139c2dc34212204a2de24b401570d73ca66a8`.
+  App Store Connect at 22:33 UTC still had maximum build 34, but 35 is not reserved.
+- Authenticated production REST authoring/date/set/finish/discard checks and the
+  canary observation are **pending**, not inferred from public reads or simulator
+  tests. The paired iPhone was unavailable from the release Mac; the owner was
+  asked to perform the check on the current app. No TestFlight upload, App Store
+  metadata write, review submission or public app release occurred.
+- Private recovery information and sanitized release receipts are retained on
+  the release host under
+  `~/.codex/visualizations/2026/09/10/01a08bad-3258-7500-9674-90839f24449a/release-35/`.
+  The signed package is retained there for the authorized upload after the canary;
+  verify its hash and current build availability before reuse.
 
 ## Notes / open questions
 
