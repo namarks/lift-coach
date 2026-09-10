@@ -837,6 +837,60 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.feedback?.notes, replacement.notes)
     }
 
+    func testFailedRunnerChangesRollBackBeforeStorageRetryAndModelReplacement() async throws {
+        for action in ["skip", "finish", "next", "weight", "reps", "rpe", "duration"] {
+            let h = LocalPersistenceTestHarness()
+            addTeardownBlock { h.cleanup() }
+            let defaults = h.open(), ex = exercise(timed: action == "duration"), s = session()
+            let second = exercise(id: "slot-b", exerciseID: "exercise-b")
+            let slots = action == "finish" ? [ex] : [ex, second]
+            let auth = auth(defaults: defaults), api = SetWriteAPIStub()
+            api.stateHandler = { [self] _ in state(session: s, sets: [], exercises: slots) }
+            let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
+            model.plan = PlanTree(id: "plan-a", name: "Plan A", version: 1,
+                                  workouts: [day(with: slots)], meta: nil)
+            model.selectedDayID = "day-a"
+            model.todaySession = s
+            model.startWorkout()
+            let checkpoint = try XCTUnwrap(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults))
+            let input = model.currentInputState
+            h.faults.failWrites = true
+            switch action {
+            case "skip", "finish": model.skip()
+            case "next": model.next()
+            case "weight": model.setWeight(200)
+            case "reps": model.setReps(12)
+            case "rpe": model.setRPE(8)
+            default: model.setHoldDuration(60)
+            }
+            XCTAssertTrue(defaults.hasFailure(userID: "user-a"), action)
+            XCTAssertTrue(model.running, action)
+            XCTAssertFalse(model.finished, action)
+            XCTAssertFalse(model.isSkipped(ex), action)
+            XCTAssertEqual(model.currentExercise?.id, ex.id, action)
+            XCTAssertEqual(model.currentInputState, input, action)
+            XCTAssertNotNil(model.loadError, action)
+            XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults), checkpoint, action)
+            // A second tap while saving is blocked must not become another
+            // in-memory-only change that disappears when the view remounts.
+            model.next()
+            XCTAssertEqual(model.currentExercise?.id, ex.id, action)
+            h.faults.failWrites = false
+            XCTAssertTrue(defaults.retry(userID: "user-a"), action)
+            let replacement = SyncModel(auth: auth, setWriteAPI: api, catalogAPI: SetCatalogAPIStub(),
+                                        defaults: defaults, now: { self.fixedDate })
+            await replacement.load()
+            replacement.resumeWorkout()
+            XCTAssertTrue(replacement.running, action)
+            XCTAssertFalse(replacement.finished, action)
+            XCTAssertFalse(replacement.isSkipped(ex), action)
+            XCTAssertEqual(replacement.currentExercise?.id, ex.id, action)
+            XCTAssertEqual(replacement.currentInputState, input, action)
+            XCTAssertTrue(api.createCalls.isEmpty, action)
+            XCTAssertTrue(api.logCalls.isEmpty, action)
+        }
+    }
+
     func testPersistsImmutableBodyBeforeFirstSessionCreateAwait() async {
         let defaults = defaults()
         let ex = exercise()

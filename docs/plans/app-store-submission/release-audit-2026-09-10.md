@@ -113,6 +113,15 @@ and Health anchors remain intact. Eager migration also covers the dismissal
 marker's app namespace. This follow-up passed 83 focused unit tests and all five
 affected UI journeys; the 268-entry iOS source manifest matched.
 
+A failed runner checkpoint save now rejects the change immediately, restoring
+the last durable selection, skips, feedback and inputs with an error. Retrying
+storage and remounting the feature no longer silently reverses a visible change.
+The regression reproduced failures for skips, navigation and edited inputs;
+after the fix all 328 affected unit tests and the ordinary workout-completion
+UI journey passed. A timed-set start also stops before creating its notification
+or Live Activity if its checkpoint cannot be saved. Fresh independent review
+and required CI must pass this revision before merging.
+
 Unsigned Release-configuration verification at 17:21:39 UTC built for generic
 iOS with version 1.0, minimum iOS 17.0, iPhone-only device family and the widget
 extension. The bundled privacy manifest declares UserDefaults reason `CA92.1`;
@@ -136,9 +145,14 @@ No request logs were opened, and temporary downloaded source/configuration was
 deleted. Intervals callback URLs carry temporary `code` and `state` parameters;
 the configuration therefore permits sensitive URL values in retained logs.
 
-The separate backend diagnostics candidate removes raw unexpected error text
-from application logs and HTTP/MCP responses; TypeScript and all 972 backend
-tests passed. It is not deployed and does not sanitize provider-added request
+The backend diagnostics fix removes raw unexpected error text from application
+logs and HTTP/MCP responses. [PR #173](https://github.com/namarks/tres-fort/pull/173)
+passed exact-head independent review and all required CI at
+`528aa8c7f79d5624c89f9ac4e31a98f1b76afb74`, then merged as
+`0f82e0ad045c21a5f0bda0215b9d1b8b07c020f8` with identical tree
+`530be6e14b42dd6a50b127031e99e3282bd8f6a9`. TypeScript and all 972 backend
+tests passed locally before an 85-test validation-code follow-up; final-head
+CI passed all backend shards. It is not deployed and does not sanitize provider-added request
 metadata. See the [owner logging-policy proposal](diagnostics-policy-proposal.md).
 Cloudflare documents up to seven days for Workers Logs; any historical export
 copies require separate verification. Final App Privacy classifications remain

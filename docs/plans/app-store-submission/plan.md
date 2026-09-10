@@ -66,7 +66,7 @@ public release require separate authorization and are outside this goal.
 ## Next step
 
 **Now (@agent):** Complete verification, independent review and merge of the
-protected-storage integration and backend error-privacy fix. Preserve
+protected-storage integration on the merged backend error-privacy fix. Preserve
 account/revision fencing and demonstrate failure recovery before claiming
 privacy readiness. Continue review-package preparation; await the owner's
 decisions on the [group-safety proposal](group-safety-proposal.md) and
@@ -134,18 +134,24 @@ Preserve external release and publication gates.
   preserves corrupt workout queues, checkpoints, navigation and Health anchors.
   All 83 focused unit tests and five affected connection/plan-history UI journeys
   passed, with all 268 source-manifest entries matching. Fresh exact-head review
-  and CI remain required.
+  and CI remain required. The runner save-failure follow-up immediately restores
+  the last durable selection, skips and inputs rather than losing visible changes
+  during storage retry. A regression reproduced the prior behavior; all 328
+  affected unit tests and the workout-completion UI journey passed after the fix.
+  The storage branch was refreshed onto the reviewed backend merge below.
   An unsigned Release build for generic iOS also passed: version 1.0, iPhone-only
   family, embedded widget and `CA92.1` manifest verified; the synthetic fixture
   switch was absent. This used the unreserved project build placeholder 29,
   not an upload candidate. No archive or upload was made.
   The file-protection test must pass on a physical iPhone; simulator results do
   not prove this property. See the release audit for upgrade/rollback constraints.
-- The separate backend diagnostics fix is in [PR #173](https://github.com/namarks/tres-fort/pull/173), initial verified source
-  `f6d6bfe7a0f93af9614f2c683ef84feb5df85310` on
-  `codex/private-error-diagnostics`. TypeScript and all 972 backend tests passed.
-  Complete independent review and CI; refresh the comparison before delivery if
-  main advances. It removes raw unexpected error text from application logs and HTTP/MCP
+- The backend diagnostics fix was delivered in [PR #173](https://github.com/namarks/tres-fort/pull/173),
+  reviewed head `528aa8c7f79d5624c89f9ac4e31a98f1b76afb74`, merged as
+  `0f82e0ad045c21a5f0bda0215b9d1b8b07c020f8`. Independent Codex review completed
+  without findings, all threads were resolved, and [required CI passed](https://github.com/namarks/tres-fort/actions/runs/34508210971).
+  The reviewed and merged tree is `530be6e14b42dd6a50b127031e99e3282bd8f6a9`.
+  Local verification included TypeScript, all 972 backend tests, then 85 focused
+  tests for the validation-code follow-up. It removes raw unexpected error text from application logs and HTTP/MCP
   responses. Read-only provider metadata at 17:07:31 UTC confirmed persisted
   invocation logs with 100% sampling and URL query redaction disabled. Tracing
   is disabled; no tail consumers or export destinations were returned. Logpush

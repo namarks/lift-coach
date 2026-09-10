@@ -1795,6 +1795,10 @@ final class SyncModel: ObservableObject {
 
     @discardableResult
     private func persistRunnerCheckpoint() -> Bool {
+        guard !defaults.hasFailure(userID: accountID) else {
+            restoreRunnerAfterSaveFailure()
+            return false
+        }
         guard canInitiateBoundFeatureAction,
               !runnerArtifactsOwnedByOther,
               running,
@@ -1973,7 +1977,7 @@ final class SyncModel: ObservableObject {
     /// same-account model owns them now.
     private func relinquishStaleRunnerCheckpoint() {
         if defaults.hasFailure(userID: accountID) {
-            loadError = "Couldn't save this workout on your iPhone. Retry saved data to continue."
+            restoreRunnerAfterSaveFailure()
             return
         }
         observedGroupProgress = [:]
@@ -1988,6 +1992,43 @@ final class SyncModel: ObservableObject {
         skipped = []
         relinquishLocalRest()
         loadError = "This workout continued in another app view. Refresh to continue."
+    }
+
+    /// Failed checkpoint changes are rejected immediately. Storage retry only
+    /// proves the files can be read/written; it must not appear to undo an
+    /// accepted skip, selection or input when RootView remounts the models.
+    /// Keep the durable checkpoint and server/outbox state untouched.
+    private func restoreRunnerAfterSaveFailure() {
+        clearTimedSet()
+        observedGroupProgress = [:]
+        guard let checkpoint = persistedRunnerCheckpoint,
+              let day = plan?.workouts.first(where: { $0.id == checkpoint.selectedDayID }),
+              let index = day.exercises.firstIndex(where: { $0.id == checkpoint.currentSlotID })
+        else {
+            // A first checkpoint could not be saved, or the live plan no
+            // longer contains it. Do not present unsaved runner progress.
+            running = false
+            finished = false
+            workoutStart = nil
+            skipped = []
+            workoutFeedback = nil
+            runnerFocus = RunnerFocusState()
+            deferredGroupRepair = nil
+            loadError = "Couldn't save this workout on your iPhone. Retry saved data to continue."
+            return
+        }
+        selectedDayID = day.id
+        exerciseIndex = index
+        skipped = Set(checkpoint.skippedSlotIDs)
+        workoutStart = Date(timeIntervalSince1970: TimeInterval(checkpoint.workoutStartedAtMS) / 1_000)
+        finished = checkpoint.finished
+        workoutFeedback = checkpoint.feedback
+        runnerFocus = checkpoint.focus ?? RunnerFocusState()
+        deferredGroupRepair = checkpoint.deferredGroupRepair
+        runnerRestartDiscardedAttempt = checkpoint.restartDiscardedAttempt
+        seedInputs()
+        rememberGroupProgress()
+        loadError = "Couldn't save this change. Your last saved workout is restored. Retry saved data, then try again."
     }
 
     /// The runner's current physical slot without `selectedDay`'s first-day
@@ -4581,7 +4622,7 @@ final class SyncModel: ObservableObject {
             isWarmup: ex.isWarmup,
             startedAt: startedAt,
             endDate: endDate)
-        persistRunnerCheckpoint()
+        guard persistRunnerCheckpoint() else { return }
         RestLiveActivity.start(exercise: ex.exercise_name, endDate: endDate,
                                upNext: "\(holdDurationSeconds)s", timerKind: "set", controlID: timedControlID)
         timedCueGeneration = RestCue.scheduleTimedNotification(at: endDate)
