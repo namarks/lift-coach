@@ -31,10 +31,14 @@ xcrun xcresulttool export attachments --path "${bundles[0]}" \
   --output-path "$scratch/attachments" --test-id AppStoreScreenshotTests
 python3 - "$repo_root" "$evidence" "$scratch/attachments" "$output" <<'PY'
 import datetime, hashlib, json, pathlib, re, shutil, struct, subprocess, sys
+def require(condition, message):
+    if not condition:
+        raise SystemExit(message)
+
 repo, evidence, attachments, output = map(pathlib.Path, sys.argv[1:])
 sources = json.loads((evidence / 'sources.json').read_text())
 for name, digest in sources.items():
-    assert hashlib.sha256((repo / 'ios' / name).read_bytes()).hexdigest() == digest, f'Source changed during capture: {name}'
+    require(hashlib.sha256((repo / 'ios' / name).read_bytes()).hexdigest() == digest, f'Source changed during capture: {name}')
 images = {}
 for test in json.loads((attachments / 'manifest.json').read_text()):
     for item in test['attachments']:
@@ -42,21 +46,21 @@ for test in json.loads((attachments / 'manifest.json').read_text()):
         if not match:
             continue
         name = match[1] + '.png'
-        assert name not in images, f'Duplicate screenshot: {name}'
+        require(name not in images, f'Duplicate screenshot: {name}')
         source = attachments / item['exportedFileName']
         data = source.read_bytes()
-        assert data[:8] == b'\x89PNG\r\n\x1a\n', f'Not PNG: {name}'
-        assert struct.unpack('>II', data[16:24]) == (1320, 2868), f'Unexpected size: {name}'
-        assert data[25] == 2, f'Expected opaque RGB: {name}'
+        require(data[:8] == b'\x89PNG\r\n\x1a\n', f'Not PNG: {name}')
+        require(struct.unpack('>II', data[16:24]) == (1320, 2868), f'Unexpected size: {name}')
+        require(data[25] == 2, f'Expected opaque RGB: {name}')
         offset = 8
         while offset < len(data):
             length = struct.unpack('>I', data[offset:offset + 4])[0]
-            assert data[offset + 4:offset + 8] != b'tRNS', f'Transparency is not allowed: {name}'
+            require(data[offset + 4:offset + 8] != b'tRNS', f'Transparency is not allowed: {name}')
             offset += length + 12
-        assert offset == len(data), f'Invalid PNG chunk length: {name}'
+        require(offset == len(data), f'Invalid PNG chunk length: {name}')
         images[name] = (source, hashlib.sha256(data).hexdigest())
 expected = {'01-today.png', '02-runner.png', '03-workouts.png', '04-history.png', '05-feedback.png'}
-assert set(images) == expected, f'Wrong screenshot set: {set(images)}'
+require(set(images) == expected, f'Wrong screenshot set: {set(images)}')
 output.mkdir(parents=True, exist_ok=False)
 for name, (source, _) in images.items():
     shutil.copy2(source, output / name)
