@@ -26,7 +26,7 @@
     "ios:verify": "bash scripts/verify-ios.sh",
     "plans:check": "node scripts/vendor/planning/plan-graph.mjs check",
     "test:workout-rollout": "node scripts/verify-workout-rollout.mjs",
-    "deploy:website": "npm --prefix website run deploy"
+    "deploy:website": "npm --prefix website run deploy --"
   },
   "dependencies": {
     "hono": "^4.12.34",
