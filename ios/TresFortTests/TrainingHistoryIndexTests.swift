@@ -12,7 +12,7 @@ final class TrainingHistoryIndexTests: XCTestCase {
 
     func testPublishedMutationsInvalidateHistoryWithoutChangingDatePrecedence() throws {
         let suite = "TrainingHistoryIndexTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = LocalPersistence(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let auth = AuthModel(tokenStore: Tokens(), defaults: defaults)
         let model = SyncModel(auth: auth, defaults: defaults)

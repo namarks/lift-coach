@@ -63,12 +63,12 @@ final class HealthKitSyncModel: ObservableObject {
     private let api = APIClient()
     private unowned let auth: AuthModel
     private let accountID: String?
-    private let defaults: UserDefaults
+    private let defaults: LocalPersistence
 
     /// Held so we can stop it on disconnect / sign-out.
     private var observerQuery: HKObserverQuery?
 
-    init(auth: AuthModel, defaults: UserDefaults = .standard) {
+    init(auth: AuthModel, defaults: LocalPersistence = .standard) {
         self.auth = auth
         self.accountID = auth.userID
         self.defaults = defaults
@@ -214,6 +214,10 @@ final class HealthKitSyncModel: ObservableObject {
             }
         }
         var anchor = loadAnchor()
+        guard !defaults.hasFailure(userID: accountID) else {
+            lastError = "Apple Health sync is paused until saved data can be read."
+            return
+        }
         let hadStoredAnchor = anchor != nil
         var pushedAny = false
         do {
@@ -231,7 +235,8 @@ final class HealthKitSyncModel: ObservableObject {
                     // later grants permission in Settings. Leaving it unset means
                     // the next sync retries from scratch and backfills.
                     if (hadStoredAnchor || pushedAny), let newAnchor {
-                        saveAnchor(newAnchor); anchor = newAnchor
+                        guard saveAnchor(newAnchor) else { return }
+                        anchor = newAnchor
                     }
                     break
                 }
@@ -243,7 +248,10 @@ final class HealthKitSyncModel: ObservableObject {
                 }
                 // Whole page pushed — checkpoint the anchor before the next page.
                 guard isCurrentAccount(using: jwt) else { return }
-                if let newAnchor { saveAnchor(newAnchor); anchor = newAnchor }
+                if let newAnchor {
+                    guard saveAnchor(newAnchor) else { return }
+                    anchor = newAnchor
+                }
                 pushedAny = true
                 if workouts.count < Self.pageLimit { break } // last page
             }
@@ -395,16 +403,25 @@ final class HealthKitSyncModel: ObservableObject {
         guard let accountID,
               let data = defaults.data(forKey: Self.anchorKey(userID: accountID))
         else { return nil }
-        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data)
+        if let anchor = try? NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data) {
+            return anchor
+        }
+        defaults.recordInvalidData(data, forKey: Self.anchorKey(userID: accountID))
+        return nil
     }
 
-    private func saveAnchor(_ anchor: HKQueryAnchor) {
+    private func saveAnchor(_ anchor: HKQueryAnchor) -> Bool {
         guard let accountID,
               auth.userID == accountID,
-              auth.featureJWT != nil else { return }
+              auth.featureJWT != nil else { return false }
         guard let data = try? NSKeyedArchiver.archivedData(
-            withRootObject: anchor, requiringSecureCoding: true) else { return }
-        defaults.set(data, forKey: Self.anchorKey(userID: accountID))
+            withRootObject: anchor, requiringSecureCoding: true) else {
+            defaults.recordWriteFailure(forKey: Self.anchorKey(userID: accountID))
+            return false
+        }
+        let saved = defaults.set(data, forKey: Self.anchorKey(userID: accountID))
+        if !saved { lastError = "Apple Health sync is paused until saved data can be written." }
+        return saved
     }
 
     // MARK: - Mapping (keep the kind vocab in sync with backend kindOf)

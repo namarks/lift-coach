@@ -7,7 +7,7 @@ import SwiftUI
 ///   * Volumes are tiny (<10 members per group, <30 feed items per pull),
 ///     so everything lives in @Published in-memory arrays — no SwiftData
 ///     mirror, full-replace on every refresh.
-///   * The only persisted piece is `ActivityOutbox` (UserDefaults), so a
+///   * The only persisted piece is `ActivityOutbox` (LocalPersistence), so a
 ///     POST that fails offline survives an app kill.
 ///   * `@MainActor` so SwiftUI views can mutate freely; APIClient calls
 ///     are `async throws` and return on the main actor.
@@ -84,7 +84,7 @@ final class GroupModel: ObservableObject {
     private let api = APIClient()
     private unowned let auth: AuthModel
     private let accountID: String?
-    private let defaults: UserDefaults
+    private let defaults: LocalPersistence
     private let activityLogger: ((PendingActivity, String) async throws -> ActivityRow)?
     private let activityDeleter: ((String, String) async throws -> Void)?
     private let groupLister: ((String) async throws -> [GroupSummary])?
@@ -108,7 +108,7 @@ final class GroupModel: ObservableObject {
 
     init(
         auth: AuthModel,
-        defaults: UserDefaults = .standard,
+        defaults: LocalPersistence = .standard,
         activityLogger: ((PendingActivity, String) async throws -> ActivityRow)? = nil,
         activityDeleter: ((String, String) async throws -> Void)? = nil,
         groupLister: ((String) async throws -> [GroupSummary])? = nil,
@@ -188,7 +188,7 @@ final class GroupModel: ObservableObject {
 
     private static func loadIntervalsConnection(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> IntervalsConnection? {
         guard let userID else { return nil }
         AccountLocalState.bindLegacyState(userID: userID, defaults: defaults)
@@ -200,7 +200,7 @@ final class GroupModel: ObservableObject {
     private static func saveIntervalsConnection(
         _ connection: IntervalsConnection?,
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) {
         guard let userID else { return }
         let key = intervalsConnectionKey(userID: userID)
@@ -508,11 +508,11 @@ final class GroupModel: ObservableObject {
     // MARK: - Manual activities
 
     /// Log a manual activity. The flow per spec §6e:
-    ///   1. Optimistically append to the current group's feed cache (the
+    ///   1. Save to the outbox, then append to the group's feed cache (the
     ///      row appears immediately, even before the server confirms).
     ///   2. POST; on success replace the optimistic row with the server
     ///      row (matches by id, since id IS the idempotency key).
-    ///   3. On network failure → enqueue to the outbox; the optimistic
+    ///   3. On network failure → retain the outbox entry; the optimistic
     ///      row stays so the user still sees their entry.
     ///   4. On 4xx → roll back the optimistic insert, surface the error.
     ///   5. Refresh the feed so the activity becomes the server-truth
@@ -522,6 +522,12 @@ final class GroupModel: ObservableObject {
         guard let accountID,
               auth.userID == accountID,
               auth.featureJWT != nil else { return }
+        // Persist before optimistic UI or network work so an app kill cannot
+        // lose a tap and a failed disk write cannot claim it was queued.
+        guard enqueue(pending) else {
+            lastError = "Couldn't save this activity on your iPhone. Retry saved data, then try again."
+            return
+        }
         // 1. Optimistic insert. We construct a fake FeedItem from the
         //    pending payload so the row renders immediately. The display
         //    name comes from the user's own entry in the currently-selected
@@ -542,21 +548,18 @@ final class GroupModel: ObservableObject {
                 notes: pending.notes)))
         if let gid = selectedGroupID {
             var current = feed[gid] ?? []
+            current.removeAll { $0.id == pending.id }
             current.insert(optimistic, at: 0)
             feed[gid] = current
         }
         // 2/3/4. Network.
         guard let jwt = currentJWT else {
-            // Not signed in — enqueue so it goes out next time. Should be
-            // unreachable from a signed-in UI but defensive.
-            enqueue(pending)
             return
         }
         do {
             _ = try await persistActivity(pending, jwt: jwt)
             guard isCurrentAccount else { return }
-            // Success — remove from outbox if we had previously enqueued
-            // it on a prior attempt (no-op if not present).
+            // A failed removal retains the durable id for a deduplicated retry.
             ActivityOutboxStore.remove(
                 id: pending.id, userID: accountID, defaults: defaults)
             outbox = ActivityOutboxStore.load(
@@ -578,37 +581,40 @@ final class GroupModel: ObservableObject {
             if let gid = selectedGroupID {
                 feed[gid]?.removeAll { $0.id == pending.id }
             }
+            ActivityOutboxStore.remove(id: pending.id, userID: accountID, defaults: defaults)
+            outbox = ActivityOutboxStore.load(userID: accountID, defaults: defaults)
             lastError = "Couldn't save activity (server rejected it)."
         } catch {
             guard isCurrentAccount else { return }
-            // Network failure (incl. 5xx) → enqueue; the optimistic row
-            // stays visible. Surface a soft hint.
-            enqueue(pending)
+            // Already durably queued; the optimistic row stays visible.
             lastError = "Will sync when online."
             handle(error, jwt: jwt)
         }
     }
 
-    private func enqueue(_ pending: PendingActivity) {
+    private func enqueue(_ pending: PendingActivity) -> Bool {
         guard let accountID,
               auth.userID == accountID,
-              auth.featureJWT != nil else { return }
-        ActivityOutboxStore.enqueue(
+              auth.featureJWT != nil else { return false }
+        let saved = ActivityOutboxStore.enqueue(
             pending, userID: accountID, defaults: defaults)
         outbox = ActivityOutboxStore.load(
             userID: accountID, defaults: defaults)
+        return saved && !defaults.hasFailure(userID: accountID)
     }
 
     /// Drain the outbox. Called on `.task` (mount), on scene-foreground,
     /// and after every successful logActivity. POST is idempotent on
     /// id, so a retry of an already-sent row is safe.
     func drainOutbox() async {
+        outbox = ActivityOutboxStore.load(userID: accountID, defaults: defaults)
         guard let jwt = currentJWT, !outbox.isEmpty else { return }
         // Snapshot the pending list so we can mutate `outbox` as we go
         // without invalidating the iteration.
         let pending = outbox.pending
         var didPersist = false
         for entry in pending {
+            guard isCurrentAccount else { return }
             do {
                 _ = try await persistActivity(entry, jwt: jwt)
                 guard isCurrentAccount else { return }

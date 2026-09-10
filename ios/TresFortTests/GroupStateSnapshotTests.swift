@@ -7,9 +7,9 @@ final class GroupStateSnapshotTests: XCTestCase {
     private let userID = "group-cache-user"
     private let groupID = "b157648a-67c1-4e9f-9dde-a8b0db8a4aa0"
 
-    private func withDefaults(_ body: (UserDefaults, String) throws -> Void) rethrows {
+    private func withDefaults(_ body: (LocalPersistence, String) throws -> Void) rethrows {
         let suite = "GroupStateSnapshotTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = LocalPersistence(suiteName: suite)!
         defer {
             StateSnapshotStore.clear(userID: userID, defaults: defaults)
             defaults.removePersistentDomain(forName: suite)
@@ -51,7 +51,7 @@ final class GroupStateSnapshotTests: XCTestCase {
             with: JSONEncoder().encode(value)) as? [String: Any])
     }
 
-    private func persistedEnvelope(_ defaults: UserDefaults) throws -> [String: Any] {
+    private func persistedEnvelope(_ defaults: LocalPersistence) throws -> [String: Any] {
         let data = try XCTUnwrap(defaults.data(forKey: StateSnapshotStore.scopedKey(userID: userID)))
         let json = try XCTUnwrap(StateSnapshotStore.decodedEnvelope(data))
         return try XCTUnwrap(JSONSerialization.jsonObject(with: json) as? [String: Any])
@@ -60,7 +60,7 @@ final class GroupStateSnapshotTests: XCTestCase {
     /// Model the shipped envelope before group certification existed, retaining
     /// independent collection cursors and its flattened same-version plan.
     private func installLegacyEnvelope(
-        _ defaults: UserDefaults, wireProof: Int? = nil
+        _ defaults: LocalPersistence, wireProof: Int? = nil
     ) throws -> StateSyncWatermarks {
         let session = SessionRow(id: "session-a", date: "2033-05-18",
             status: "in_progress", workout_id: "day-a", updated_at: 1_000)
@@ -132,7 +132,7 @@ final class GroupStateSnapshotTests: XCTestCase {
             XCTAssertEqual(committed.watermarks?.planVersion, 7)
             XCTAssertEqual(try persistedEnvelope(defaults)["planGroupsVersion"] as? Int, 1)
             // An actual committed certificate survives a cold envelope decode.
-            let reopened = UserDefaults(suiteName: suite)!
+            let reopened = LocalPersistence(suiteName: suite)!
             let next = try XCTUnwrap(StateSnapshotStore.reserveStateRequest(
                 userID: userID, defaults: reopened))
             XCTAssertEqual(next.watermarks.planVersion, 7)
@@ -313,7 +313,7 @@ final class GroupStateSnapshotTests: XCTestCase {
             XCTAssertNil(marker["state"])
             XCTAssertNil(marker["planGroupsVersion"])
             XCTAssertEqual(marker["invalidated"] as? Bool, true)
-            let coldDefaults = UserDefaults(suiteName: suite)!
+            let coldDefaults = LocalPersistence(suiteName: suite)!
             XCTAssertNil(StateSnapshotStore.load(userID: userID, defaults: coldDefaults))
             XCTAssertEqual(StateSnapshotStore.reserveStateRequest(
                 userID: userID, defaults: coldDefaults)?.watermarks, .fullReload)

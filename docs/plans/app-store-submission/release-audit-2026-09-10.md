@@ -62,11 +62,30 @@ Speech code requires on-device recognition and does not fall back to server
 recognition. Its audio buffers are not written to an app audio file. A real
 device/language-model and permission-denial test remains necessary.
 
-The current storage audit found personal training blobs in `StateSnapshotStore`,
+The storage audit found personal training blobs in `StateSnapshotStore`,
 set/activity/correction/terminal outboxes and runner recovery preferences.
-HealthKit anchors and Intervals connection metadata also need to be included
-in the migration/account-cleanup analysis. The new storage utility is only a
-prototype until these call sites preserve failure handling and recovery.
+The candidate now routes these blobs, HealthKit anchors, Intervals metadata and
+other app-owned encoded local state through `LocalPersistence` and
+`ProtectedTrainingStore`. It preserves the released account keys and codecs,
+migrates inactive accounts, writes protected/excluded staging files before
+atomic replacement, and uses deletion markers to prevent stale preference
+resurrection. A legacy-account binding prevents a failed migration from later
+transferring old work to a different Apple account.
+
+Failed new set/activity/finish/discard/correction saves stop before sending.
+Unreadable durable queues remain preserved, while replaceable corrupt browse
+caches can reload. Failed deletion cleanup keeps the receipt and credential so
+the same deletion can resume after unlocking or freeing storage, including after
+relaunch. A foreground retry handles ordinary protected-data unavailability;
+unresolved errors expose a local recovery banner. Final exact-head review/CI
+and physical-device proof remain required.
+
+Before candidate upload, use a physical iPhone to verify file protection on the
+same source, upgrade migration without erasing the install, offline workout
+recovery, lock/unlock and foreground retry, and account deletion. Backup exclusion
+cannot recover unsynced device-only writes from iCloud. Do not downgrade to a
+build that reads only the old preferences while pending work remains; any
+rollback candidate must preserve the new protected-storage reader.
 
 Cloudflare observability is enabled in repository configuration. Most explicit
 service logs are aggregate or error-type-only; the global unhandled-error
@@ -75,8 +94,12 @@ remain unverified. App Privacy diagnostic classifications are not finalized.
 
 ## Public URLs
 
-Read-only HTTPS requests to `https://tresfort.app/` and
-`https://tresfort.app/privacy` returned HTTP 403 from this environment.
-This does not distinguish public-site restrictions from the execution
-environment's network behavior. Successful public access to the marketing,
-support and privacy pages remains unverified.
+Read-only HTTP clients, including a normal-network retry, returned 403 for
+`https://tresfort.app/` and `https://tresfort.app/privacy`. A subsequent browser
+check on 2026-09-10 successfully rendered both public pages without sign-in.
+The marketing page shows the coming-soon state, sample workout screenshots,
+privacy navigation and `mailto:nick@tresfort.app` support. The privacy page is
+dated September 10, 2026 and visibly covers account/training data, on-device
+speech, optional providers, group sharing, export/deletion and support.
+Browser reachability and visible links are verified; mailbox delivery was not
+tested and the HTTP-client 403 behavior remains distinct.

@@ -26,7 +26,7 @@ final class HistoryPerformanceTests: XCTestCase {
     func testSmallAndFiveYearHistoryBaselines() throws {
         for sessionCount in [12, 1_040] {
             let suite = "HistoryPerformanceTests.\(UUID().uuidString)"
-            let defaults = UserDefaults(suiteName: suite)!
+            let defaults = LocalPersistence(suiteName: suite)!
             defer { defaults.removePersistentDomain(forName: suite) }
             let state = Self.dataset(sessionCount: sessionCount)
             let catalog = try JSONDecoder().decode([ExerciseCatalog].self, from:
@@ -45,7 +45,7 @@ final class HistoryPerformanceTests: XCTestCase {
             timings["cached_model_init"] = sample("launch") {
                 // New defaults object prevents any process-local store cache
                 // from disguising disk-envelope decoding in this cold probe.
-                let cold = SyncModel(auth: auth, defaults: UserDefaults(suiteName: suite)!,
+                let cold = SyncModel(auth: auth, defaults: LocalPersistence(suiteName: suite)!,
                     restActivityUpdater: { _, _ in }, restActivityEnder: {}, restNotificationCanceller: {})
                 XCTAssertEqual(cold.sets.count, state.sets.count)
             }

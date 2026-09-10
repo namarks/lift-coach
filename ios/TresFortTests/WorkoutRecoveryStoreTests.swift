@@ -4,10 +4,14 @@ import XCTest
 
 @MainActor
 final class WorkoutRecoveryStoreTests: XCTestCase {
-    private func defaults() -> UserDefaults {
+    private func defaults() -> LocalPersistence {
         let name = "WorkoutRecoveryStoreTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = LocalPersistence(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
+        addTeardownBlock { [preferences = defaults.preferences, directory = defaults.trainingStore.directory] in
+            preferences.removePersistentDomain(forName: name)
+            try? FileManager.default.removeItem(at: directory)
+        }
         return defaults
     }
 
@@ -935,8 +939,8 @@ final class WorkoutRecoveryStoreTests: XCTestCase {
 extension WorkoutRecoveryStoreTests {
     func testSnapshotReadCacheObservesExternalReplacementCorruptionAndRemoval() throws {
         let suite = "SnapshotReadCache.\(UUID().uuidString)"
-        let first = UserDefaults(suiteName: suite)!
-        let second = UserDefaults(suiteName: suite)!
+        let first = LocalPersistence(suiteName: suite)!
+        let second = LocalPersistence(suiteName: suite)!
         defer { first.removePersistentDomain(forName: suite) }
         let key = StateSnapshotStore.scopedKey(userID: "user-a")
         StateSnapshotStore.save(try state(planName: "First"), userID: "user-a", defaults: first)
@@ -962,7 +966,7 @@ extension WorkoutRecoveryStoreTests {
         XCTAssertLessThan(packed.count, 4 * 1_024 * 1_024)
         XCTAssertEqual(StateSnapshotStore.decodedEnvelope(packed), large)
         XCTAssertNil(StateSnapshotStore.decodedEnvelope(Data("TFSS1\0invalid".utf8)))
-        // Incompressible future envelopes must fail before UserDefaults can
+        // Incompressible future envelopes must fail before LocalPersistence can
         // silently retain only their process-local value.
         var generator: UInt64 = 0x123456789abcdef
         var noise = Data(count: 5 * 1_024 * 1_024)

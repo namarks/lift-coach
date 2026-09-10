@@ -96,18 +96,22 @@ enum WorkoutRunnerCheckpointStore {
 
     static func load(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> WorkoutRunnerCheckpoint? {
         guard let userID,
               let data = defaults.data(forKey: scopedKey(userID: userID))
         else { return nil }
-        return try? JSONDecoder().decode(WorkoutRunnerCheckpoint.self, from: data)
+        do { return try JSONDecoder().decode(WorkoutRunnerCheckpoint.self, from: data) }
+        catch {
+            defaults.recordInvalidData(data, forKey: scopedKey(userID: userID))
+            return nil
+        }
     }
 
     static func save(
         _ checkpoint: WorkoutRunnerCheckpoint,
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) {
         guard let userID,
               let data = try? JSONEncoder().encode(checkpoint)
@@ -123,14 +127,13 @@ enum WorkoutRunnerCheckpointStore {
         _ checkpoint: WorkoutRunnerCheckpoint,
         ifCurrent expected: WorkoutRunnerCheckpoint?,
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> Bool {
         guard let userID,
               load(userID: userID, defaults: defaults) == expected,
               let data = try? JSONEncoder().encode(checkpoint)
         else { return false }
-        defaults.set(data, forKey: scopedKey(userID: userID))
-        return true
+        return defaults.set(data, forKey: scopedKey(userID: userID))
     }
 
     /// Conditional clear pairs with `replace`: validation performed by an old
@@ -139,16 +142,16 @@ enum WorkoutRunnerCheckpointStore {
     static func clear(
         ifCurrent expected: WorkoutRunnerCheckpoint?,
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> Bool {
         guard let userID,
-              load(userID: userID, defaults: defaults) == expected
+              load(userID: userID, defaults: defaults) == expected,
+              !defaults.hasFailure(forKey: scopedKey(userID: userID))
         else { return false }
-        defaults.removeObject(forKey: scopedKey(userID: userID))
-        return true
+        return defaults.removeObject(forKey: scopedKey(userID: userID))
     }
 
-    static func clear(userID: String, defaults: UserDefaults = .standard) {
+    static func clear(userID: String, defaults: LocalPersistence = .standard) {
         defaults.removeObject(forKey: scopedKey(userID: userID))
     }
 }
@@ -217,7 +220,7 @@ enum StateSyncAccountStore {
     @discardableResult
     static func activate(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> Bool {
         guard let userID else { return true }
         let previous = defaults.string(forKey: activeAccountKey)
@@ -227,7 +230,7 @@ enum StateSyncAccountStore {
 
     static func clearIfActive(
         userID: String,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) {
         guard defaults.string(forKey: activeAccountKey) == userID else { return }
         defaults.removeObject(forKey: activeAccountKey)
@@ -246,7 +249,7 @@ enum ExerciseCatalogSnapshotStore {
 
     static func load(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> [ExerciseCatalog]? {
         guard let userID,
               let data = defaults.data(forKey: scopedKey(userID: userID))
@@ -257,7 +260,7 @@ enum ExerciseCatalogSnapshotStore {
     static func save(
         _ catalog: [ExerciseCatalog],
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) {
         guard let userID,
               let data = try? JSONEncoder().encode(catalog)
@@ -265,7 +268,7 @@ enum ExerciseCatalogSnapshotStore {
         defaults.set(data, forKey: scopedKey(userID: userID))
     }
 
-    static func clear(userID: String, defaults: UserDefaults = .standard) {
+    static func clear(userID: String, defaults: LocalPersistence = .standard) {
         defaults.removeObject(forKey: scopedKey(userID: userID))
     }
 }

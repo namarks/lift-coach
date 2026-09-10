@@ -65,10 +65,9 @@ public release require separate authorization and are outside this goal.
 
 ## Next step
 
-**Now (@agent):** Integrate protected storage with snapshots, queued training,
-runner recovery and account cleanup, preserving account/revision fencing and
-surfacing I/O failures before claiming a durable save. Complete focused and full
-verification, independent review and merge. Continue review-package preparation;
+**Now (@agent):** Complete verification, independent review and merge of the
+protected-storage integration. Preserve account/revision fencing and demonstrate
+failure recovery before claiming privacy readiness. Continue review-package preparation;
 await the owner's decision on the
 [group-safety proposal](group-safety-proposal.md) before changing group policy.
 Preserve external release and publication gates.
@@ -101,21 +100,26 @@ Preserve external release and publication gates.
   does not satisfy the P3 physical-device gate.
 - The [review package](review-package.md) is a draft. The proposed group controls
   and daily inbox / 24-hour response commitment await owner approval. Persisted
-  HealthKit records in UserDefaults require a protected, backup-excluded
-  app-owned store with crash-safe migration; that change remains in P1.
-- P1 prototype: `ProtectedTrainingStore` writes excluded, protected staging
-  files and atomically replaces account-keyed blobs. A committed copy or small
-  deletion marker wins over stale preferences; failed writes retain old data.
-  Eight storage tests pass on iOS 26.2 simulator. A ninth test explicitly skips
-  because that simulator exposes no file-protection attribute; it must pass on
-  a physical iPhone. The utility is not yet connected to app persistence and
-  has not been independently reviewed. No privacy-completion claim follows
-  from these utility tests.
+  HealthKit records now use the candidate's protected, backup-excluded
+  app-owned storage; verification and release gates remain in P1/P3.
+- P1 integration: `LocalPersistence` routes app-owned data blobs through
+  `ProtectedTrainingStore`, including inactive-account migration, snapshots,
+  every training outbox, runner recovery, HealthKit anchors and account cleanup.
+  Failed saves stop new requests, corrupt durable queues are preserved, and
+  cleanup failures retain the deletion receipt for retry. Full local verification
+  executed 468 unit tests with zero failures and one explicit simulator
+  protection skip, plus 14 passing onboarding/workout/feedback UI journeys.
+  The final account-isolation and foreground-recovery follow-up passed 71 focused
+  unit tests and the manual onboarding journey. Independent review and remote CI
+  must finish before repository delivery is complete.
+  The file-protection test must pass on a physical iPhone; simulator results do
+  not prove this property. See the release audit for upgrade/rollback constraints.
 - [Release audit, 2026-09-10](release-audit-2026-09-10.md): production version
   `c5a298d1-a72a-4fa8-a24f-bd2cf0e27a6b`, source annotation `ff512825779f90b630a4a5dfd11a68e6a113825a`,
   migration ledger through `0045`; source migrations `0046` and `0047` remain
-  unapplied. Public URL checks returned HTTP 403 from this environment and do
-  not establish public reachability. No production change was made.
+  unapplied. Normal-browser checks successfully rendered both public marketing
+  and privacy pages with support links; HTTP clients still returned 403.
+  Mailbox delivery is untested. No production change was made.
 - Source baseline `bb4db9c40675ba6be6a0b8ff42f8cdbabcf14a4c`;
   [main CI](https://github.com/namarks/tres-fort/actions/runs/34486074011) passed.
   The preceding run failed transcript replacement: its helper could delete

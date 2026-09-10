@@ -4,7 +4,8 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var model: AuthModel
-    var defaults: UserDefaults = .standard
+    @Environment(\.scenePhase) private var scenePhase
+    @ObservedObject var defaults: LocalPersistence = .standard
     var now: () -> Date = Date.init
 
     var body: some View {
@@ -13,10 +14,10 @@ struct RootView: View {
             case .signedIn:
                 if model.onboardingComplete {
                     MainTabView(auth: model, defaults: defaults, now: now)
-                        .id(model.featureSessionEpoch)
+                        .id("\(model.featureSessionEpoch)-\(defaults.recoveryGeneration)")
                 } else {
                     OnboardingView(auth: model, defaults: defaults)
-                        .id(model.featureSessionEpoch)
+                        .id("\(model.featureSessionEpoch)-\(defaults.recoveryGeneration)")
                 }
             default:
                 ZStack {
@@ -40,6 +41,28 @@ struct RootView: View {
                 }
                 .preferredColorScheme(.dark)
             }
+        }
+        .safeAreaInset(edge: .top) {
+            if defaults.hasFailure(userID: model.userID) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("Saved training needs attention").font(.headline)
+                    Text("A local save or read failed. Unlock your iPhone and check its available storage, then retry. Keep the app installed to preserve unsynced workouts.")
+                        .font(.footnote)
+                    HStack {
+                        Button("Retry saved data") { defaults.retry(userID: model.userID) }
+                        Link("Contact support", destination: AppInformation.supportURL)
+                    }
+                }
+                .padding().frame(maxWidth: .infinity, alignment: .leading)
+                .background(.regularMaterial)
+                .accessibilityIdentifier("storage.failure")
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Complete file protection intentionally denies background reads
+            // while locked. Retry on return so a normal unlock does not leave
+            // the app paused; disk/corruption failures still show the banner.
+            if phase == .active { defaults.retry(userID: model.userID) }
         }
         // ActivityKit restores records independently of authentication and
         // onboarding. RootView is always mounted, so process-death cleanup also

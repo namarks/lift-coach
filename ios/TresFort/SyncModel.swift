@@ -17,17 +17,17 @@ enum RunnerArtifactOwnership {
     }
 
     final class Owner {
-        weak var defaults: UserDefaults?
+        weak var defaults: LocalPersistence?
         let id: UUID
         let featureSessionEpoch: UInt64
 
-        init(defaults: UserDefaults, id: UUID, featureSessionEpoch: UInt64) {
+        init(defaults: LocalPersistence, id: UUID, featureSessionEpoch: UInt64) {
             self.defaults = defaults
             self.id = id
             self.featureSessionEpoch = featureSessionEpoch
         }
 
-        func permitsClaim(featureSessionEpoch: UInt64, defaults: UserDefaults) -> Bool {
+        func permitsClaim(featureSessionEpoch: UInt64, defaults: LocalPersistence) -> Bool {
             // ObjectIdentifier can be reused after the old namespace dies.
             // Its epoch fences only that live namespace, never a new object
             // that happens to occupy the same address.
@@ -42,7 +42,7 @@ enum RunnerArtifactOwnership {
         _ owner: UUID,
         featureSessionEpoch: UInt64,
         userID: String?,
-        defaults: UserDefaults
+        defaults: LocalPersistence
     ) {
         guard let userID else { return }
         let key = Key(defaults: ObjectIdentifier(defaults), userID: userID)
@@ -60,7 +60,7 @@ enum RunnerArtifactOwnership {
         by owner: UUID,
         featureSessionEpoch: UInt64,
         userID: String?,
-        defaults: UserDefaults
+        defaults: LocalPersistence
     ) -> Bool {
         guard let userID else { return false }
         guard let current = owners[Key(
@@ -75,7 +75,7 @@ enum RunnerArtifactOwnership {
         than owner: UUID,
         featureSessionEpoch: UInt64,
         userID: String?,
-        defaults: UserDefaults
+        defaults: LocalPersistence
     ) -> Bool {
         guard let userID,
               let current = owners[Key(
@@ -91,7 +91,7 @@ enum RunnerArtifactOwnership {
         _ owner: UUID,
         featureSessionEpoch: UInt64,
         userID: String?,
-        defaults: UserDefaults
+        defaults: LocalPersistence
     ) {
         guard let userID else { return }
         let key = Key(defaults: ObjectIdentifier(defaults), userID: userID)
@@ -223,7 +223,7 @@ final class SyncModel: ObservableObject {
     private unowned let auth: AuthModel
     private let accountID: String?
     private let featureSessionEpoch: UInt64
-    private let defaults: UserDefaults
+    private let defaults: LocalPersistence
     private let uuidFactory: () -> UUID
     private let now: () -> Date
     private let runnerArtifactOwnerID = UUID()
@@ -335,7 +335,7 @@ final class SyncModel: ObservableObject {
         catalogAPI: any ExerciseCatalogAPI = APIClient(),
         planEditingAPI: any PlanEditingAPI = APIClient(),
         routineEditingAPI: any RoutineEditingAPI = APIClient(),
-        defaults: UserDefaults = .standard,
+        defaults: LocalPersistence = .standard,
         uuidFactory: @escaping () -> UUID = UUID.init,
         now: @escaping () -> Date = Date.init,
         automaticWorkoutWriteRetryEnabled: Bool = false,
@@ -485,7 +485,7 @@ final class SyncModel: ObservableObject {
     /// invalidating boundaries.
     private var canMutateBoundSetAccount: Bool {
         guard let accountID, auth.userID == accountID else { return false }
-        return !auth.accountDeletionPending
+        return !auth.accountDeletionPending && !defaults.hasFailure(userID: accountID)
     }
 
     /// New user choices belong to the feature session that rendered them.
@@ -1961,6 +1961,7 @@ final class SyncModel: ObservableObject {
         {
             return true
         }
+        guard !defaults.hasFailure(userID: accountID) else { return false }
         // Two models can independently normalize to an identical checkpoint;
         // accepting that exact stored value is equivalent to a successful CAS.
         return WorkoutRunnerCheckpointStore.load(
@@ -1971,6 +1972,10 @@ final class SyncModel: ObservableObject {
     /// clear the durable checkpoint or shared rest artifacts: a newer
     /// same-account model owns them now.
     private func relinquishStaleRunnerCheckpoint() {
+        if defaults.hasFailure(userID: accountID) {
+            loadError = "Couldn't save this workout on your iPhone. Retry saved data to continue."
+            return
+        }
         observedGroupProgress = [:]
         runnerFocus = RunnerFocusState()
         deferredGroupRepair = nil
@@ -2467,7 +2472,7 @@ final class SyncModel: ObservableObject {
         }.map(\.date))
     }
 
-    /// UserDefaults is the same-account coordination boundary across multiple
+    /// LocalPersistence is the same-account coordination boundary across multiple
     /// SyncModel instances. In-memory queues are presentation mirrors only;
     /// always adopt the granular durable stores before reconciliation or a
     /// network write so an older model cannot replay work a newer model
@@ -2550,11 +2555,12 @@ final class SyncModel: ObservableObject {
             || setCorrections.contains { $0.date == date }
     }
 
-    private func persistEnqueuedSetIntent(_ intent: PendingSetIntent) {
-        guard canMutateBoundSetAccount else { return }
-        SetOutboxStore.enqueue(
-            intent, userID: accountID, defaults: defaults)
+    private func persistEnqueuedSetIntent(_ intent: PendingSetIntent) -> Bool {
+        guard canMutateBoundSetAccount,
+              SetOutboxStore.enqueue(intent, userID: accountID, defaults: defaults)
+        else { return false }
         ownedSetIntentIDs.insert(intent.id)
+        return true
     }
 
     private func persistReplacedSetIntent(_ intent: PendingSetIntent) {
@@ -2570,15 +2576,17 @@ final class SyncModel: ObservableObject {
         ownedSetIntentIDs.subtract(ids)
     }
 
-    private func persistEnqueuedTerminalIntent(_ intent: WorkoutTerminalIntent) {
-        guard canMutateBoundSetAccount else { return }
-        WorkoutTerminalOutboxStore.enqueue(
-            intent, userID: accountID, defaults: defaults)
+    private func persistEnqueuedTerminalIntent(_ intent: WorkoutTerminalIntent) -> Bool {
+        guard canMutateBoundSetAccount,
+              WorkoutTerminalOutboxStore.enqueue(intent, userID: accountID, defaults: defaults)
+        else { return false }
         if WorkoutTerminalOutboxStore.load(
             userID: accountID, defaults: defaults
         ).intent(for: intent.date)?.id == intent.id {
             ownedTerminalIntentIDs.insert(intent.id)
+            return true
         }
+        return false
     }
 
     private func persistReplacedTerminalIntent(_ intent: WorkoutTerminalIntent) {
@@ -2719,7 +2727,12 @@ final class SyncModel: ObservableObject {
         // No network await may occur above this save. A failed/lost session
         // create therefore leaves the complete intent available on relaunch.
         setOutbox.enqueue(intent)
-        persistEnqueuedSetIntent(intent)
+        guard persistEnqueuedSetIntent(intent) else {
+            setOutbox = SetOutboxStore.load(userID: accountID, defaults: defaults)
+            setSlotsInFlight.remove(ex.id)
+            loadError = "Couldn't save this set on your iPhone. Retry saved data before logging it again."
+            return nil
+        }
         return intent
     }
 
@@ -4912,7 +4925,11 @@ final class SyncModel: ObservableObject {
             // The complete user choice is durable before the coordinator can
             // await set delivery, session resolution, or the terminal PATCH.
             terminalOutbox.enqueue(intent)
-            persistEnqueuedTerminalIntent(intent)
+            guard persistEnqueuedTerminalIntent(intent) else {
+                terminalOutbox = WorkoutTerminalOutboxStore.load(userID: accountID, defaults: defaults)
+                loadError = "Couldn't save the finish request on your iPhone. Retry saved data, then finish again."
+                return
+            }
         }
         await drainWorkoutWriteOutboxes()
     }
@@ -4966,7 +4983,11 @@ final class SyncModel: ObservableObject {
         // dies before the following physical set-key cleanup, init observes
         // this barrier and performs the same supersession before any drain.
         terminalOutbox.enqueue(intent)
-        persistEnqueuedTerminalIntent(intent)
+        guard persistEnqueuedTerminalIntent(intent) else {
+            terminalOutbox = WorkoutTerminalOutboxStore.load(userID: accountID, defaults: defaults)
+            loadError = "Couldn't save the discard request on your iPhone. Retry saved data, then discard again."
+            return
+        }
         supersedeSetIntentsForDiscardBarriers()
         applyLocalDiscardMask()
         await drainWorkoutWriteOutboxes()
@@ -6279,7 +6300,10 @@ extension SyncModel {
         var intent = intent
         intent.runnerFocusRevision = runnerFocus.revision
         intent.runnerGroupRepair = observedGroupRepair(for: intent)
-        SetCorrectionOutboxStore.enqueue(intent, userID: accountID, defaults: defaults)
+        guard SetCorrectionOutboxStore.enqueue(intent, userID: accountID, defaults: defaults) else {
+            loadError = "Couldn't save this correction on your iPhone. Retry saved data, then try again."
+            return false
+        }
         ownedCorrectionIDs.insert(intent.id)
         adoptDurableWorkoutWriteOutboxes()
         guard setCorrections.contains(where: { $0.id == intent.id }) else { return false }

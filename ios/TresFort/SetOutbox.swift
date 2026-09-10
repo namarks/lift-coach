@@ -172,7 +172,7 @@ struct SetOutbox: Codable, Equatable {
     var count: Int { pending.count }
 }
 
-/// UserDefaults persistence is deliberately narrow and account-scoped. Writes
+/// LocalPersistence persistence is deliberately narrow and account-scoped. Writes
 /// are synchronous at the call site and always happen before the first network
 /// `await`, which closes the app-kill window between a tap and session creation.
 enum SetOutboxStore {
@@ -182,53 +182,62 @@ enum SetOutboxStore {
 
     static func load(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> SetOutbox {
         guard let userID,
               let data = defaults.data(forKey: scopedKey(userID: userID))
         else { return SetOutbox() }
-        return (try? JSONDecoder().decode(SetOutbox.self, from: data))
-            ?? SetOutbox()
+        do { return try JSONDecoder().decode(SetOutbox.self, from: data) }
+        catch {
+            defaults.recordInvalidData(data, forKey: scopedKey(userID: userID))
+            return SetOutbox()
+        }
     }
 
+    @discardableResult
     static func save(
         _ outbox: SetOutbox,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        guard let userID,
-              let data = try? JSONEncoder().encode(outbox)
-        else { return }
-        defaults.set(data, forKey: scopedKey(userID: userID))
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        guard let userID else { return false }
+        guard let data = try? JSONEncoder().encode(outbox) else {
+            defaults.recordWriteFailure(forKey: scopedKey(userID: userID))
+            return false
+        }
+        return defaults.set(data, forKey: scopedKey(userID: userID))
     }
 
     /// Intent-granular updates prevent a stale SyncModel generation from
     /// replacing a newer same-account model's whole queue after reauth.
     /// `replace` and `remove` deliberately never insert a missing id, so a
     /// late callback cannot recreate a queue cleared by confirmed deletion.
+    @discardableResult
     static func enqueue(
         _ intent: PendingSetIntent,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) { $0.enqueue(intent) }
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.enqueue(intent) }
     }
 
+    @discardableResult
     static func replace(
         _ intent: PendingSetIntent,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) { $0.replace(intent) }
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.replace(intent) }
     }
 
+    @discardableResult
     static func remove(
         ids: Set<String>,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        guard !ids.isEmpty else { return }
-        update(userID: userID, defaults: defaults) { outbox in
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        guard !ids.isEmpty else { return true }
+        return update(userID: userID, defaults: defaults) { outbox in
             for id in ids { outbox.remove(id: id) }
         }
     }
@@ -236,33 +245,37 @@ enum SetOutboxStore {
     /// Discard is a durable date-level barrier. Once that barrier is saved,
     /// every set intent for the same workout is superseded as one logical
     /// operation, regardless of whether the set was queued or visibly failed.
+    @discardableResult
     static func remove(
         date: String,
         userID: String?,
-        defaults: UserDefaults = .standard
-    ) {
-        update(userID: userID, defaults: defaults) { $0.remove(date: date) }
+        defaults: LocalPersistence = .standard
+    ) -> Bool {
+        return update(userID: userID, defaults: defaults) { $0.remove(date: date) }
     }
 
+    @discardableResult
     private static func update(
         userID: String?,
-        defaults: UserDefaults,
+        defaults: LocalPersistence,
         mutation: (inout SetOutbox) -> Void
-    ) {
-        guard let userID else { return }
+    ) -> Bool {
+        guard let userID else { return false }
         var current = load(userID: userID, defaults: defaults)
+        guard !defaults.hasFailure(forKey: scopedKey(userID: userID)) else { return false }
         let previous = current
         mutation(&current)
-        guard current != previous else { return }
+        guard current != previous else { return true }
         if current.isEmpty {
-            clear(userID: userID, defaults: defaults)
+            return clear(userID: userID, defaults: defaults)
         } else {
-            save(current, userID: userID, defaults: defaults)
+            return save(current, userID: userID, defaults: defaults)
         }
     }
 
-    static func clear(userID: String, defaults: UserDefaults = .standard) {
-        defaults.removeObject(forKey: scopedKey(userID: userID))
+    @discardableResult
+    static func clear(userID: String, defaults: LocalPersistence = .standard) -> Bool {
+        return defaults.removeObject(forKey: scopedKey(userID: userID))
     }
 }
 
@@ -276,7 +289,7 @@ enum WorkoutWriteRetryDeadlineStore {
 
     static func load(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> Date? {
         guard let userID,
               let value = defaults.object(
@@ -295,7 +308,7 @@ enum WorkoutWriteRetryDeadlineStore {
     static func extend(
         to proposed: Date,
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> Date? {
         guard let userID, proposed.timeIntervalSince1970.isFinite else {
             return load(userID: userID, defaults: defaults)
@@ -314,7 +327,7 @@ enum WorkoutWriteRetryDeadlineStore {
     static func clear(
         through completedDeadline: Date,
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) {
         guard let userID,
               let current = load(userID: userID, defaults: defaults),
@@ -323,7 +336,7 @@ enum WorkoutWriteRetryDeadlineStore {
         clear(userID: userID, defaults: defaults)
     }
 
-    static func clear(userID: String, defaults: UserDefaults = .standard) {
+    static func clear(userID: String, defaults: LocalPersistence = .standard) {
         defaults.removeObject(forKey: scopedKey(userID: userID))
     }
 }

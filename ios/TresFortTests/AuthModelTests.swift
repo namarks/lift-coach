@@ -107,10 +107,14 @@ private actor AsyncLatch {
 
 @MainActor
 final class AuthModelTests: XCTestCase {
-    private func defaults() -> UserDefaults {
+    private func defaults() -> LocalPersistence {
         let name = "AuthModelTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = LocalPersistence(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
+        addTeardownBlock { [preferences = defaults.preferences, directory = defaults.trainingStore.directory] in
+            preferences.removePersistentDomain(forName: name)
+            try? FileManager.default.removeItem(at: directory)
+        }
         return defaults
     }
 
@@ -221,7 +225,7 @@ final class AuthModelTests: XCTestCase {
             authorizationCode: "single-use-authorization-code",
             fullName: "Test User")])
         XCTAssertEqual(model.phase, .signedIn)
-        XCTAssertFalse(defaults.dictionaryRepresentation().values.contains {
+        XCTAssertFalse(defaults.preferences.dictionaryRepresentation().values.contains {
             ($0 as? String) == "single-use-authorization-code"
         })
     }
@@ -872,6 +876,69 @@ final class AuthModelTests: XCTestCase {
         XCTAssertEqual(model.userID, "user-b")
         XCTAssertEqual(model.jwt, tokenB)
         XCTAssertEqual(api.exportCalls, 1)
+    }
+
+    func testActivitySaveFailureDoesNotPostAndRetryIsDurableBeforeNetwork() async {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let defaults = h.open()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let pending = PendingActivity(id: "activity-a", date: "2026-09-10", type: "walk",
+                                      title: nil, duration_minutes: 10, notes: nil, logged_at: 2_000_000_000_000)
+        var postCount = 0
+        let group = GroupModel(auth: auth, defaults: defaults, activityLogger: { activity, _ in
+            postCount += 1
+            XCTAssertEqual(ActivityOutboxStore.load(userID: "user-a", defaults: defaults).pending.map(\.id), [activity.id])
+            throw URLError(.notConnectedToInternet)
+        })
+        group.selectedGroupID = "group-a"
+        h.faults.failWrites = true
+        await group.logActivity(pending)
+        XCTAssertEqual(postCount, 0)
+        XCTAssertTrue(group.feed["group-a"]?.isEmpty ?? true)
+        XCTAssertNotNil(group.lastError)
+        h.faults.failWrites = false
+        XCTAssertTrue(defaults.retry(userID: "user-a"))
+        await group.logActivity(pending)
+        XCTAssertEqual(postCount, 1)
+        XCTAssertEqual(ActivityOutboxStore.load(userID: "user-a", defaults: h.open()).pending.map(\.id), [pending.id])
+        XCTAssertEqual(group.feed["group-a"]?.count, 1)
+    }
+
+    func testDeletionCleanupFailurePreservesReceiptAndRetriesAfterColdLaunch() async throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let defaults = h.open()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        let tokens = MemoryTokenStore(sessionToken(for: "user-a"))
+        let api = AuthAPIStub()
+        api.deletionResult = .success(.init(ok: true, owner_tombstoned: false, apple_revocation: .revoked))
+        let keyA = SetOutboxStore.scopedKey(userID: "user-a")
+        let keyB = SetOutboxStore.scopedKey(userID: "user-b")
+        XCTAssertTrue(defaults.set(Data("account A training".utf8), forKey: keyA))
+        XCTAssertTrue(defaults.set(Data("account B training".utf8), forKey: keyB))
+        let auth = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+        h.faults.failedFiles = [h.store.fileURL(forKey: keyA).lastPathComponent]
+        do { try await auth.deleteAccount(); XCTFail("Local cleanup must not be claimed complete") }
+        catch { XCTAssertTrue(error.localizedDescription.contains("saved data")) }
+        let receipt = try XCTUnwrap(defaults.string(forKey: AccountLocalState.accountDeletionKey(userID: "user-a")))
+        XCTAssertTrue(auth.accountDeletionPending)
+        XCTAssertEqual(auth.userID, "user-a")
+        XCTAssertEqual(auth.jwt, tokens.token)
+        XCTAssertNotNil(tokens.token)
+        XCTAssertNil(auth.featureJWT)
+        XCTAssertEqual(try h.store.data(forKey: keyA), Data("account A training".utf8))
+
+        let cold = AuthModel(api: api, tokenStore: tokens, defaults: h.open())
+        XCTAssertTrue(cold.accountDeletionPending)
+        h.faults.failedFiles = []
+        try await cold.deleteAccount()
+        XCTAssertEqual(api.deletionKeys, [receipt, receipt])
+        XCTAssertNil(tokens.token)
+        XCTAssertNil(cold.userID)
+        XCTAssertNil(try h.store.data(forKey: keyA))
+        XCTAssertEqual(try h.store.data(forKey: keyB), Data("account B training".utf8))
     }
 
     func testAcknowledgedDeletionClearsOnlyCurrentAccountLocalState() async {

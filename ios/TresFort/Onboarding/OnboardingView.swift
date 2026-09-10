@@ -20,7 +20,7 @@ struct OnboardingView: View {
     @StateObject private var flow: OnboardingFlow
     private var step: OnboardingFlow.Step { flow.step }
 
-    init(auth: AuthModel, defaults: UserDefaults = .standard) {
+    init(auth: AuthModel, defaults: LocalPersistence = .standard) {
         self.auth = auth
         _flow = StateObject(wrappedValue: OnboardingFlow(auth: auth))
         _groupModel = StateObject(wrappedValue: GroupModel(auth: auth, defaults: defaults))

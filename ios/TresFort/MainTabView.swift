@@ -17,7 +17,7 @@ struct MainTabView: View {
 
     enum Tab { case today, history, group, profile }
 
-    init(auth: AuthModel, defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init) {
+    init(auth: AuthModel, defaults: LocalPersistence = .standard, now: @escaping () -> Date = Date.init) {
         self.auth = auth
         let sync = SyncModel(
             auth: auth, defaults: defaults, now: now,

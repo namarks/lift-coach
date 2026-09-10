@@ -55,11 +55,11 @@ enum StateSnapshotStore {
     /// model fallback. A cold process sees only the marker and must reload.
     /// Weak ownership and a single slot bound lifetime and account retention.
     private final class DecodedCache {
-        weak var defaults: UserDefaults?
+        weak var defaults: LocalPersistence?
         let userID: String
         let data: Data
         let stored: StoredStateSnapshot
-        init(defaults: UserDefaults, userID: String, data: Data, stored: StoredStateSnapshot) {
+        init(defaults: LocalPersistence, userID: String, data: Data, stored: StoredStateSnapshot) {
             self.defaults = defaults
             self.userID = userID
             self.data = data
@@ -68,9 +68,9 @@ enum StateSnapshotStore {
     }
     private static var decodedCache: DecodedCache?
 
-    // iOS rejects an individual defaults Data value at 4 MiB. Preserve the
-    // existing account key and JSON schema; larger envelopes get a versioned
-    // lossless LZFSE wrapper. Legacy plain JSON remains readable.
+    // Preserve the shipped codec's bounded envelope and JSON schema during
+    // the storage migration. Larger envelopes use a versioned lossless LZFSE
+    // wrapper; legacy plain JSON remains readable.
     private static let compressionPrefix = Data("TFSS1\0".utf8)
     private static let maximumStoredBytes = 4 * 1_024 * 1_024
 
@@ -95,7 +95,7 @@ enum StateSnapshotStore {
 
     static func load(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> StateSnapshotValue? {
         guard let userID,
               let stored = storedSnapshot(userID: userID, defaults: defaults),
@@ -113,7 +113,7 @@ enum StateSnapshotStore {
     /// request ticket, even if this newer request later fails.
     static func reserveStateRequest(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> StateSnapshotTicket? {
         guard let userID else { return nil }
         let current = storedSnapshot(userID: userID, defaults: defaults)
@@ -139,7 +139,7 @@ enum StateSnapshotStore {
     /// complete server snapshot, regardless of any stored cursor.
     static func reserveFullStateRequest(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> StateSnapshotTicket? {
         guard let userID else { return nil }
         let current = storedSnapshot(userID: userID, defaults: defaults)
@@ -160,7 +160,7 @@ enum StateSnapshotStore {
         userID: String,
         current: StoredStateSnapshot,
         watermarks: StateSyncWatermarks,
-        defaults: UserDefaults
+        defaults: LocalPersistence
     ) -> StateSnapshotTicket? {
         guard current.revision < UInt64.max else { return nil }
         let reserved = StoredStateSnapshot(
@@ -184,7 +184,7 @@ enum StateSnapshotStore {
 
     static func isCurrent(
         _ ticket: StateSnapshotTicket,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> Bool {
         storedSnapshot(userID: ticket.userID, defaults: defaults)?.revision
             == ticket.revision
@@ -196,7 +196,7 @@ enum StateSnapshotStore {
     /// overtake it.
     static func wasSupersededByMutation(
         _ ticket: StateSnapshotTicket,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> Bool {
         guard let current = storedSnapshot(
             userID: ticket.userID, defaults: defaults)
@@ -212,7 +212,7 @@ enum StateSnapshotStore {
     static func save(
         _ state: StateResponse,
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) {
         guard let ticket = reserveFullStateRequest(
             userID: userID, defaults: defaults)
@@ -224,7 +224,7 @@ enum StateSnapshotStore {
     static func commitFullState(
         _ response: StateResponse,
         ticket: StateSnapshotTicket,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> StateSnapshotValue? {
         guard ticket.watermarks == .fullReload else { return nil }
         return commitStateResponse(
@@ -239,7 +239,7 @@ enum StateSnapshotStore {
     static func commitStateResponse(
         _ response: StateResponse,
         ticket: StateSnapshotTicket,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> StateSnapshotValue? {
         guard isCurrent(ticket, defaults: defaults),
               let current = storedSnapshot(
@@ -274,7 +274,7 @@ enum StateSnapshotStore {
     static func mergeAcknowledgement(
         userID: String?,
         fallback: StateResponse,
-        defaults: UserDefaults = .standard,
+        defaults: LocalPersistence = .standard,
         transform: (StateResponse) -> StateResponse
     ) -> StateSnapshotValue? {
         guard let userID else { return nil }
@@ -322,7 +322,7 @@ enum StateSnapshotStore {
     @discardableResult
     static func invalidate(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> Bool {
         guard let userID else { return false }
         let current = storedSnapshot(userID: userID, defaults: defaults)
@@ -355,7 +355,7 @@ enum StateSnapshotStore {
     @discardableResult
     static func requireFullReload(
         userID: String?,
-        defaults: UserDefaults = .standard
+        defaults: LocalPersistence = .standard
     ) -> Bool {
         guard let userID,
               let current = storedSnapshot(userID: userID, defaults: defaults)
@@ -377,14 +377,14 @@ enum StateSnapshotStore {
             defaults: defaults)
     }
 
-    static func clear(userID: String, defaults: UserDefaults = .standard) {
+    static func clear(userID: String, defaults: LocalPersistence = .standard) {
         defaults.removeObject(forKey: scopedKey(userID: userID))
         if decodedCache?.userID == userID { decodedCache = nil }
     }
 
     private static func storedSnapshot(
         userID: String,
-        defaults: UserDefaults
+        defaults: LocalPersistence
     ) -> StoredStateSnapshot? {
         guard let data = defaults.data(forKey: scopedKey(userID: userID)) else {
             decodedCache = nil
@@ -562,7 +562,7 @@ enum StateSnapshotStore {
     private static func write(
         _ stored: StoredStateSnapshot,
         userID: String,
-        defaults: UserDefaults
+        defaults: LocalPersistence
     ) -> Bool {
         guard let json = try? JSONEncoder().encode(stored) else { return false }
         let data: Data
@@ -589,7 +589,7 @@ enum StateSnapshotStore {
                 watermarks: nil, setsCommittedThrough: stored.setsCommittedThrough,
                 planGroupsVersion: stored.planGroupsVersion)
         }
-        defaults.set(data, forKey: scopedKey(userID: userID))
+        guard defaults.set(data, forKey: scopedKey(userID: userID)) else { return false }
         decodedCache = DecodedCache(defaults: defaults, userID: userID, data: data, stored: live)
         return true
     }

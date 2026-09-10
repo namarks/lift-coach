@@ -30,11 +30,10 @@ final class AuthModel: ObservableObject {
     /// the key-bound deletion receipt after a lost response, so background
     /// 401s and explicit sign-out must not discard it.
     @Published private(set) var accountDeletionPending = false
-    /// Ordinary feature models must not use the bearer while DELETE /api/me
-    /// is unresolved. `jwt` itself remains available only so AuthModel can
-    /// replay the key-bound deletion receipt after a lost response.
+    /// Pause ordinary requests while deletion or protected local storage needs
+    /// recovery. Keep the bearer available to AuthModel for deletion retries.
     var featureJWT: String? {
-        accountDeletionPending ? nil : jwt
+        accountDeletionPending || defaults.hasFailure(userID: userID) ? nil : jwt
     }
     /// Process-local identity for one continuously active feature session.
     /// It changes across sign-out, reauthentication teardown, deletion, and a
@@ -47,7 +46,7 @@ final class AuthModel: ObservableObject {
     /// SyncModel can refresh when an older Group/Health task finishes late.
     @Published private(set) var activityPersistenceGeneration: UInt64 = 0
     /// Server user id, captured from /auth/apple's `user.id` and persisted
-    /// in UserDefaults so GroupModel can survive an app relaunch with the
+    /// in LocalPersistence so GroupModel can survive an app relaunch with the
     /// keychain JWT alone. Used as the fallback for `is_me` comparisons
     /// against /api/groups members (the M2 list endpoint doesn't stamp
     /// `is_me` — only /feed and /stats do).
@@ -130,7 +129,7 @@ final class AuthModel: ObservableObject {
     private let api: any AuthAPI
     private let tokenStore: any AppTokenStore
     private let appleCredentialChecker: any AppleCredentialStateChecking
-    private let defaults: UserDefaults
+    private let defaults: LocalPersistence
     private let now: () -> Date
     /// Weak-owner callbacks registered by mounted feature models. AuthModel
     /// invokes them immediately before an account boundary makes their epoch
@@ -170,7 +169,7 @@ final class AuthModel: ObservableObject {
         tokenStore: any AppTokenStore = KeychainTokenStore(),
         appleCredentialChecker: any AppleCredentialStateChecking =
             AppleCredentialStateChecker(),
-        defaults: UserDefaults = .standard,
+        defaults: LocalPersistence = .standard,
         now: @escaping () -> Date = Date.init
     ) {
         self.api = api
@@ -196,7 +195,7 @@ final class AuthModel: ObservableObject {
         }
         if let token, let tokenUserID = Self.subject(of: token) {
             if let persistedUserID, persistedUserID != tokenUserID {
-                // A crash between the separate Keychain and UserDefaults
+                // A crash between the separate Keychain and LocalPersistence
                 // writes can leave account A's local namespace beside account
                 // B's bearer. Never enter the signed-in surface with that
                 // mixed pair; preserve A's pointer for explicit recovery.
@@ -544,7 +543,7 @@ final class AuthModel: ObservableObject {
             // training while the server account may still exist. The explicit
             // confirmation that started this request authorizes cleanup once
             // this exact absence is returned.
-            completeAccountDeletion(
+            try completeAccountDeletion(
                 for: accountID,
                 requiresManualAppleRevocation: true)
             return
@@ -553,7 +552,7 @@ final class AuthModel: ObservableObject {
             throw APIError.decoding("account deletion was not acknowledged")
         }
 
-        completeAccountDeletion(
+        try completeAccountDeletion(
             for: accountID,
             requiresManualAppleRevocation:
                 response.apple_revocation != .revoked)
@@ -565,8 +564,11 @@ final class AuthModel: ObservableObject {
     private func completeAccountDeletion(
         for accountID: String,
         requiresManualAppleRevocation: Bool
-    ) {
-        AccountLocalState.clear(userID: accountID, defaults: defaults)
+    ) throws {
+        let entryCleanup = userID != accountID || defaults.removeObject(forKey: Self.pendingEntryKey)
+        guard entryCleanup, AccountLocalState.clear(userID: accountID, defaults: defaults) else {
+            throw APIError.decoding("The account was deleted, but saved data could not be removed from this iPhone. Unlock it, check available storage, and retry Delete account.")
+        }
         // The explicitly confirmed deletion event owns this handoff even if a
         // different account became current while the request was in flight.
         // The UI handoff never mutates the replacement account.
@@ -581,7 +583,6 @@ final class AuthModel: ObservableObject {
         defaults.removeObject(forKey: Self.userIDKey)
         defaults.removeObject(forKey: Self.onboardedKey)
         pendingEntryIntents = []
-        persistEntryIntents()
         jwt = nil
         userID = nil
         appleCredentialUserID = nil

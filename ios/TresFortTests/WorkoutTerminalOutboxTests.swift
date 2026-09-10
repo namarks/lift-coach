@@ -5,10 +5,14 @@ import XCTest
 final class WorkoutTerminalOutboxTests: XCTestCase {
     private let date = "2033-05-18"
 
-    private func defaults() -> UserDefaults {
+    private func defaults() -> LocalPersistence {
         let name = "WorkoutTerminalOutboxTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = LocalPersistence(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
+        addTeardownBlock { [preferences = defaults.preferences, directory = defaults.trainingStore.directory] in
+            preferences.removePersistentDomain(forName: name)
+            try? FileManager.default.removeItem(at: directory)
+        }
         return defaults
     }
 

@@ -545,10 +545,14 @@ final class SetOutboxTests: XCTestCase {
         XCTAssertTrue(center.deliveredIDs.isEmpty)
     }
 
-    private func defaults() -> UserDefaults {
+    private func defaults() -> LocalPersistence {
         let name = "SetOutboxTests.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: name)!
+        let defaults = LocalPersistence(suiteName: name)!
         defaults.removePersistentDomain(forName: name)
+        addTeardownBlock { [preferences = defaults.preferences, directory = defaults.trainingStore.directory] in
+            preferences.removePersistentDomain(forName: name)
+            try? FileManager.default.removeItem(at: directory)
+        }
         return defaults
     }
 
@@ -578,7 +582,7 @@ final class SetOutboxTests: XCTestCase {
 
     private func auth(
         userID: String = "user-a",
-        defaults: UserDefaults,
+        defaults: LocalPersistence,
         api: SetAuthAPIStub? = nil,
         token: String? = nil
     ) -> AuthModel {
@@ -595,7 +599,7 @@ final class SetOutboxTests: XCTestCase {
     /// case instead of passing a temporary that deallocates after init.
     private var retainedAuthModels: [AuthModel] = []
 
-    private func retainedAuth(defaults: UserDefaults) -> AuthModel {
+    private func retainedAuth(defaults: LocalPersistence) -> AuthModel {
         let model = auth(defaults: defaults)
         retainedAuthModels.append(model)
         return model
@@ -757,6 +761,80 @@ final class SetOutboxTests: XCTestCase {
         api.stateHandler = { [self] _ in
             state(session: session, sets: serverSets, exercise: exercise)
         }
+    }
+
+    func testDiskFailureDoesNotSendOrAdvanceSetAndRetrySavesSameTap() async {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let defaults = h.open(), ex = exercise()
+        let api = SetWriteAPIStub()
+        let auth = auth(defaults: defaults)
+        let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults,
+                              uuidFactory: { self.fixedUUID }, now: { self.fixedDate })
+        prepare(model, exercise: ex)
+        h.faults.failWrites = true
+        let saved = await model.logSet(ex, weight: 135, reps: 5)
+        XCTAssertFalse(saved)
+        XCTAssertTrue(api.createCalls.isEmpty)
+        XCTAssertTrue(api.logCalls.isEmpty)
+        XCTAssertTrue(model.setOutbox.isEmpty)
+        XCTAssertTrue(model.sets.isEmpty)
+        XCTAssertNil(auth.featureJWT)
+        XCTAssertNotNil(model.loadError)
+        h.faults.failWrites = false
+        XCTAssertTrue(defaults.retry(userID: "user-a"))
+        configureSuccess(api, exercise: ex, session: session())
+        let acknowledged = await model.logSet(ex, weight: 135, reps: 5)
+        XCTAssertTrue(acknowledged)
+        XCTAssertEqual(api.logCalls.count, 1)
+        XCTAssertEqual(api.logCalls.first?.body.id, fixedUUID.uuidString)
+    }
+
+    func testFailedFinishAndDiscardDoNotSendOrEraseQueuedSets() async throws {
+        for discard in [false, true] {
+            let h = LocalPersistenceTestHarness()
+            addTeardownBlock { h.cleanup() }
+            let defaults = h.open(), ex = exercise(), s = session()
+            let api = SetWriteAPIStub(), terminal = SetTerminalAPIStub()
+            let auth = auth(defaults: defaults)
+            let model = SyncModel(auth: auth, setWriteAPI: api, terminalAPI: terminal,
+                                  defaults: defaults, now: { self.fixedDate })
+            prepare(model, exercise: ex, session: s)
+            _ = await model.logSet(ex, weight: 135, reps: 5)
+            let savedQueue = try XCTUnwrap(defaults.data(forKey: SetOutboxStore.scopedKey(userID: "user-a")))
+            h.faults.failWrites = true
+            if discard { await model.discardWorkout() } else { await model.finishWorkout() }
+            XCTAssertTrue(terminal.completeCalls.isEmpty)
+            XCTAssertTrue(terminal.discardCalls.isEmpty)
+            XCTAssertTrue(model.terminalOutbox.isEmpty)
+            XCTAssertEqual(model.todaySession?.id, s.id)
+            XCTAssertEqual(try h.store.data(forKey: SetOutboxStore.scopedKey(userID: "user-a")), savedQueue)
+            XCTAssertNotNil(model.loadError)
+        }
+    }
+
+    func testFailedFeedbackSaveKeepsRunnerAndPriorCheckpointForRetry() throws {
+        let h = LocalPersistenceTestHarness()
+        addTeardownBlock { h.cleanup() }
+        let defaults = h.open(), ex = exercise(), s = session()
+        let auth = auth(defaults: defaults)
+        let model = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate })
+        prepare(model, exercise: ex, session: s, running: true)
+        let target = try XCTUnwrap(model.terminalActionTarget)
+        let original = WorkoutFeedback(notes: "Saved feedback", perceivedFatigue: 5)
+        let replacement = WorkoutFeedback(notes: "New feedback", perceivedFatigue: 6)
+        XCTAssertTrue(model.saveWorkoutFeedback(original, expected: target, previous: nil))
+        let previous = try XCTUnwrap(model.currentWorkoutFeedback)
+        let checkpoint = WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)
+        h.faults.failWrites = true
+        XCTAssertFalse(model.saveWorkoutFeedback(replacement, expected: target, previous: previous))
+        XCTAssertTrue(model.running)
+        XCTAssertEqual(model.currentWorkoutFeedback, previous)
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults), checkpoint)
+        h.faults.failWrites = false
+        XCTAssertTrue(defaults.retry(userID: "user-a"))
+        XCTAssertTrue(model.saveWorkoutFeedback(replacement, expected: target, previous: previous))
+        XCTAssertEqual(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.feedback?.notes, replacement.notes)
     }
 
     func testPersistsImmutableBodyBeforeFirstSessionCreateAwait() async {
@@ -3551,7 +3629,7 @@ final class SetOutboxTests: XCTestCase {
     }
 
     func testExpiredRestArtifactOwnerDoesNotFenceANewDefaultsNamespace() {
-        weak var expiredDefaults: UserDefaults?
+        weak var expiredDefaults: LocalPersistence?
         let owner = autoreleasepool { () -> RunnerArtifactOwnership.Owner in
             let oldDefaults = defaults()
             expiredDefaults = oldDefaults
@@ -10227,7 +10305,7 @@ extension SetOutboxTests {
 
     func testCorrectionPackingFailurePersistsInvalidationBeforeRetiringIntent() async throws {
         let suite = "OversizedSnapshot.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!, ex = exercise()
+        let defaults = LocalPersistence(suiteName: suite)!, ex = exercise()
         defer { defaults.removePersistentDomain(forName: suite) }
         let active = session(updatedAt: 100, attempt: 0), original = correctionFixture(ex)
         let api = SetWriteAPIStub()
@@ -10235,7 +10313,7 @@ extension SetOutboxTests {
         let sharedAuth = retainedAuth(defaults: defaults)
         let model = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: defaults, now: { self.fixedDate })
         model.replaceState(with: state(session: active, sets: [original], exercise: ex))
-        // Exercise the real codec's size failure without asking UserDefaults
+        // Exercise the real codec's size failure without asking LocalPersistence
         // to store an invalid value. The mounted model supplies the fallback.
         let hugePlan = incompressiblePlan(ex)
         XCTAssertNil(StateSnapshotStore.encodedEnvelope(try JSONEncoder().encode(hugePlan)))
@@ -10257,7 +10335,7 @@ extension SetOutboxTests {
         XCTAssertEqual(json["invalidated"] as? Bool, true)
         // A new defaults object bypasses the process-local live envelope,
         // modeling a cold read of only the durable marker.
-        let coldDefaults = UserDefaults(suiteName: suite)!
+        let coldDefaults = LocalPersistence(suiteName: suite)!
         let cold = SyncModel(auth: sharedAuth, setWriteAPI: api, defaults: coldDefaults, now: { self.fixedDate })
         XCTAssertTrue(cold.sets.isEmpty)
         XCTAssertTrue(cold.setCorrections.isEmpty)
@@ -10269,7 +10347,7 @@ extension SetOutboxTests {
 
     func testOversizedLiveStateRendersAndRefreshesWithoutPersistedBrowseRows() async throws {
         let suite = "OversizedSnapshot.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!, ex = exercise()
+        let defaults = LocalPersistence(suiteName: suite)!, ex = exercise()
         defer { defaults.removePersistentDomain(forName: suite) }
         let active = session(updatedAt: 100, attempt: 0)
         let hugePlan = incompressiblePlan(ex)
@@ -10296,7 +10374,7 @@ extension SetOutboxTests {
         XCTAssertEqual(catalog.jwtCalls.count, 2)
         XCTAssertEqual(api.stateWatermarkCalls, [.fullReload, .fullReload])
         // Bypass the live envelope to model a cold process reading its marker.
-        let coldDefaults = UserDefaults(suiteName: suite)!
+        let coldDefaults = LocalPersistence(suiteName: suite)!
         let cold = SyncModel(auth: sharedAuth, setWriteAPI: api, catalogAPI: catalog,
             defaults: coldDefaults, now: { self.fixedDate })
         XCTAssertTrue(cold.sets.isEmpty)
@@ -11858,7 +11936,7 @@ extension SetOutboxTests {
     private func verifyDeferredGroupDeletionRestart(liveReadFirst: Bool, otherGroup: Bool,
                                                      change: String?) async throws {
         let suite = "DeferredGroupRepair.\(UUID().uuidString)"
-        let defaults = UserDefaults(suiteName: suite)!
+        let defaults = LocalPersistence(suiteName: suite)!
         defer { defaults.removePersistentDomain(forName: suite) }
         let a = exercise(targetSets: 1, groupID: "group-a")
         let b = exercise(id: "slot-b", exerciseID: "exercise-b", targetSets: 1, groupID: "group-a")
@@ -11910,7 +11988,7 @@ extension SetOutboxTests {
             model.jump(to: 3)
             XCTAssertNil(WorkoutRunnerCheckpointStore.load(userID: "user-a", defaults: defaults)?.deferredGroupRepair)
         }
-        let coldDefaults = UserDefaults(suiteName: suite)!
+        let coldDefaults = LocalPersistence(suiteName: suite)!
         if change == "account" {
             let otherAuth = auth(userID: "user-b", defaults: coldDefaults)
             let other = SyncModel(auth: otherAuth, defaults: coldDefaults, now: { self.fixedDate })
@@ -12393,7 +12471,7 @@ extension SetOutboxTests {
     func testApprovedFeedbackWithoutSetsSurvivesRelaunchAndRemoteTerminalStillWins() async throws {
         for status in ["absent", "planned", "skipped", "discarded", "completed"] {
             let suite = "FeedbackBeforeFirstSet.\(UUID().uuidString)"
-            let defaults = UserDefaults(suiteName: suite)!, ex = exercise(targetSets: 1)
+            let defaults = LocalPersistence(suiteName: suite)!, ex = exercise(targetSets: 1)
             defer { defaults.removePersistentDomain(forName: suite) }
             let auth = retainedAuth(defaults: defaults)
             let model = SyncModel(auth: auth, defaults: defaults, now: { self.fixedDate })
@@ -12402,7 +12480,7 @@ extension SetOutboxTests {
             XCTAssertTrue(model.saveWorkoutFeedback(.init(notes: "Stopped before any set", perceivedFatigue: 8),
                 expected: try XCTUnwrap(model.terminalActionTarget), previous: nil))
             // Process-local runner ownership does not survive process death.
-            let coldDefaults = UserDefaults(suiteName: suite)!
+            let coldDefaults = LocalPersistence(suiteName: suite)!
             let cold = SyncModel(auth: retainedAuth(defaults: coldDefaults), defaults: coldDefaults, now: { self.fixedDate })
             let server = session(status: status, attempt: 0)
             let live = StateResponse(plan: model.plan, plan_version: 1,
