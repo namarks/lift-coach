@@ -25,6 +25,7 @@ private final class AuthAPIStub: AuthAPI {
         .failure(URLError(.badServerResponse))
     var exportResult: Result<AccountExportFile, Error> =
         .failure(URLError(.badServerResponse))
+    var authHandler: (() async throws -> AuthResponse)?
     var renewalHandler: ((String) async throws -> SessionRenewalResponse)?
     var deletionHandler: ((String, String) async throws -> AccountDeletionResponse)?
     var exportHandler: ((String) async throws -> AccountExportFile)?
@@ -43,6 +44,7 @@ private final class AuthAPIStub: AuthAPI {
             identityToken: identityToken,
             authorizationCode: authorizationCode,
             fullName: fullName))
+        if let authHandler { return try await authHandler() }
         return try authResult.get()
     }
 
@@ -1882,5 +1884,141 @@ final class AuthModelTests: XCTestCase {
                        [oldPending.id, newPending.id])
         XCTAssertEqual(auth.featureJWT, newToken)
         XCTAssertEqual(auth.phase, .signedIn)
+    }
+}
+
+
+extension AuthModelTests {
+    func testMemberEntrySurvivesFailedSignInRelaunchAndOnboarding() async {
+        let defaults = defaults()
+        let api = AuthAPIStub()
+        let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(), defaults: defaults)
+        let url = Config.apiBaseURL.appendingPathComponent("join/ABC234")
+        auth.handleDeepLink(url)
+        auth.handleDeepLink(url)
+        auth.requestEntry(.coach)
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        XCTAssertEqual(auth.pendingEntryIntents.count, 2)
+        XCTAssertNil(auth.userID)
+        let restored = AuthModel(api: api, tokenStore: MemoryTokenStore(), defaults: defaults)
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-a"),
+            user: UserDTO(id: "user-a", display_name: nil, email: nil)))
+        await restored.exchange(identityToken: "synthetic", fullName: nil)
+        XCTAssertFalse(restored.onboardingComplete)
+        XCTAssertNil(restored.nextEntryIntent)
+        XCTAssertEqual(restored.pendingEntryIntents.map(\.accountID), ["user-a", "user-a"])
+        let flow = OnboardingFlow(auth: restored)
+        flow.advance(from: flow.checkpoint)
+        XCTAssertEqual(flow.step, .intervals)
+        flow.advance(from: flow.checkpoint)
+        flow.finish(from: flow.checkpoint)
+        XCTAssertEqual(restored.nextEntryIntent?.destination, .invite("ABC234"))
+        let invite = restored.nextEntryIntent!
+        restored.finishEntry(invite, epoch: restored.featureSessionEpoch)
+        XCTAssertEqual(restored.nextEntryIntent?.destination, .coach)
+        // Dismissal of a retired sheet cannot remove the next destination.
+        restored.finishEntry(invite, epoch: restored.featureSessionEpoch)
+        XCTAssertEqual(restored.nextEntryIntent?.destination, .coach)
+    }
+
+    func testOnboardingLateSuccessAfterSkipCannotAdvanceAnotherStep() {
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults())
+        auth.onboardingComplete = false
+        let flow = OnboardingFlow(auth: auth)
+        flow.advance(from: flow.checkpoint)
+        let groupRequest = flow.checkpoint
+        flow.advance(from: groupRequest) // Skip while joining.
+        flow.advance(from: groupRequest) // Delayed join success.
+        XCTAssertEqual(flow.step, .intervals)
+        let intervalsRequest = flow.checkpoint
+        flow.advance(from: intervalsRequest) // Skip while connecting.
+        flow.advance(from: intervalsRequest) // Delayed OAuth/manual success.
+        XCTAssertEqual(flow.step, .coach)
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        flow.finish(from: flow.checkpoint, destination: .workouts)
+        XCTAssertEqual(auth.nextEntryIntent?.destination, .workouts)
+    }
+
+    func testOldOnboardingAndEntryCallbacksCannotCrossSameUserReauthentication() async {
+        let defaults = defaults()
+        let api = AuthAPIStub()
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-a"),
+            user: UserDTO(id: "user-a", display_name: nil, email: nil)))
+        let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(), defaults: defaults)
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        let flow = OnboardingFlow(auth: auth)
+        flow.advance(from: flow.checkpoint)
+        flow.advance(from: flow.checkpoint)
+        flow.advance(from: flow.checkpoint)
+        let oldStep = flow.checkpoint
+        auth.requestEntry(.coach)
+        let intent = auth.pendingEntryIntents[0], epoch = auth.featureSessionEpoch
+        auth.requireReauthentication()
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        flow.finish(from: oldStep, destination: .workouts)
+        auth.finishEntry(intent, epoch: epoch)
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertEqual(auth.pendingEntryIntents.map(\.destination), [.coach])
+    }
+
+    func testAccountChangeCannotInheritOnboardingOrBoundIntent() async {
+        let defaults = defaults()
+        defaults.set("user-a", forKey: AuthModel.userIDKey)
+        defaults.set(true, forKey: AuthModel.onboardedKey)
+        let api = AuthAPIStub()
+        let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        XCTAssertTrue(auth.onboardingComplete)
+        auth.requestEntry(.coach)
+        auth.requireReauthentication()
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-b"),
+            user: UserDTO(id: "user-b", display_name: nil, email: nil)))
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        XCTAssertFalse(auth.onboardingComplete)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        XCTAssertTrue(defaults.bool(forKey: AccountLocalState.onboardedKey(userID: "user-a")))
+        auth.requestEntry(.workouts)
+        auth.signOut()
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+        XCTAssertNil(defaults.data(forKey: AuthModel.pendingEntryKey))
+    }
+
+    func testDelayedSignInDoesNotRestoreAccountOrIntentAfterSignOut() async {
+        let started = AsyncLatch(), release = AsyncLatch()
+        let api = AuthAPIStub()
+        let response = AuthResponse(jwt: sessionToken(for: "user-a"), user: UserDTO(id: "user-a", display_name: nil, email: nil))
+        api.authHandler = { await started.open(); await release.wait(); return response }
+        let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(), defaults: defaults())
+        auth.requestEntry(.coach)
+        let task = Task { await auth.exchange(identityToken: "synthetic", fullName: nil) }
+        await started.wait()
+        auth.signOut()
+        await release.open()
+        await task.value
+        XCTAssertEqual(auth.phase, .signedOut)
+        XCTAssertNil(auth.jwt)
+        XCTAssertNil(auth.userID)
+        XCTAssertTrue(auth.pendingEntryIntents.isEmpty)
+    }
+}
+
+
+extension AuthModelTests {
+    func testInterruptedOnboardingRelaunchRetainsUnfinishedAccountSetup() async {
+        let defaults = defaults(), api = AuthAPIStub(), tokens = MemoryTokenStore()
+        api.authResult = .success(AuthResponse(jwt: sessionToken(for: "user-a"),
+            user: UserDTO(id: "user-a", display_name: nil, email: nil)))
+        let auth = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+        auth.requestEntry(.coach)
+        await auth.exchange(identityToken: "synthetic", fullName: nil)
+        let restored = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+        XCTAssertEqual(restored.phase, .signedIn)
+        XCTAssertFalse(restored.onboardingComplete)
+        XCTAssertNil(restored.nextEntryIntent)
+        XCTAssertEqual(restored.pendingEntryIntents.map(\.destination), [.coach])
+        restored.completeOnboarding()
+        let finished = AuthModel(api: api, tokenStore: tokens, defaults: defaults)
+        XCTAssertTrue(finished.onboardingComplete)
+        XCTAssertEqual(finished.nextEntryIntent?.destination, .coach)
     }
 }

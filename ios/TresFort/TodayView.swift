@@ -288,7 +288,7 @@ struct TodayView: View {
                             Label(sync.plan == nil ? "Create workout" : "Workouts",
                                   systemImage: "calendar.badge.clock")
                         }
-                        .disabled(sync.plan == nil && (sync.isLoading || sync.loadError != nil))
+                        .disabled(sync.plan == nil && !sync.canCreateRoutine)
                         if sync.plan != nil {
                             Button("Workout history") { showPlanHistory = true }
                         }
@@ -380,29 +380,16 @@ struct TodayView: View {
     }
 
     @ViewBuilder private var content: some View {
-        if sync.isLoading && sync.plan == nil {
-            ProgressView().tint(Theme.accent)
-        } else if sync.finished {
+        if sync.finished {
             FinishedView(sync: sync)
         } else if sync.running {
             RunnerView(sync: sync, auth: auth)
-        } else if sync.plan == nil, let error = sync.loadError {
-            VStack(spacing: 14) {
-                Text("COULDN’T LOAD YOUR PLAN")
-                    .font(Theme.display(28)).foregroundStyle(Theme.text)
-                Text(error)
-                    .font(.callout).foregroundStyle(Theme.text)
-                    .accessibilityIdentifier("today.load-error")
-                    .multilineTextAlignment(.center)
-                Button { Task { await sync.load() } } label: {
-                    Text("Try again").frame(minWidth: 44, minHeight: 44).contentShape(Rectangle())
-                }
-            }
-            .padding(24)
+        } else if sync.plan == nil && !sync.canCreateRoutine {
+            PlanLoadRecoveryView(sync: sync)
         } else if sync.plan == nil {
             VStack(spacing: 14) {
                 Text("NO PLAN YET").font(Theme.display(28)).foregroundStyle(Theme.text)
-                Text("Build and schedule your first workout here, or ask your coach.")
+                Text("Build and schedule your first workout here, or connect your own Claude to help with your plan. You can use both paths anytime.")
                     .font(.callout).foregroundStyle(Theme.text)
                     .accessibilityIdentifier("today.empty-guidance")
                     .multilineTextAlignment(.center)
@@ -417,6 +404,8 @@ struct TodayView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
                 .padding(.top, 6)
+                Button("Set up my coach") { auth.requestEntry(.coach) }
+                    .frame(minWidth: 44, minHeight: 44)
             }
             .padding(24)
         } else if sync.todayIsCompleted {

@@ -12500,3 +12500,55 @@ extension SetOutboxTests {
         XCTAssertFalse(model.running)
     }
 }
+
+
+extension SetOutboxTests {
+    func testMemberActivationRequiresLiveEmptyStateAndRecoversAfterReadFailure() async {
+        for error in [URLError(.notConnectedToInternet) as Error, APIError.http(500, "synthetic")] {
+            let defaults = defaults()
+            let api = SetWriteAPIStub()
+            api.stateHandler = { _ in throw error }
+            let auth = retainedAuth(defaults: defaults)
+            let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults)
+            XCTAssertFalse(model.hasVerifiedPlanState)
+            XCTAssertFalse(model.canCreateRoutine)
+            await model.load()
+            XCTAssertFalse(model.canCreateRoutine)
+            XCTAssertNotNil(model.loadError)
+            let empty = StateResponse(plan: nil, plan_version: 0, sessions: [], sets: [],
+                external_events: [], external_activities: [], activities: [], server_time: 10)
+            api.stateHandler = { _ in empty }
+            await model.load()
+            XCTAssertTrue(model.hasVerifiedPlanState)
+            XCTAssertTrue(model.canCreateRoutine)
+            // A later failed refresh must not keep offering empty-account setup.
+            api.stateHandler = { _ in throw error }
+            await model.load()
+            XCTAssertFalse(model.canCreateRoutine)
+        }
+    }
+
+    func testMemberActivationCachedEmptyIsNotProofOfAnEmptyAccount() async {
+        let defaults = defaults()
+        let empty = StateResponse(plan: nil, plan_version: 0, sessions: [], sets: [],
+            external_events: [], external_activities: [], activities: [], server_time: 10)
+        StateSnapshotStore.save(empty, userID: "user-a", defaults: defaults)
+        let auth = retainedAuth(defaults: defaults)
+        let api = SetWriteAPIStub()
+        api.stateHandler = { _ in throw URLError(.notConnectedToInternet) }
+        let model = SyncModel(auth: auth, setWriteAPI: api, defaults: defaults)
+        XCTAssertTrue(model.isUsingCachedState)
+        XCTAssertFalse(model.canCreateRoutine)
+        await model.load()
+        XCTAssertFalse(model.hasVerifiedPlanState)
+        XCTAssertFalse(model.canCreateRoutine)
+        // Recovery finds a plan created on another client, preserving its identity.
+        let existing = state(session: session(), sets: [], exercise: exercise())
+        api.stateHandler = { _ in existing }
+        await model.load()
+        XCTAssertEqual(model.plan?.id, existing.plan?.id)
+        XCTAssertFalse(model.canCreateRoutine)
+        auth.signOut()
+        XCTAssertFalse(model.canCreateRoutine)
+    }
+}

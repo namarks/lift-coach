@@ -29,6 +29,10 @@ enum AccountLocalState {
         "com.nmarkspdx.liftcoach.apple-credential-user.v1.\(userID)"
     }
 
+    static func onboardedKey(userID: String) -> String {
+        "com.nmarkspdx.liftcoach.onboarded.v2.\(userID)"
+    }
+
     static func accountDeletionKey(userID: String) -> String {
         "com.nmarkspdx.liftcoach.account-deletion-key.v1.\(userID)"
     }
@@ -89,6 +93,7 @@ enum AccountLocalState {
         defaults.removeObject(forKey: healthAnchorKey(userID: userID))
         defaults.removeObject(forKey: appleCredentialUserKey(userID: userID))
         defaults.removeObject(forKey: accountDeletionKey(userID: userID))
+        defaults.removeObject(forKey: onboardedKey(userID: userID))
 
         // Defensive upgrade cleanup: if this account never mounted the feature
         // models after updating, the process-global v1 values may not have been

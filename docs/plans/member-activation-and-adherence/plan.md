@@ -1,6 +1,6 @@
 # Member Activation and Adherence
 
-Slug: member-activation-and-adherence · Status: planned · Updated: 2026-09-07 · Theme: gym-floor
+Slug: member-activation-and-adherence · Status: paused · Updated: 2026-09-09 · Theme: gym-floor
 
 ## Goal
 
@@ -12,7 +12,7 @@ correct workout.
 
 ## Phases
 
-- [ ] **P0 — Reach the first workout**
+- [x] **P0 — Reach the first workout**
   - Preserve invite and Coach Connect intent through sign-in, then return the
     member to the intended group or setup action instead of a generic home
     screen.
@@ -54,15 +54,46 @@ correct workout.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P0 | coordinates_with | plan:coaching-feedback-loop#P1 | Start onboarding/authentication independently; integrate after PR #164 lands and rerun affected tests and exact-head review for shared SyncModel, Today and fixtures. |
 | P2(a) | gated_by | external:starter-plan-policy | Implementing or explicitly declining the starter path requires the product decision; evidence and recommendation do not. |
 
 ## Next step
 
-**Now (@owner):** Activate P0 when the member entry path should enter the
-backlog. P2 evidence and recommendation remain ungated; only P2(a) waits on the
-starter-plan product decision.
+**Now (@owner):** P0 is complete for repository delivery. Leave P1 and P2
+inactive until explicitly activated. Production and distribution retain their
+separate authority boundaries.
 
 ## Notes / open questions
+
+- P0 was activated from verified main `4ec8a9e`; reconciliation preserved the
+  shipped manual builder and returned-error recovery. This change closes the
+  remaining entry-intent, capability-copy, initial-read and delayed-callback gaps.
+- Pending invite, coach and manual setup destinations persist through failed
+  sign-in/relaunch, bind to the authenticated account and are consumed once at
+  sheet dismissal. Onboarding completion is account-scoped; unfinished setup
+  survives relaunch. Step/feature-session checkpoints reject late completions
+  after Skip, reauthentication or account changes.
+- Today and direct manual setup require an accepted live read before offering
+  empty-account creation. Cold offline/500 and cached-empty states offer retry;
+  an existing cached plan remains available under the existing freshness rules.
+- Coaching Feedback Loop P1 is integrated from main `4828842` (PR #164), whose
+  reviewed tree and main CI were verified. Its recent-change card, permanent
+  history entry, account-bound dismissal and private feedback remain intact.
+- Verification: 431 iOS unit tests; nine existing manual/onboarding,
+  coaching-feedback and plan-change journeys; and all eight new
+  `MemberActivationJourneyTests` journeys passed locally (including a focused
+  rerun after correcting the combined handoff test's heading selector).
+  New journeys cover owner, invited, independent/manual-only and connected-coach
+  entry through first completion, sign-in/invite-preview retry, cold offline/500,
+  cached empty/existing state, and sequential invite/coach handoff. Model tests
+  cover interrupted onboarding relaunch and late completions after Skip/account
+  boundaries. All 17 verification-command/scope tests and the plan graph passed.
+  The activation journeys are included in standard CI smoke coverage; exact-head
+  independent review and terminal-green CI are required before this change merges.
+- Repository delivery is the P0 boundary. Production deployment/migrations,
+  TestFlight distribution and actual member messages remain separately
+  authorized. Existing physical-device coaching feedback checks remain release
+  follow-up; no new pre-merge device gate is introduced here.
 
 - The [September app review](../../reviews/2026-09-app-review/report.md)
   revalidated the working manual entry path. P0 closes remaining intent,

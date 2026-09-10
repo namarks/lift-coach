@@ -17,20 +17,13 @@ struct MainTabView: View {
 
     enum Tab { case today, history, group, profile }
 
-    /// Wraps the pending invite code as Identifiable so `.sheet(item:)` can
-    /// drive the join-confirm sheet off AuthModel's optional code.
-    private struct PendingInvite: Identifiable {
-        let code: String
-        var id: String { code }
-    }
-
-    init(auth: AuthModel) {
+    init(auth: AuthModel, defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init) {
         self.auth = auth
         let sync = SyncModel(
-            auth: auth,
+            auth: auth, defaults: defaults, now: now,
             automaticWorkoutWriteRetryEnabled: true)
-        let groupModel = GroupModel(auth: auth)
-        let health = HealthKitSyncModel(auth: auth)
+        let groupModel = GroupModel(auth: auth, defaults: defaults)
+        let health = HealthKitSyncModel(auth: auth, defaults: defaults)
         let setConnectivity = SetConnectivityMonitor()
         // Bridge activity writes through AuthModel's account-scoped generation,
         // rather than directly to this SyncModel. An older GroupModel can finish
@@ -131,19 +124,8 @@ struct MainTabView: View {
                 await groupModel.logActivity(pending)
             }
         }
-        // A group invite opened via Universal Link (AuthModel stashed the
-        // code). Present the confirm sheet HERE — the one place a retained
-        // GroupModel and the signed-in surface coexist — and on success jump
-        // to the Group tab so the freshly-joined group is right there. A code
-        // that arrived during sign-in/onboarding simply waits until this view
-        // appears, then presents. Dismiss clears the code (the Binding setter).
-        .sheet(item: Binding(
-            get: { auth.pendingInviteCode.map(PendingInvite.init) },
-            set: { auth.pendingInviteCode = $0?.code }
-        )) { invite in
-            JoinInviteConfirmSheet(groupModel: groupModel, code: invite.code) {
-                selectedTab = .group
-            }
-        }
+        .modifier(MemberEntryPresentation(auth: auth, sync: sync, groupModel: groupModel,
+                                          onJoined: { selectedTab = .group },
+                                          onCoach: { selectedTab = .profile }))
     }
 }

@@ -72,15 +72,60 @@ final class AuthModel: ObservableObject {
     /// main app. `false` ⇒ a brand-new sign-in that hasn't been guided
     /// through setup yet. Persisted so it survives relaunch and never
     /// re-fires once completed. See the grandfathering logic in `init`.
-    @Published var onboardingComplete: Bool
+    @Published var onboardingComplete = false
 
-    /// A group invite code captured from a Universal Link
-    /// (https://…/join/<code>) that hasn't been acted on yet. MainTabView
-    /// observes this and presents the join-confirm sheet once the signed-in
-    /// surface is on screen — so a link tapped while signed out or mid-
-    /// onboarding is honored right after the user finishes signing in. Set by
-    /// `handleDeepLink`, cleared when the sheet is dismissed.
-    @Published var pendingInviteCode: String?
+    @Published private(set) var pendingEntryIntents: [MemberEntryIntent] = []
+    static let pendingEntryKey = "com.nmarkspdx.liftcoach.pending-entry.v1"
+    private var signInRequestID = UUID()
+
+    var pendingInviteCode: String? {
+        pendingEntryIntents.compactMap {
+            if case let .invite(code) = $0.destination { return code }
+            return nil
+        }.first
+    }
+
+    var nextEntryIntent: MemberEntryIntent? {
+        guard featureJWT != nil, onboardingComplete else { return nil }
+        return pendingEntryIntents.first { $0.accountID == userID }
+    }
+
+    func isCurrentFeatureSession(accountID: String?, epoch: UInt64) -> Bool {
+        accountID != nil && userID == accountID && featureJWT != nil && featureSessionEpoch == epoch
+    }
+
+    func requestEntry(_ destination: MemberEntryIntent.Destination) {
+        // Repeated Universal Link delivery does not duplicate a sheet.
+        guard !pendingEntryIntents.contains(where: {
+            $0.destination == destination && $0.accountID == userID
+        }) else { return }
+        pendingEntryIntents.append(MemberEntryIntent(id: UUID(), destination: destination, accountID: userID))
+        persistEntryIntents()
+    }
+
+    func finishEntry(_ intent: MemberEntryIntent, epoch: UInt64) {
+        guard isCurrentFeatureSession(accountID: intent.accountID, epoch: epoch) else { return }
+        pendingEntryIntents.removeAll { $0.id == intent.id }
+        persistEntryIntents()
+    }
+
+    private func persistEntryIntents() {
+        if pendingEntryIntents.isEmpty { defaults.removeObject(forKey: Self.pendingEntryKey) }
+        else if let data = try? JSONEncoder().encode(pendingEntryIntents) {
+            defaults.set(data, forKey: Self.pendingEntryKey)
+        }
+    }
+
+    private func bindEntryIntents(to accountID: String) {
+        pendingEntryIntents = pendingEntryIntents.filter {
+            $0.accountID == nil || $0.accountID == accountID
+        }.map { intent in
+            var bound = intent
+            bound.accountID = accountID
+            return bound
+        }
+        persistEntryIntents()
+    }
 
     private let api: any AuthAPI
     private let tokenStore: any AppTokenStore
@@ -133,6 +178,10 @@ final class AuthModel: ObservableObject {
         self.appleCredentialChecker = appleCredentialChecker
         self.defaults = defaults
         self.now = now
+        if let data = defaults.data(forKey: Self.pendingEntryKey),
+           let intents = try? JSONDecoder().decode([MemberEntryIntent].self, from: data) {
+            pendingEntryIntents = intents
+        }
         postDeletionAppleRevocationRequired = defaults.bool(
             forKey: Self.postDeletionAppleRevocationKey)
         let token = tokenStore.load()
@@ -173,17 +222,20 @@ final class AuthModel: ObservableObject {
             reauthenticationReason =
                 "Your saved session needs to be renewed. Sign in with Apple again to reconnect this account."
         }
-        // First launch of a build that has onboarding: if the user is
-        // ALREADY signed in (an existing install updating in place), treat
-        // them as onboarded so the app update never drops a returning user
-        // back into the intro. Fresh installs (no keychain token) default to
-        // NOT onboarded → they get the guided setup right after their first
-        // sign-in. Sign-out does NOT reset this, so a
-        // returning user re-signing in skips onboarding.
-        if defaults.object(forKey: Self.onboardedKey) == nil {
-            defaults.set(token != nil, forKey: Self.onboardedKey)
+        // Migrate the prior install flag only to its known account. A newly
+        // signed-in independent member must not inherit another member's setup.
+        if let accountID = userID {
+            let key = AccountLocalState.onboardedKey(userID: accountID)
+            if defaults.object(forKey: key) == nil {
+                defaults.set(defaults.object(forKey: Self.onboardedKey) as? Bool ?? (jwt != nil), forKey: key)
+            }
+            onboardingComplete = defaults.bool(forKey: key)
+            defaults.removeObject(forKey: Self.onboardedKey)
+        } else {
+            onboardingComplete = false
+            defaults.removeObject(forKey: Self.onboardedKey)
         }
-        onboardingComplete = defaults.bool(forKey: Self.onboardedKey)
+        if let accountID = userID, jwt != nil { bindEntryIntents(to: accountID) }
         if let accountID = userID {
             appleCredentialUserID = defaults.string(
                 forKey: AccountLocalState.appleCredentialUserKey(
@@ -197,7 +249,8 @@ final class AuthModel: ObservableObject {
     /// Mark first-run setup done (finished or skipped through). Persists so
     /// `OnboardingView` never shows again on this device.
     func completeOnboarding() {
-        defaults.set(true, forKey: Self.onboardedKey)
+        guard let accountID = userID, featureJWT != nil else { return }
+        defaults.set(true, forKey: AccountLocalState.onboardedKey(userID: accountID))
         onboardingComplete = true
     }
 
@@ -260,12 +313,16 @@ final class AuthModel: ObservableObject {
         appleUserID: String? = nil,
         authorizationCode: String? = nil
     ) async {
+        let requestID = UUID()
+        signInRequestID = requestID
+        let epoch = featureSessionEpoch
         phase = .working("Signing in…")
         do {
             let res = try await api.authApple(
                 identityToken: identityToken,
                 authorizationCode: authorizationCode,
                 fullName: fullName)
+            guard signInRequestID == requestID, featureSessionEpoch == epoch else { return }
             guard Self.subject(of: res.jwt) == res.user.id else {
                 // This is an authentication-integrity failure, not malformed
                 // response JSON. Keep the user-facing state specific instead
@@ -295,8 +352,15 @@ final class AuthModel: ObservableObject {
                         userID: res.user.id))
             }
             reauthenticationReason = nil
+            let onboardingKey = AccountLocalState.onboardedKey(userID: res.user.id)
+            if defaults.object(forKey: onboardingKey) == nil {
+                defaults.set(false, forKey: onboardingKey)
+            }
+            onboardingComplete = defaults.bool(forKey: onboardingKey)
+            bindEntryIntents(to: res.user.id)
             phase = .signedIn
         } catch {
+            guard signInRequestID == requestID, featureSessionEpoch == epoch else { return }
             phase = .error(error.localizedDescription)
         }
     }
@@ -418,6 +482,9 @@ final class AuthModel: ObservableObject {
         featureSessionEpoch &+= 1
         tokenStore.clear()
         defaults.removeObject(forKey: Self.userIDKey)
+        pendingEntryIntents = []
+        persistEntryIntents()
+        onboardingComplete = false
         jwt = nil
         userID = nil
         appleCredentialUserID = nil
@@ -513,6 +580,8 @@ final class AuthModel: ObservableObject {
         tokenStore.clear()
         defaults.removeObject(forKey: Self.userIDKey)
         defaults.removeObject(forKey: Self.onboardedKey)
+        pendingEntryIntents = []
+        persistEntryIntents()
         jwt = nil
         userID = nil
         appleCredentialUserID = nil
@@ -553,15 +622,11 @@ final class AuthModel: ObservableObject {
 
     // MARK: - Universal Link invites
 
-    /// Handle an inbound Universal Link. If it carries a well-formed group
-    /// invite code, stash it in `pendingInviteCode` for the signed-in surface
-    /// to present. Anything else (including the intervals.icu OAuth callback,
-    /// which never reaches here — `ASWebAuthenticationSession` consumes it) is
-    /// ignored. Deliberately does NOT clear on a different sign-in: whoever
-    /// signs in after tapping the link is the one who gets to join.
+    /// Preserve validated invite navigation across interrupted sign-in and
+    /// onboarding. Signed-in intents remain bound to that account.
     func handleDeepLink(_ url: URL) {
         guard let code = Self.inviteCode(from: url) else { return }
-        pendingInviteCode = code
+        requestEntry(.invite(code))
     }
 
     /// Pure parser (no side effects, so the rule is obvious and testable):

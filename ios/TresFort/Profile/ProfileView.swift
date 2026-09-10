@@ -241,18 +241,7 @@ struct ProfileView: View {
                     showCoachDisconnectConfirmation = true
                 }
                 .disabled(isDisconnectingCoach)
-            } else if groupModel.me?.claude.is_owner == true {
-                HStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.circle").foregroundStyle(.secondary)
-                    Text("Not connected").font(.headline)
-                }
-                Text("Connect Claude to coach you: in the Claude app → Settings → Connectors, add “Très Fort”. Then you can ask Claude about your data and have it set up workouts.")
-                    .font(.footnote).foregroundStyle(.secondary)
             } else {
-                // Non-owner (e.g. an invited family member): they connect
-                // their OWN Claude via a personal MCP connect code (M3).
-                // Link to the streamlined setup flow instead of the old
-                // "managed by the owner" dead-end.
                 NavigationLink {
                     CoachConnectView(groupModel: groupModel)
                 } label: {
@@ -260,7 +249,7 @@ struct ProfileView: View {
                         Image(systemName: "brain.head.profile").foregroundStyle(Theme.accent)
                         VStack(alignment: .leading, spacing: 2) {
                             Text("Set up your Claude coach").font(.headline)
-                            Text("Connect your own Claude to get coached.")
+                            Text("Your coach works with your own training plan, whether you train independently or in a group.")
                                 .font(.footnote).foregroundStyle(.secondary)
                         }
                     }

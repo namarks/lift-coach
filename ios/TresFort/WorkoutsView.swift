@@ -89,7 +89,9 @@ struct WorkoutsView: View {
     var body: some View {
         NavigationStack {
             Group {
-                if sync.plan == nil {
+                if sync.plan == nil && !sync.canCreateRoutine {
+                    PlanLoadRecoveryView(sync: sync)
+                } else if sync.plan == nil {
                     createRoutineForm
                 } else {
                     routineList
@@ -186,7 +188,7 @@ struct WorkoutsView: View {
                     }
                 }
                 .disabled(
-                    creatingRoutine
+                    creatingRoutine || !sync.canCreateRoutine
                         || planName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                         || firstDayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }

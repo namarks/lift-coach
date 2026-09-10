@@ -1,8 +1,8 @@
 import SwiftUI
 import UIKit
 
-/// Streamlined "connect your own Claude coach" flow for a non-owner member
-/// (e.g. a family member you invited). It generates an MCP *connect code* —
+/// Personal Coach Connect for every member, including the owner and members
+/// training independently. It generates an MCP *connect code* —
 /// a server-stored passphrase the APP makes for the user, so they never have
 /// to invent or remember one — and walks them through pasting it into Claude's
 /// custom-connector setup. That code binds their Claude OAuth session to THIS
@@ -23,6 +23,13 @@ struct CoachConnectView: View {
 
     var body: some View {
         Form {
+            if groupModel.me?.claude.connected == true {
+                Section {
+                    Label("Your coach is connected", systemImage: "checkmark.circle.fill")
+                    Text("Ask your coach to build or review your plan, then return to Today and refresh. You can also edit your workouts here anytime.")
+                        .font(.footnote).foregroundStyle(.secondary)
+                }
+            }
             Section {
                 Text("Très Fort coaches you through Claude. Link your own Claude account once, then just chat with it — ask for a plan, log changes, review your progress. Your workouts show up here in the app.")
                     .font(.footnote).foregroundStyle(.secondary)
@@ -50,7 +57,7 @@ struct CoachConnectView: View {
 
             if code != nil {
                 Section("Step 2 · Add Très Fort in Claude") {
-                    instruction(1, "Open claude.ai and sign in. (Connectors need a paid Claude plan — Claude Pro.)")
+                    instruction(1, "Open claude.ai and sign in to an account that supports custom connectors.")
                     Link(destination: URL(string: "https://claude.ai")!) {
                         Label("Open claude.ai", systemImage: "arrow.up.right.square")
                             .font(.footnote.weight(.semibold))
@@ -75,6 +82,7 @@ struct CoachConnectView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbarColorScheme(.dark, for: .navigationBar)
         .preferredColorScheme(.dark)
+        .task { await groupModel.refreshMe() }
     }
 
     @MainActor
