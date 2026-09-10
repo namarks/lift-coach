@@ -1,4 +1,5 @@
 import { shareWorkoutSchemaCache, workoutDB } from './workoutSchema';
+import { validActivitySourceTime } from './activityTime';
 // Service layer: all D1 access goes through here so REST (now) and MCP
 // (milestone b) share identical behavior. Timestamps are epoch-ms integers.
 import { parseRunnerTargets, summarizeWorkout, type SummaryExercise, type SummarySet, type RunnerTargetSnapshot, type WorkoutSummary } from './workoutSummary';
@@ -4555,8 +4556,7 @@ export async function patchSession(
   // final logSet in the same generation, and SQL COALESCE preserves the
   // concurrently installed started_at. Skip/planned transitions are stricter:
   // once a set promoted the row, they cannot hide or demote the live workout.
-  const updated = await runWorkoutWriteStatement(
-    db,
+  const [updated] = await runWorkoutWriteBatch(db, [
     workoutDB(db).prepare(
       `UPDATE sessions
           SET status = CASE WHEN ?8 = 1 THEN ?2 ELSE status END,
@@ -4630,8 +4630,9 @@ export async function patchSession(
       patch.expected_feedback?.notes ?? null,
       patch.expected_feedback?.perceived_fatigue ?? null,
     ),
-  );
-  if (updated.meta.changes === 0) {
+    reconcileNativeHealthKitStatement(db, userId, ts, true),
+  ]);
+  if (updated!.meta.changes === 0) {
     const current = await workoutDB(db)
       .prepare('SELECT * FROM sessions WHERE id = ?1 AND user_id = ?2')
       .bind(canonicalSessionId, userId)
@@ -4774,7 +4775,7 @@ export async function discardSession(
   // logSet batch therefore linearizes wholly on one side: if it wins first,
   // its new set is included in this tombstone; if discard wins first, its
   // status-guarded insert observes `discarded` and is rejected.
-  const [transition, tombstones, terminalState] = await runWorkoutWriteBatch(db, [
+  const [transition, , tombstones, terminalState] = await runWorkoutWriteBatch(db, [
     workoutDB(db)
       .prepare(
         `UPDATE sessions
@@ -4796,6 +4797,7 @@ export async function discardSession(
         claimAttemptProtocol ? 1 : 0,
         attemptScoped ? 1 : 0,
       ),
+    reconcileNativeHealthKitStatement(db, userId, ts, true),
     workoutDB(db)
       .prepare(
         `UPDATE set_logs
@@ -9797,9 +9799,9 @@ export async function syncExternalActivities(
              (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
               moving_time_sec,elapsed_time_sec,distance_m,average_watts,
               weighted_avg_watts,average_hr,max_hr,training_load,intensity,
-              calories,elevation_gain_m,raw,synced_at,deleted_at)
+              calories,elevation_gain_m,raw,synced_at,deleted_at,start_date_utc_ms)
            SELECT ?1,?2,'intervals',?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,
-                  ?15,?16,?17,?18,?19,?20,NULL
+                  ?15,?16,?17,?18,?19,?20,NULL,?23
             WHERE EXISTS (
                   SELECT 1 FROM users
                    WHERE id = ?2 AND intervals_credential_generation = ?21
@@ -9808,6 +9810,12 @@ export async function syncExternalActivities(
            ON CONFLICT(id) DO UPDATE SET
              date=excluded.date,
              start_date_local_ms=excluded.start_date_local_ms,
+             start_date_utc_ms=CASE
+               WHEN excluded.start_date_utc_ms IS NOT NULL THEN excluded.start_date_utc_ms
+               WHEN external_activities.start_date_local_ms IS excluded.start_date_local_ms
+                 THEN external_activities.start_date_utc_ms
+               ELSE NULL
+             END,
              kind=excluded.kind,
              name=excluded.name,
              moving_time_sec=excluded.moving_time_sec,
@@ -9822,6 +9830,7 @@ export async function syncExternalActivities(
              calories=excluded.calories,
              elevation_gain_m=excluded.elevation_gain_m,
              raw=CASE WHEN
+               (excluded.start_date_utc_ms IS NOT NULL AND external_activities.start_date_utc_ms IS NOT excluded.start_date_utc_ms) OR
                external_activities.date IS NOT excluded.date OR
                external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
                external_activities.kind IS NOT excluded.kind OR
@@ -9850,6 +9859,7 @@ export async function syncExternalActivities(
                  )
              AND (
                external_activities.deleted_at IS NOT NULL OR
+               (excluded.start_date_utc_ms IS NOT NULL AND external_activities.start_date_utc_ms IS NOT excluded.start_date_utc_ms) OR
                external_activities.date IS NOT excluded.date OR
                external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
                external_activities.kind IS NOT excluded.kind OR
@@ -9890,6 +9900,7 @@ export async function syncExternalActivities(
           ts,
           effectiveCredential.generation,
           attempts.activitiesAttempt,
+          a.start_date_utc_ms ?? null,
         ),
     );
   }
@@ -10028,6 +10039,8 @@ export interface HealthKitActivityInput {
   date: string; // device-local YYYY-MM-DD (workout start), verbatim
   // UTC-like encoding of that same local wall clock; its date must agree.
   start_date_local_ms: number | null;
+  start_date_utc_ms?: number | null;
+  source_timezone?: string | null;
   kind: string; // normalized lowercase (run|ride|walk|…)
   name: string | null;
   moving_time_sec: number | null;
@@ -10047,6 +10060,54 @@ export function healthKitDateMatchesStart(date: string, startMs: number | null):
   if (!Number.isSafeInteger(startMs)) return false;
   const parsed = new Date(startMs);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === date;
+}
+
+/** A conservative native match needs one completed workout with both absolute
+ * start and end within two minutes. Missing/ambiguous timing stays unmatched.
+ * The prefix distinguishes a session identity from an external-activity id. */
+function nativeHealthKitWinnerSQL(a: string): string {
+  return `(SELECT 'session:' || MIN(s.id) FROM sessions s
+    WHERE s.user_id = ${a}.user_id AND s.status = 'completed'
+      AND ${a}.kind = 'strength' AND ${a}.elapsed_time_sec > 0
+      AND s.started_at IS NOT NULL AND s.completed_at >= s.started_at
+      AND s.started_at BETWEEN ${a}.start_date_utc_ms - 120000 AND ${a}.start_date_utc_ms + 120000
+      AND ABS(s.completed_at - (${a}.start_date_utc_ms + ${a}.elapsed_time_sec * 1000)) <= 120000
+    HAVING COUNT(*) = 1)`;
+}
+
+/** Runs inside the source/session transaction, so completion/discard and the
+ * external tombstone become visible together. The prior-change guard keeps
+ * rejected session CAS writes side-effect-free. Only native matches or rows
+ * previously retired by this path are managed; Intervals' rule stays intact. */
+function reconcileNativeHealthKitStatement(
+  db: D1Database,
+  userId: string,
+  ts: number,
+  requirePriorChange = false,
+): D1PreparedStatement {
+  const native = nativeHealthKitWinnerSQL('h');
+  return workoutDB(db).prepare(`WITH desired AS MATERIALIZED (
+    SELECT h.id, COALESCE(${native}, (
+      SELECT id FROM (
+        SELECT i.id, i.start_date_local_ms, ABS(i.start_date_local_ms - h.start_date_local_ms) AS delta
+        FROM external_activities i WHERE i.user_id = h.user_id AND i.source = 'intervals'
+          AND i.deleted_at IS NULL AND i.kind = h.kind
+          AND i.start_date_local_ms BETWEEN h.start_date_local_ms - 120000 AND h.start_date_local_ms + 120000
+      ) ORDER BY delta, start_date_local_ms, id LIMIT 1
+    )) AS winner
+    FROM external_activities h WHERE h.user_id = ?1 AND h.source = 'healthkit'
+      AND (h.deleted_at IS NULL OR h.duplicate_of IS NOT NULL)
+      AND (${native} IS NOT NULL OR h.duplicate_of LIKE 'session:%')
+      ${requirePriorChange ? 'AND changes() > 0' : ''}
+  ) UPDATE external_activities SET
+    duplicate_of = (SELECT winner FROM desired WHERE desired.id = external_activities.id),
+    canonical = CASE WHEN (SELECT winner FROM desired WHERE desired.id = external_activities.id) IS NULL THEN 1 ELSE 0 END,
+    deleted_at = CASE WHEN (SELECT winner FROM desired WHERE desired.id = external_activities.id) IS NULL THEN NULL ELSE MAX(synced_at + 1, ?2) END,
+    synced_at = MAX(synced_at + 1, ?2)
+  WHERE id IN (SELECT id FROM desired) AND (
+    duplicate_of IS NOT (SELECT winner FROM desired WHERE desired.id = external_activities.id)
+    OR (deleted_at IS NULL) != ((SELECT winner FROM desired WHERE desired.id = external_activities.id) IS NULL)
+  )`).bind(userId, ts);
 }
 
 /**
@@ -10077,20 +10138,26 @@ export async function upsertHealthKitActivity(
   if (!healthKitDateMatchesStart(input.date, input.start_date_local_ms)) {
     throw new Error('healthkit_date_start_mismatch');
   }
+  if (!validActivitySourceTime(input.start_date_utc_ms, input.source_timezone, input.date, input.start_date_local_ms)) {
+    throw new Error('healthkit_source_time_invalid');
+  }
   const id = `healthkit:activity:${userId}:${input.id}`;
   const ts = now();
-  await workoutDB(db)
+  await workoutDB(db).batch([
+    workoutDB(db)
     .prepare(
       `INSERT INTO external_activities
          (id,user_id,source,external_id,date,start_date_local_ms,kind,name,
           moving_time_sec,elapsed_time_sec,distance_m,average_watts,
           weighted_avg_watts,average_hr,max_hr,training_load,intensity,
-          calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of)
+          calories,elevation_gain_m,raw,synced_at,deleted_at,canonical,duplicate_of,start_date_utc_ms,source_timezone)
        VALUES (?1,?2,'healthkit',?3,?4,?5,?6,?7,?8,?9,?10,?11,NULL,?12,?13,NULL,NULL,
-               ?14,?15,?16,?17,NULL,1,NULL)
+               ?14,?15,?16,?17,NULL,1,NULL,?18,?19)
        ON CONFLICT(id) DO UPDATE SET
-         date=excluded.date,
-         start_date_local_ms=excluded.start_date_local_ms,
+         start_date_utc_ms=COALESCE(external_activities.start_date_utc_ms, excluded.start_date_utc_ms),
+         source_timezone=CASE WHEN external_activities.start_date_utc_ms IS NULL
+           AND external_activities.start_date_local_ms IS excluded.start_date_local_ms
+           THEN excluded.source_timezone ELSE external_activities.source_timezone END,
          kind=excluded.kind,
          name=excluded.name,
          moving_time_sec=excluded.moving_time_sec,
@@ -10109,8 +10176,7 @@ export async function upsertHealthKitActivity(
          deleted_at=NULL,
          canonical=1,
          duplicate_of=NULL
-       WHERE external_activities.date IS NOT excluded.date OR
-         external_activities.start_date_local_ms IS NOT excluded.start_date_local_ms OR
+       WHERE (external_activities.start_date_utc_ms IS NULL AND excluded.start_date_utc_ms IS NOT NULL) OR
          external_activities.kind IS NOT excluded.kind OR
          external_activities.name IS NOT excluded.name OR
          external_activities.moving_time_sec IS NOT excluded.moving_time_sec OR
@@ -10140,9 +10206,12 @@ export async function upsertHealthKitActivity(
       input.elevation_gain_m,
       input.raw,
       ts,
-    )
-    .run();
-  // Cross-source dedup (Codex P2): if this workout also exists from
+      input.start_date_utc_ms ?? null,
+      input.source_timezone ?? null,
+    ),
+    reconcileNativeHealthKitStatement(db, userId, ts),
+  ]);
+  // Existing cross-source dedup: if this workout also exists from
   // intervals.icu, retire the HealthKit copy so it isn't shown/counted twice.
   // Runs AFTER the upsert so a real HealthKit revision resets prior provenance
   // and is immediately re-deduped. An identical retry does not update/reset the
@@ -10180,8 +10249,9 @@ export interface ActivityDedupeWindow {
  * Rule (deterministic, order-independent — so it's correct whichever source
  * lands first): a non-deleted `healthkit` row is a duplicate of a non-deleted
  * `intervals` row when they share the same `kind` and start within
- * ACTIVITY_DEDUP_TOLERANCE_MS. **intervals always wins** (richer data — power,
- * native TSS), so the HealthKit copy is the one retired.
+ * ACTIVITY_DEDUP_TOLERANCE_MS. Intervals wins this pair (richer data — power,
+ * native TSS), so the HealthKit copy is the one retired. A unique native
+ * strength match takes precedence and is excluded at both read and write time.
  *
  * "Retire" = soft-delete the loser (set deleted_at) + record provenance
  * (canonical=0, duplicate_of=<intervals id>). Using deleted_at as the exclusion
@@ -10223,7 +10293,8 @@ export async function dedupeHealthKitAgainstIntervals(
        FROM external_activities
       WHERE user_id = ?1 AND source = 'healthkit'
         AND start_date_local_ms IS NOT NULL
-        AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)${dateClause}`,
+        AND (deleted_at IS NULL OR duplicate_of IS NOT NULL)
+        AND ${nativeHealthKitWinnerSQL('external_activities')} IS NULL${dateClause}`,
   );
   const hk = (
     await (window
@@ -10312,7 +10383,7 @@ export async function dedupeHealthKitAgainstIntervals(
                     END,
                     canonical = 0,
                     duplicate_of = ?3
-              WHERE id = ?1${
+              WHERE id = ?1 AND ${nativeHealthKitWinnerSQL('external_activities')} IS NULL${
                 expectedIntervalsFence === undefined
                   ? ''
                   : ` AND EXISTS (
@@ -10344,7 +10415,7 @@ export async function dedupeHealthKitAgainstIntervals(
                       WHEN ?2 > synced_at THEN ?2 ELSE synced_at + 1
                     END,
                     duplicate_of = ?3
-              WHERE id = ?1${
+              WHERE id = ?1 AND ${nativeHealthKitWinnerSQL('external_activities')} IS NULL${
                 expectedIntervalsFence === undefined
                   ? ''
                   : ` AND EXISTS (
@@ -10377,7 +10448,7 @@ export async function dedupeHealthKitAgainstIntervals(
                     END,
                     canonical = 1,
                     duplicate_of = NULL
-              WHERE id = ?1${
+              WHERE id = ?1 AND ${nativeHealthKitWinnerSQL('external_activities')} IS NULL${
                 expectedIntervalsFence === undefined
                   ? ''
                   : ` AND EXISTS (

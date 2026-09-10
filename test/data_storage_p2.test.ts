@@ -316,7 +316,9 @@ describe('P2 intervals cache write elision', () => {
       today: TODAY,
       fetcher: payload([changedResponse]),
     });
-    expect(changed.usage.rows_written).toBe(5);
+    // One activity mutation also maintains migration 0046's live-match index,
+    // alongside the date/cursor indexes and the two source-freshness writes.
+    expect(changed.usage.rows_written).toBe(6);
     const changedRow = await env.DB.prepare(
       'SELECT average_watts, raw, synced_at FROM external_activities WHERE id = ?1',
     )
@@ -352,7 +354,7 @@ describe('P2 intervals cache write elision', () => {
       today: TODAY,
       fetcher: payload([resurrectionResponse]),
     });
-    expect(resurrected.usage.rows_written).toBe(5);
+    expect(resurrected.usage.rows_written).toBe(6);
     const liveAgain = await env.DB.prepare(
       'SELECT raw, synced_at, deleted_at FROM external_activities WHERE id = ?1',
     )

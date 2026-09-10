@@ -520,6 +520,22 @@ tombstone advances `synced_at`, so incremental clients receive removals.
 HealthKit same-UUID retries follow the same extracted-field rule because they
 share the activity cursor: an unchanged retry preserves any dedup tombstone and
 provenance, while a real revision updates and then runs the existing dedup pass.
+Migration `0046` keeps `start_date_utc_ms` separate from the existing civil-clock
+ordering proxy. HealthKit uses its recorded timezone when available and retains
+the first stored civil date and instant on same-UUID retries, including after
+travel. Without source timezone metadata, the first observed civil day is kept;
+the historical timezone is unknown. Intervals keeps its provider-local date and
+stores an absolute instant only from an explicitly zoned timestamp; a corrected
+local start without a new instant clears the old instant.
+
+A HealthKit strength row is retired in favor of `session:<UUID>` only when one
+completed native session for the same user has recorded absolute start and end
+times both within two minutes. Missing or ambiguous timing stays visible. The
+HealthKit upsert and native completion/discard transactions reconcile that pair
+atomically. Discard restores the observed HealthKit row, or repoints it to an
+existing Intervals winner. The existing Intervals/HealthKit reconciliation keeps
+its source fence and precedence outside native matches. This does not establish
+identity between native and Intervals rows; three-source collapse is unsupported.
 Every real tombstone, resurrection, dedup retirement, repoint, or restoration
 advances the cursor strictly, including when the Worker clock has not advanced.
 Each provider HTTP 200 is parsed atomically before cache mutation: intentionally

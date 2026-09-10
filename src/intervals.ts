@@ -12,6 +12,7 @@
 // the `users` row — see migrations/0016_user_intervals_creds.sql). Env
 // lookup is intentionally OUT of this module — pure I/O on injected creds.
 import type { CompletedActivity, PlannedEvent } from './types';
+import { activityInstant } from './activityTime';
 
 /** Minimal fetch signature we depend on (URL or string + RequestInit). */
 export type Fetcher = (
@@ -411,6 +412,7 @@ export async function fetchCompletedActivities(
       date: startLocal.value.slice(0, 10), // verbatim civil date, no tz math
       // See note on PlannedEvent.start_date_local_ms — same ordering proxy.
       start_date_local_ms: startLocal.ms,
+      start_date_utc_ms: activityInstant(raw.start_date),
       kind: kindOf(raw.type),
       name: str(raw.name),
       moving_time_sec: num(raw.moving_time),

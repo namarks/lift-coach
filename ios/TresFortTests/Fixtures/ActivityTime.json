@@ -1,0 +1,10 @@
+[
+  {"name":"California workout before UTC midnight boundary","utc":"2026-06-19T06:30:00Z","zone":"America/Los_Angeles","local":"2026-06-18T23:30:00Z"},
+  {"name":"Tokyo workout after local midnight","utc":"2026-06-18T23:30:00Z","zone":"Asia/Tokyo","local":"2026-06-19T08:30:00Z"},
+  {"name":"Before spring DST gap","utc":"2026-03-08T09:59:30Z","zone":"America/Los_Angeles","local":"2026-03-08T01:59:30Z"},
+  {"name":"After spring DST gap","utc":"2026-03-08T10:00:30Z","zone":"America/Los_Angeles","local":"2026-03-08T03:00:30Z"},
+  {"name":"First fall 1:30","utc":"2026-11-01T08:30:00Z","zone":"America/Los_Angeles","local":"2026-11-01T01:30:00Z"},
+  {"name":"Second fall 1:30","utc":"2026-11-01T09:30:00Z","zone":"America/Los_Angeles","local":"2026-11-01T01:30:00Z"},
+  {"name":"Foundation negative fixed offset","utc":"2026-06-19T06:30:00Z","zone":"GMT-0700","local":"2026-06-18T23:30:00Z"},
+  {"name":"Foundation positive fixed offset","utc":"2026-06-18T23:30:00Z","zone":"GMT+0900","local":"2026-06-19T08:30:00Z"}
+]

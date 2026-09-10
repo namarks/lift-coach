@@ -1,6 +1,6 @@
 # Activity Integration Integrity
 
-Slug: activity-integration-integrity · Status: planned · Updated: 2026-08-29 · Theme: connected-training
+Slug: activity-integration-integrity · Status: paused · Updated: 2026-09-09 · Theme: connected-training
 
 ## Goal
 
@@ -25,7 +25,7 @@ Done means:
 
 ## Phases
 
-- [ ] **P0 — One canonical activity on the correct local day**
+- [x] **P0 — One canonical activity on the correct local day**
   - Extend the existing source-reconciliation rule just enough to associate a
     HealthKit strength workout with the same user's native completed Tres Fort
     session, keep the native session canonical, and prevent double counting.
@@ -71,11 +71,41 @@ Done means:
 
 ## Next step
 
-**Now (@owner):** None — keep this plan `planned`; when activated, start with P0
-and leave HealthKit write-back gated until the explicit P3 decision.
+**Now (@owner):** P0 is complete for repository delivery, subject to this change's
+exact-head independent review and green CI before merge. Leave P1/P2 inactive
+until selected as the next slice. Rollout remains deferred and HealthKit
+write-back retains its explicit P3 decision.
 
 ## Notes / open questions
 
+- P0 activated (2026-09-09) after the owner chose continued core-product work
+  before rollout. Remote main and fetched source are `ef21188a39d59627c9610fd33ba09d41d03e9ad4`;
+  its CI is green. Work uses the isolated `codex/activity-integration-p0` branch.
+  No deployment, production migration, provider write, TestFlight distribution
+  or new HealthKit permission is authorized by this repository slice.
+- P0 stores the true source instant separately from the existing civil-clock
+  ordering proxy (additive migration `0046`). HealthKit prefers recorded timezone
+  metadata and freezes the first stored civil date/instant for a sample UUID.
+  Missing historical timezone metadata remains unknown; its first observed
+  civil day cannot be certified as the original travel timezone. Intervals keeps
+  its source-local date and retains only explicitly zoned absolute timestamps.
+- Matching requires exactly one same-user completed native session with recorded
+  start and end both within two minutes of the HealthKit strength workout.
+  Missing or ambiguous timing stays visible. Source upsert, native completion
+  and discard reconcile the pair atomically; tombstones/restorations advance the
+  existing state cursor. A discarded native session restores HealthKit or
+  repoints it to an existing Intervals winner. Native-to-Intervals identity and
+  three-source collapse are not established by P0.
+- Verification covers both arrival orders, unchanged retries, discard recovery,
+  ambiguity, user isolation, rollback on reconciliation failure, existing
+  Intervals precedence/source fences, and state/calendar/history/group parity.
+  Shared Swift/Worker fixtures cover UTC boundaries, travel and both DST
+  transitions. Full local and CI evidence is recorded with the implementation PR.
+- Later authorized rollout must apply additive migration `0046` before deploying
+  this Worker, then distribute the compatible iOS client. Old pushes without
+  source timing remain valid and unmatched to native sessions. Physical-device
+  HealthKit validation remains a release check; this slice performs no provider
+  writes, permission changes or HealthKit write-back.
 - Use the current `external_activities` model, source-scoped reconciliation,
   tombstones, and incremental state cursor. Add a new abstraction only if a
   focused fixture proves those mechanisms cannot express the required result.
