@@ -21,8 +21,11 @@ editable feedback. All five images must be opaque RGB PNGs at 1320 × 2868 pixel
 an accepted portrait size for Apple's 6.9-inch iPhone screenshot class. The
 manifest records image hashes, source commit/tree, checkout changes, locale,
 device/runtime and capture time; `sources.json` hashes every tested iOS input,
-and `capture-tests.log` retains the successful UI-test evidence. Source changes
-during capture cause the command to fail rather than misidentify the images.
+and `capture-tests.log` retains the successful UI-test evidence. Build and capture share the same source selection. Added, removed or modified
+iOS inputs, or a changed checkout identity, fail capture. Source symbolic links
+are rejected. PNG validation checks the required header/end structure, chunk
+checksums, compressed pixel stream, row filters and absence of transparency;
+these checks remain active under optimized Python.
 
 The `app-store` launch fixture is compiled only for Debug simulator builds.
 Its ephemeral URL session intercepts requests, its token store does not read

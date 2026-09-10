@@ -65,11 +65,10 @@ public release require separate authorization and are outside this goal.
 
 ## Next step
 
-**Now (@agent):** Complete verification, independent review and merge of the
-protected-storage integration on the merged backend error-privacy fix. Preserve
-account/revision fencing and demonstrate failure recovery before claiming
-privacy readiness. Continue review-package preparation; await the owner's
-decisions on the [group-safety proposal](group-safety-proposal.md) and
+**Now (@agent):** Finish independent review, CI and merge of the screenshot
+workflow on the delivered protected-storage changes. Continue review-package
+preparation; await the owner's decisions on the
+[group-safety proposal](group-safety-proposal.md) and
 [diagnostics policy](diagnostics-policy-proposal.md) before changing those policies.
 Preserve external release and publication gates.
 
@@ -103,68 +102,26 @@ Preserve external release and publication gates.
   and daily inbox / 24-hour response commitment await owner approval. Persisted
   HealthKit records now use the candidate's protected, backup-excluded
   app-owned storage; verification and release gates remain in P1/P3.
-- P1 integration: `LocalPersistence` routes app-owned data blobs through
-  `ProtectedTrainingStore`, including inactive-account migration, snapshots,
-  every training outbox, runner recovery, HealthKit anchors and account cleanup.
-  Failed saves stop new requests, corrupt durable queues are preserved, and
-  cleanup failures retain the deletion receipt for retry. Full local verification
-  executed 468 unit tests with zero failures and one explicit simulator
-  protection skip, plus 14 passing onboarding/workout/feedback UI journeys.
-  The final account-isolation and foreground-recovery follow-up passed 71 focused
-  unit tests and the manual onboarding journey. Independent review identified
-  two navigation-persistence gaps; the follow-up preserves unreadable intents,
-  requires durable saves before navigation changes and reloads account binding
-  after recovery. Its 77 focused unit tests and eight onboarding/invite UI
-  journeys passed, with all 268 iOS source-manifest entries matching the tested
-  files. Further review fixes scope deletion cleanup to its own account, remove
-  the legacy identity marker only after cleanup succeeds, and stop stale-workout
-  fallback requests when the replacement queue cannot be saved. The follow-up
-  ran all 478 unit tests (one simulator protection skip, zero failures) and the
-  workout-completion UI journey; all 268 source-manifest entries matched.
-  Fresh independent review and remote CI must finish before repository delivery
-  is complete. The preceding CI run connected Intervals successfully but left
-  History empty. Investigation reproduced eager construction of unused tab
-  models invalidating a shared snapshot request. The tab now owns one lazily
-  installed model container. The regression failed before the fix; afterward,
-  72 focused unit tests and all 12 connection/onboarding/workout UI journeys
-  passed, with all 268 source-manifest entries matching the final iOS files.
-  A further review found corrupt presentation metadata could gate all feature
-  requests. The follow-up classifies dismissal markers and Intervals connection
-  mirrors as replaceable, retries failed cleanup after storage recovers, and
-  preserves corrupt workout queues, checkpoints, navigation and Health anchors.
-  All 83 focused unit tests and five affected connection/plan-history UI journeys
-  passed, with all 268 source-manifest entries matching. Fresh exact-head review
-  and CI remain required. The runner save-failure follow-up immediately restores
-  the last durable selection, skips and inputs rather than losing visible changes
-  during storage retry. A regression reproduced the prior behavior; all 328
-  affected unit tests and the workout-completion UI journey passed after the fix.
-  The storage branch was refreshed onto the reviewed backend merge below.
-  The next remote run failed at invite preview retry. Its hierarchy exposed a
-  20.3-point button inside a 44-point container; a local regression reproduced
-  the undersized target. The button label now owns the full touch area. All
-  eight onboarding journeys passed, including retry from the expanded area,
-  group joining and workout completion; all 268 tested iOS source hashes match.
-  [CI run 34513974066](https://github.com/namarks/tres-fort/actions/runs/34513974066)
-  passed all 20 UI journeys, including invite retry, but failed one of 483 unit
-  tests (one additional simulator protection skip). The assertion regenerated an
-  equivalent JWT whose JSON claims serialized in a different key order. It now
-  compares the retained token with the exact original fixture token. All 72
-  authentication tests passed locally, with all 268 tested iOS source hashes
-  matching. [CI run 34517031117](https://github.com/namarks/tres-fort/actions/runs/34517031117)
-  then passed all configured checks. Independent review identified a corrupt
-  Health anchor that ordinary disconnect could not clear. The follow-up permits
-  an explicit, account-scoped Health reset while preserving unreadable training
-  queues and another account's legacy data. Failed resets remain retryable after
-  relaunch, and disconnected or retired syncs cannot restore their anchors.
-  The regression reproduced before the fix; afterward all 96 focused tests
-  passed with one explicit simulator protection skip and all 268 iOS source
-  hashes matching. Fresh exact-head independent review and CI remain required.
-  An unsigned Release build for generic iOS also passed: version 1.0, iPhone-only
-  family, embedded widget and `CA92.1` manifest verified; the synthetic fixture
-  switch was absent. This used the unreserved project build placeholder 29,
-  not an upload candidate. No archive or upload was made.
-  The file-protection test must pass on a physical iPhone; simulator results do
-  not prove this property. See the release audit for upgrade/rollback constraints.
+- P1 protected-storage repository work was delivered in
+  [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
+  `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as
+  `310327b7a0d779b8a905e7b18588bda30f1bd808`. Independent Codex review found no
+  remaining issues, all review threads were resolved, and
+  [all eight configured checks passed](https://github.com/namarks/tres-fort/actions/runs/34518979841).
+  The reviewed and merged tree is `c7dcfecfe6fddc69aee93a6e92532d6d0eb529e3`;
+  remote-main ancestry and tree equality were verified after merge.
+  Training blobs now use protected, backup-excluded storage with account/revision
+  fences, durable-write gates, inactive-account migration and explicit recovery.
+  Unreadable training queues remain intact; acknowledged deletion erases only
+  the relevant account. Explicit Health disconnect can rebuild an unreadable
+  cursor, preserves failed reset intent, and rejects stale sync checkpoints.
+  Tab models have one lazy owner; invite retry has a full 44-point touch target.
+  The final Health follow-up passed 96 focused authentication/storage tests with
+  one explicit simulator protection skip; all 268 tested iOS source hashes
+  matched. Earlier full/focused checks and failure diagnoses are retained in the
+  [release audit](release-audit-2026-09-10.md). Physical-iPhone file protection,
+  upgrade, lock/unlock and recovery verification remain P3 requirements.
+  A rollback must retain the new storage reader or first reconcile pending work.
 - The backend diagnostics fix was delivered in [PR #173](https://github.com/namarks/tres-fort/pull/173),
   reviewed head `528aa8c7f79d5624c89f9ac4e31a98f1b76afb74`, merged as
   `0f82e0ad045c21a5f0bda0215b9d1b8b07c020f8`. Independent Codex review completed
@@ -188,19 +145,20 @@ Preserve external release and publication gates.
   A SELECT-only refresh at 17:47–17:48 UTC confirmed the same deployment and ledger
   through `0045`, with zero rows written.
 - P2 screenshot workflow is in [PR #174](https://github.com/namarks/tres-fort/pull/174),
-  based on the protected-storage PR. The complete capture passed on clean source
-  `0d42db6813b1fb6d8e0e151304960b57da8bb97b`, including the Health reset fix.
-  Both UI journeys passed; all 270 source hashes matched, and five opaque RGB
-  1320 × 2868 images were visually inspected. The framing follow-up also passed
-  both journeys on CI's smaller iPhone 17. Explicit validation rejects missing
-  images, wrong dimensions, transparency and source changes even under optimized
-  Python; the optimization bypass reproduced before the fix. A generic-iOS
-  unsigned Release build passed on the same clean source with version 1.0,
-  embedded widget/`CA92.1` manifest and no synthetic fixture markers. Placeholder
-  build 29 remains unreserved. Fresh independent review and CI remain required;
-  merge the storage prerequisite first. Final candidate selection, device
-  verification and capture comparison remain open. Nothing was uploaded or
-  published to App Store Connect.
+  refreshed onto the verified storage merge. The complete workflow passed on
+  clean capture source `d1ef8111419cd0fcae0cf01c1df5a73881ef7acf`: both UI journeys
+  passed, all 270 iOS source hashes matched, and five opaque RGB 1320 × 2868
+  images were visually inspected. The framing follow-up also passed both
+  journeys on CI's smaller iPhone 17. Build and capture now share source
+  selection; added/removed/changed inputs and checkout changes abort capture.
+  PNG checks cover structure, checksums, compression, pixels and transparency.
+  Seven optimized-Python asset tests and 11 build-workflow tests passed; reported
+  validation bypasses reproduced before the fixes. A generic-iOS unsigned
+  Release build of the same iOS inputs passed with version 1.0, embedded widget,
+  `CA92.1` manifest and no synthetic fixture markers. Build 29 remains an
+  unreserved placeholder. Fresh review and CI remain required for #174.
+  Final candidate selection, device verification and capture comparison remain
+  open. Nothing was uploaded or published to App Store Connect.
 - Source baseline `bb4db9c40675ba6be6a0b8ff42f8cdbabcf14a4c`;
   [main CI](https://github.com/namarks/tres-fort/actions/runs/34486074011) passed.
   The preceding run failed transcript replacement: its helper could delete
