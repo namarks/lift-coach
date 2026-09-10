@@ -48,6 +48,12 @@ for test in json.loads((attachments / 'manifest.json').read_text()):
         assert data[:8] == b'\x89PNG\r\n\x1a\n', f'Not PNG: {name}'
         assert struct.unpack('>II', data[16:24]) == (1320, 2868), f'Unexpected size: {name}'
         assert data[25] == 2, f'Expected opaque RGB: {name}'
+        offset = 8
+        while offset < len(data):
+            length = struct.unpack('>I', data[offset:offset + 4])[0]
+            assert data[offset + 4:offset + 8] != b'tRNS', f'Transparency is not allowed: {name}'
+            offset += length + 12
+        assert offset == len(data), f'Invalid PNG chunk length: {name}'
         images[name] = (source, hashlib.sha256(data).hexdigest())
 expected = {'01-today.png', '02-runner.png', '03-workouts.png', '04-history.png', '05-feedback.png'}
 assert set(images) == expected, f'Wrong screenshot set: {set(images)}'
