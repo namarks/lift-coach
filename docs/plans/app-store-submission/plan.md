@@ -117,6 +117,10 @@ Candidate release record (2026-09-10):
 
 ## Notes / open questions
 
+The preparation checkpoints below retain evidence from earlier source snapshots.
+Their test counts and provider reads are historical; the current release source,
+authorization, deployment state and remaining actions are in **Next step** above.
+
 - Within this plan, P3 requires P0/P1, and P4 requires P2/P3. These are phase
   order requirements, not cross-plan dependency edges.
 - Owner decision, 2026-09-10: **free, United States only**.
@@ -125,8 +129,8 @@ Candidate release record (2026-09-10):
   `95f90307deaf4993a2cadc4546480933d785a048`. Independent Codex review completed
   without findings; no unresolved threads; [all configured CI checks passed](https://github.com/namarks/tres-fort/actions/runs/34491716466).
   The merge and reviewed head have identical tree
-  `122d8e9c537ad7e3fb15d2512b419432d2ae9a4c`. Final build-number selection remains
-  part of P3 after the final source and App Store Connect read are established.
+  `122d8e9c537ad7e3fb15d2512b419432d2ae9a4c`. Build 35 is now selected and archived as recorded above;
+  its availability must still be rechecked before upload.
 - Foundation implementation: privacy/support links, optional integration
   disclosures, UserDefaults required-reason manifest, marketing version 1.0,
   reliable transcript replacement assertions, and an explicitly selected
@@ -143,15 +147,16 @@ Candidate release record (2026-09-10):
   does not satisfy the P3 physical-device gate.
 - The [review package](review-package.md) is a draft. The owner approved group controls, the daily inbox / 24-hour response
   commitment and aggregate-only diagnostics on 2026-09-10, with an explicit
-  preference against overengineering. The implementation is prepared for exact-head
-  independent review and CI. Persisted
+  preference against overengineering. The implementation passed exact-head
+  independent review and CI and its backend is deployed, as recorded above. Persisted
   HealthKit records now use the candidate's protected, backup-excluded
-  app-owned storage; verification and release gates remain in P1/P3.
-- The group-safety candidate is in [PR #175](https://github.com/namarks/tres-fort/pull/175),
+  app-owned storage; physical-device verification remains in P1/P3.
+- The group-safety candidate was merged in [PR #175](https://github.com/namarks/tres-fort/pull/175),
   using the existing Worker/D1 and Profile screens:
   mutual member blocking, reviewed email drafts with copyable references,
   conservative shared-text filtering and audited, reversible operator sharing
-  restrictions. Migration `0048` is additive and must precede the new Worker.
+  restrictions. Additive migration `0048` was applied before the new Worker.
+  The following local checks were preparation checkpoints before final review:
   TypeScript, plan checks and Wrangler 4.92 dry-run/type generation passed.
   Local backend verification passed 980 tests; the remaining assertion assumed
   a random group sort order. Selecting the intended group by ID corrected that
@@ -159,8 +164,8 @@ Candidate release record (2026-09-10):
   D1 batch snapshot as the training projection. All 489 iOS unit tests completed
   without failures (one physical-protection test explicitly skipped), and both
   safety journeys passed on iPhone 17 / iOS 26.2. All 274 iOS input hashes matched;
-  the synthetic report screen was visually inspected. Independent review and
-  remote CI remain required. The CI selection check now accounts for the added
+  the synthetic report screen was visually inspected. Final independent review and
+  remote CI subsequently passed as recorded above. The CI selection check now accounts for the added
   safety suite; all 11 verification-workflow checks, seven asset checks, six CI
   scope checks and two review-submission checks pass locally. An unsigned
   generic-iOS Release build at `03b50c043a0d239721038becacc3ce23c78c8162` passed:
@@ -192,7 +197,8 @@ Candidate release record (2026-09-10):
   reload after successful or rejected safety writes and foreground return. These
   metadata and lost-settings regressions also reproduced before correction. All
   14 safety/export tests, seven safety unit tests and five safety/Intervals UI
-  journeys passed afterward, with 274 matching iOS input hashes. No production or App Store changes occurred.
+  journeys passed afterward, with 274 matching iOS input hashes. These preparation
+  checks preceded the production release recorded above; no App Store write occurred.
 - P1 protected-storage repository work was delivered in
   [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
   `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as
@@ -224,12 +230,12 @@ Candidate release record (2026-09-10):
   invocation logs with 100% sampling and URL query redaction disabled. Tracing
   is disabled; no tail consumers or export destinations were returned. Logpush
   is not exposed by the download path. No request logs were opened. The
-  [diagnostics policy proposal](diagnostics-policy-proposal.md) is owner-approved; production changes, historical exports and final privacy declarations
-  remain separate gates.
+  [diagnostics policy proposal](diagnostics-policy-proposal.md) is owner-approved; its production configuration is now deployed. Historical
+  exports and final App Privacy declarations remain separate assessments.
 - [Release audit, 2026-09-10](release-audit-2026-09-10.md): production version
   `c5a298d1-a72a-4fa8-a24f-bd2cf0e27a6b`, source annotation `ff512825779f90b630a4a5dfd11a68e6a113825a`,
-  migration ledger through `0045`; source migrations `0046` and `0047` remain
-  unapplied. Normal-browser checks successfully rendered both public marketing
+  migration ledger through `0045`; at that earlier read, source migrations
+  `0046` and `0047` were unapplied. The release above supersedes this state. Normal-browser checks successfully rendered both public marketing
   and privacy pages with support links; HTTP clients still returned 403.
   Mailbox delivery is untested. No production change was made.
   A SELECT-only refresh at 17:47–17:48 UTC confirmed the same deployment and ledger
@@ -253,8 +259,9 @@ Candidate release record (2026-09-10):
   Source ancestry and tree equality were verified after merge. Subsequent group
   changes require a fresh candidate build; the prior Release proof covers only
   its recorded source inputs.
-  Final candidate selection, device verification and capture comparison remain
-  open. Nothing was uploaded or published to App Store Connect.
+  Final screenshots were subsequently captured and checked from reviewed head
+  `88bb610352973a08d6d8dd9b9810adf86fbd1720`; the signed candidate is recorded above.
+  Device verification remains open. Nothing was uploaded or published to App Store Connect.
 - Source baseline `bb4db9c40675ba6be6a0b8ff42f8cdbabcf14a4c`;
   [main CI](https://github.com/namarks/tres-fort/actions/runs/34486074011) passed.
   The preceding run failed transcript replacement: its helper could delete
@@ -271,10 +278,12 @@ Candidate release record (2026-09-10):
   only**. This is owner-confirmed configuration; direct API readback remains
   unavailable to the existing key. The owner deferred checking App Store
   agreements; agreement readiness remains pending.
-- Website hosting belongs to [PR #170](https://github.com/namarks/tres-fort/pull/170);
-  do not duplicate its edits. Merged source is not public-URL evidence.
-- Repository work is authorized through required review and merge. Production
-  changes, upload, metadata publication, submission and release remain gated.
+- Website hosting was delivered by [PR #170](https://github.com/namarks/tres-fort/pull/170);
+  the matching candidate privacy publication and public-URL evidence are recorded above.
+- Repository work is authorized through required review and merge. The approved
+  candidate production deployment is complete and upload remains authorized after
+  its required live canary. App Store metadata publication, review submission and
+  public app release remain separate gates.
 - Apple references checked 2026-09-10: [review guidelines](https://developer.apple.com/app-store/review/guidelines/),
   [required-reason APIs](https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype),
   [App Privacy](https://developer.apple.com/help/app-store-connect/manage-app-information/manage-app-privacy).
