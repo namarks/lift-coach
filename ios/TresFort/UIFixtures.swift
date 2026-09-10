@@ -7,6 +7,7 @@ import SwiftUI
 enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
+    case planChanges = "plan-changes"
     case historySmall = "history-small", historyLarge = "history-large"
 
     case historyProgress = "history-progress"
@@ -34,7 +35,8 @@ enum UIFixtureModel {
     static let defaults: UserDefaults = {
         let name = "com.nmarkspdx.tresfort.synthetic-ui"
         let value = UserDefaults(suiteName: name)!
-        if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] != "1"
+        if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_PLAN_CHANGES"] != "1"
+            && ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] != "1"
             && !(UIFixtureScenario.selected?.isHistory == true && ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_HISTORY"] == "1") {
             value.removePersistentDomain(forName: name)
         }
@@ -106,7 +108,7 @@ struct UIFixtureView: View {
             guard scenario != .signIn, !scenario.isHistory else { return }
             await sync.load()
             if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
-            if ![.empty, .loadFailure, .onboarding, .groups].contains(scenario) {
+            if ![.empty, .loadFailure, .onboarding, .groups, .planChanges].contains(scenario) {
                 sync.startWorkout()
                 if [.readyToFinish, .correctionFailure].contains(scenario) {
                     sync.finished = true
@@ -157,6 +159,7 @@ private struct UIFixtureServer {
     var sets: [[String: Any]] = []
     var groupReceipts: [String: [String: Any]] = [:]
     var returnedFeedbackConflict = false
+    var planRestored = false
     var revision = 1_788_912_000_000
     let dayID = "synthetic-day", sessionID = "synthetic-session"
 
@@ -164,7 +167,8 @@ private struct UIFixtureServer {
         self.scenario = scenario
         if ![.signIn, .empty, .loadFailure, .onboarding].contains(scenario) {
             plan = makePlan()
-            sessions = [.groups, .library].contains(scenario) ? [] : [makeSession()]
+            sessions = [.groups, .library, .planChanges].contains(scenario) ? [] : [makeSession()]
+            if scenario == .planChanges { plan?["version"] = 3 }
             if [.readyToFinish, .correctionFailure].contains(scenario) {
                 sets = [["id": "synthetic-set", "session_id": sessionID,
                     "exercise_id": "synthetic-exercise", "template_exercise_id": "synthetic-slot",
@@ -249,6 +253,37 @@ private struct UIFixtureServer {
             response = ["plan": plan as Any? ?? NSNull(), "plan_version": plan?["version"] ?? 0,
                 "sessions": sessions, "sets": sets, "server_time": revision, "plan_groups_version": 1,
                 "activities": [], "external_events": [], "external_activities": []]
+        case ("GET", "/api/plan/history"):
+            let version = plan?["version"] as? Int ?? 1
+            var items: [[String: Any]] = []
+            if scenario == .planChanges {
+                items = [
+                    ["version": 3, "actor": "ios", "operation": "update_exercise", "reason": "Prefer five reps",
+                     "created_at": 1_788_883_200_000, "previous_version": 2, "affected": ["Workout A · Barbell Squat"]],
+                    ["version": 2, "actor": "mcp", "operation": "update_exercise", "reason": "Reduced load after your feedback",
+                     "created_at": 1_788_879_600_000, "previous_version": 1, "affected": ["Workout A · Barbell Squat"]],
+                    ["version": 1, "actor": "ios", "operation": "create_plan", "created_at": 1_788_793_200_000],
+                ]
+                if planRestored {
+                    items.insert(["version": 4, "actor": "ios", "operation": "restore_plan", "reason": "Restored from Workout history",
+                                  "created_at": 1_788_886_800_000, "previous_version": 3, "affected": ["Workout A · Barbell Squat"]], at: 0)
+                }
+            }
+            response = ["plan_id": "synthetic-plan", "current_version": version, "items": items]
+        case ("GET", let path) where path.hasPrefix("/api/plan/history/") && path.hasSuffix("/compare") && scenario == .planChanges:
+            let from = Int(path.split(separator: "/")[3])!
+            let to = plan?["version"] as? Int ?? 3
+            response = ["plan_id": "synthetic-plan", "from_version": from, "to_version": to,
+                "changes": from == to ? [] : [["kind": "exercise", "path": "Workout A · Barbell Squat", "before": "65 lb", "after": "45 lb"]],
+                "summary": ["plan_fields": 0, "schedule_days": 0, "days_added": 0, "days_removed": 0,
+                            "days_changed": 0, "exercises_added": 0, "exercises_removed": 0, "exercises_changed": 1]]
+        case ("POST", "/api/plan/history/1/restore") where scenario == .planChanges:
+            guard body["expected_plan_id"] as? String == "synthetic-plan", body["expected_version"] as? Int == 3 else {
+                throw URLError(.badServerResponse)
+            }
+            planRestored = true
+            plan?["version"] = 4
+            response = ["ok": true, "plan_id": "synthetic-plan", "restored_from_version": 1, "version": 4]
         case ("GET", "/api/exercises") where scenario == .groups:
             response = (groupFixture["slots"] as! [[String: Any]]).map { slot in
                 ["id": slot["exercise_id"]!, "name": slot["exercise_name"]!,

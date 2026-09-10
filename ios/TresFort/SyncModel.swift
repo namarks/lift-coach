@@ -122,6 +122,10 @@ final class SyncModel: ObservableObject {
     @Published private(set) var summaryErrors: [String: String] = [:]
     @Published private var completionSummaries: [String: WorkoutSummary] = [:]
     private var completionSummaryRevisions: [String: UInt64] = [:]
+    @Published private(set) var recentPlanHistory: PlanHistoryResponse?
+    @Published private(set) var planChangesError: String?
+    @Published private var planDismissalRevision = 0
+    private var planHistoryRequest = UUID()
     @Published var plan: PlanTree?
     @Published var sets: [SetLog] = [] { didSet { invalidateHistory() } }
     @Published var sessions: [SessionRow] = [] { didSet { invalidateHistory() } }
@@ -1912,6 +1916,9 @@ final class SyncModel: ObservableObject {
     /// live-validated resume after reauthentication; only its current exact
     /// owner may touch the process-shared ActivityKit/notification pair.
     private func prepareForFeatureSessionBoundary() {
+        planHistoryRequest = UUID()
+        recentPlanHistory = nil
+        planChangesError = nil
         workoutWriteDrainRequested = false
         // Stop this model's task, but preserve the account-scoped server floor
         // for the replacement model that inherits the durable outbox.
@@ -5233,15 +5240,67 @@ final class SyncModel: ObservableObject {
 
     // MARK: manual routine + calendar authoring
 
+    var recentPlanChanges: [PlanHistoryItem] {
+        guard canInitiateBoundFeatureAction, let plan,
+              let history = recentPlanHistory, history.plan_id == plan.id,
+              history.current_version == plan.version else { return [] }
+        let through = PlanChangeDismissalStore.load(userID: accountID, planID: plan.id, defaults: defaults)
+        return history.items.filter { $0.version > through }
+    }
+
+    func dismissRecentPlanChanges(through version: Int, planID: String) {
+        guard canInitiateBoundFeatureAction, plan?.id == planID,
+              recentPlanHistory?.plan_id == planID,
+              recentPlanHistory?.items.contains(where: { $0.version == version }) == true else { return }
+        PlanChangeDismissalStore.dismiss(through: version, userID: accountID,
+                                        planID: planID, defaults: defaults)
+        planDismissalRevision += 1
+    }
+
+    func refreshRecentPlanChanges() async {
+        let request = UUID()
+        planHistoryRequest = request
+        planChangesError = nil
+        guard canInitiateBoundFeatureAction, let jwt = currentJWT, let requestedPlan = plan else {
+            recentPlanHistory = nil
+            return
+        }
+        do {
+            let response = try await routineEditingAPI.getPlanHistory(limit: 5, beforeVersion: nil, jwt: jwt)
+            guard canInitiateBoundFeatureAction, !Task.isCancelled, planHistoryRequest == request,
+                  plan?.id == requestedPlan.id, plan?.version == requestedPlan.version else { return }
+            guard response.plan_id == requestedPlan.id, response.current_version == requestedPlan.version else {
+                recentPlanHistory = nil
+                planChangesError = "Your plan changed. Refresh to see recent changes."
+                return
+            }
+            recentPlanHistory = response
+        } catch {
+            guard canInitiateBoundFeatureAction, !Task.isCancelled, planHistoryRequest == request,
+                  plan?.id == requestedPlan.id, plan?.version == requestedPlan.version else { return }
+            recentPlanHistory = nil
+            planChangesError = "Recent changes are unavailable. Try again when connected."
+            if (error as? APIError)?.httpStatus == 401 { handle(error, jwt: jwt) }
+        }
+    }
+
     func loadPlanHistory(limit: Int = 25, beforeVersion: Int? = nil) async -> PlanHistoryResponse? {
         guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return nil }
-        do { return try await routineEditingAPI.getPlanHistory(limit: limit, beforeVersion: beforeVersion, jwt: jwt) }
+        do {
+            let result = try await routineEditingAPI.getPlanHistory(limit: limit, beforeVersion: beforeVersion, jwt: jwt)
+            guard canInitiateBoundFeatureAction else { return nil }
+            return result
+        }
         catch { handle(error, jwt: jwt); return nil }
     }
 
     func comparePlanVersion(_ version: Int, toVersion: Int) async -> PlanComparisonResponse? {
         guard canInitiateBoundFeatureAction, let jwt = currentJWT else { return nil }
-        do { return try await routineEditingAPI.comparePlanVersion(version, toVersion: toVersion, jwt: jwt) }
+        do {
+            let result = try await routineEditingAPI.comparePlanVersion(version, toVersion: toVersion, jwt: jwt)
+            guard canInitiateBoundFeatureAction else { return nil }
+            return result
+        }
         catch { handle(error, jwt: jwt); return nil }
     }
 

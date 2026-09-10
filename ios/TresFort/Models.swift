@@ -233,6 +233,8 @@ struct PlanHistoryItem: Codable, Identifiable, Equatable {
     let reason: String?
     let created_at: Int
     let summary: PlanChangeSummary?
+    var previous_version: Int? = nil
+    var affected: [String]? = nil
 }
 
 struct PlanHistoryResponse: Codable, Equatable {

@@ -3017,23 +3017,28 @@ export async function listPlanHistory(
   const capped = Math.max(1, Math.min(100, Math.floor(limit)));
   const rows = await workoutDB(db).prepare(
     `SELECT * FROM plan_snapshots
-      WHERE user_id=?1 AND plan_id=?2 AND (?3 IS NULL OR version < ?3)
+      WHERE user_id=?1 AND plan_id=?2 AND (?3 IS NULL OR version < ?3) AND version <= ?5
       ORDER BY version DESC LIMIT ?4`,
-  ).bind(userId, plan.id, beforeVersion ?? null, capped + 1).all<PlanSnapshotRow>();
+  ).bind(userId, plan.id, beforeVersion ?? null, capped + 1, plan.version).all<PlanSnapshotRow>();
   const visible = rows.results.slice(0, capped);
   const exerciseNames = new Map((await getExercises(db)).map((exercise) => [exercise.id, exercise.name]));
   const items = await Promise.all(visible.map(async (row) => {
     const prior = await workoutDB(db).prepare(
-      `SELECT document FROM plan_snapshots
+      `SELECT version, document FROM plan_snapshots
         WHERE user_id=?1 AND plan_id=?2 AND version < ?3
         ORDER BY version DESC LIMIT 1`,
-    ).bind(userId, plan.id, row.version).first<{ document: string }>();
-    const summary = prior
-      ? comparePlanSnapshots(parsePlanSnapshot(prior.document), parsePlanSnapshot(row.document), { exerciseNames }).summary
+    ).bind(userId, plan.id, row.version).first<{ version: number; document: string }>();
+    const comparison = prior
+      ? comparePlanSnapshots(parsePlanSnapshot(prior.document), parsePlanSnapshot(row.document), { exerciseNames })
       : null;
     return {
       version: row.version, actor: row.actor, operation: row.operation,
-      reason: row.reason, created_at: row.created_at, summary,
+      reason: row.reason, created_at: row.created_at, summary: comparison?.summary ?? null,
+      previous_version: prior?.version ?? null,
+      affected: comparison ? [...new Set(comparison.changes.map((change) =>
+        change.kind === 'plan'
+          ? (change.path === 'name' ? 'Training plan name' : 'Training context')
+          : change.path))] : [],
     };
   }));
   return {

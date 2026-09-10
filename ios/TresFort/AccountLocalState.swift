@@ -73,6 +73,7 @@ enum AccountLocalState {
 
     @MainActor
     static func clear(userID: String, defaults: UserDefaults = .standard) {
+        defaults.removeObject(forKey: PlanChangeDismissalStore.key(userID: userID))
         ActivityOutboxStore.clear(userID: userID, defaults: defaults)
         SetOutboxStore.clear(userID: userID, defaults: defaults)
         SetCorrectionOutboxStore.clear(userID: userID, defaults: defaults)
