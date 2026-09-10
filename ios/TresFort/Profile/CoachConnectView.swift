@@ -35,6 +35,16 @@ struct CoachConnectView: View {
                     .font(.footnote).foregroundStyle(.secondary)
             }
 
+            Section("What you share with Claude") {
+                Text("Connecting lets Claude, operated by Anthropic, read your training plan, workout history, saved feedback and available group information, including workouts imported from Apple Health or Intervals.icu. Claude can also change your plan and record training updates.")
+                    .font(.footnote)
+                    .accessibilityIdentifier("coach.data-sharing")
+                Text("You approve access in the connection step. Disconnect Claude in Profile to stop future access. Information already retrieved into Claude conversations remains subject to your Anthropic account settings. The Apple Health group-sharing switch does not limit your own coach’s access.")
+                    .font(.footnote).foregroundStyle(.secondary)
+                PrivacyPolicyLink()
+                Link("Anthropic privacy policy", destination: AppInformation.anthropicPrivacyURL)
+            }
+
             Section("Step 1 · Get your connect code") {
                 if let code {
                     CopyRow(label: "Connect code", value: code, mono: true)

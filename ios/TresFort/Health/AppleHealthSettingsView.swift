@@ -20,6 +20,11 @@ struct AppleHealthSettingsView: View {
     var body: some View {
         Form {
             statusSection
+            Section("How your workouts are used") {
+                Text("With the permissions you grant, Très Fort uploads workout records to its server: activity type, source, dates, duration, distance, calories, elevation and heart-rate summaries when available. An authorized Claude connection can read these records through Anthropic. Group sharing is separate and off by default.")
+                    .font(.footnote)
+                PrivacyPolicyLink()
+            }
             if health.isAvailable {
                 actionSection
                 // Sharing stays reachable while connected OR while the server

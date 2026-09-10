@@ -119,6 +119,13 @@ private struct SignedOutView: View {
                 .frame(height: 50)
                 .cornerRadius(10)
 
+            HStack(spacing: 24) {
+                PrivacyPolicyLink()
+                Link("Contact support", destination: AppInformation.supportURL)
+            }
+            .font(.footnote)
+            .frame(minHeight: 44)
+
             if case let .error(msg) = model.phase {
                 Text(msg)
                     .font(.footnote)
