@@ -104,7 +104,8 @@ App Store publication gates remain open.
   independent review and CI. Persisted
   HealthKit records now use the candidate's protected, backup-excluded
   app-owned storage; verification and release gates remain in P1/P3.
-- The group-safety candidate uses the existing Worker/D1 and Profile screens:
+- The group-safety candidate is in [PR #175](https://github.com/namarks/tres-fort/pull/175),
+  using the existing Worker/D1 and Profile screens:
   mutual member blocking, reviewed email drafts with copyable references,
   conservative shared-text filtering and audited, reversible operator sharing
   restrictions. Migration `0048` is additive and must precede the new Worker.
@@ -116,7 +117,13 @@ App Store publication gates remain open.
   without failures (one physical-protection test explicitly skipped), and both
   safety journeys passed on iPhone 17 / iOS 26.2. All 274 iOS input hashes matched;
   the synthetic report screen was visually inspected. Independent review and
-  remote CI remain required. No production or App Store changes occurred.
+  remote CI remain required. The CI selection check now accounts for the added
+  safety suite; all 11 verification-workflow checks, seven asset checks, six CI
+  scope checks and two review-submission checks pass locally. An unsigned
+  generic-iOS Release build at `03b50c043a0d239721038becacc3ce23c78c8162` passed:
+  version 1.0, iPhone-only, embedded widget, `CA92.1` manifest and no synthetic
+  fixture markers. Its build 29 is an unreserved placeholder, not an upload
+  candidate. No production or App Store changes occurred.
 - P1 protected-storage repository work was delivered in
   [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
   `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as
