@@ -165,7 +165,7 @@ struct GroupSettingsView: View {
                 }
             }
             .confirmationDialog(
-                "Leave \(group.name)?",
+                "Leave \(currentGroup?.name ?? "this group")?",
                 isPresented: $confirmLeave,
                 titleVisibility: .visible
             ) {

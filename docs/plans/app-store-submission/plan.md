@@ -65,12 +65,11 @@ public release require separate authorization and are outside this goal.
 
 ## Next step
 
-**Now (@agent):** Complete the approved group-safety and aggregate-metrics-only
-logging changes, validate member isolation and iOS controls, and obtain exact-head
-independent review and CI before merge. Keep this a small implementation using
-the existing service, email and Profile screens. Prepare the exact release
-package after repository delivery; production, TestFlight, physical-device and
-App Store publication gates remain open.
+**Now (@agent):** Prepare the exact candidate-release proposal from PR #175 after
+its required independent review, CI and merge. Resolve any remaining review
+findings in that same PR. Keep the existing service, email and Profile screens;
+production changes, TestFlight distribution, physical-device verification and
+App Store publication remain separately authorized steps.
 
 ## Notes / open questions
 
@@ -123,7 +122,12 @@ App Store publication gates remain open.
   generic-iOS Release build at `03b50c043a0d239721038becacc3ce23c78c8162` passed:
   version 1.0, iPhone-only, embedded widget, `CA92.1` manifest and no synthetic
   fixture markers. Its build 29 is an unreserved placeholder, not an upload
-  candidate. No production or App Store changes occurred.
+  candidate. Independent review identified cached secondary groups on foreground;
+  the app now invalidates every shared projection before authentication waits and
+  reloads all rosters. A stale detail task cannot supersede that reload. All
+  three safety unit tests and five safety/Intervals journeys passed after the
+  correction, including background/foreground use. No production or App Store
+  changes occurred.
 - P1 protected-storage repository work was delivered in
   [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
   `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as

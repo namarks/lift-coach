@@ -44,6 +44,9 @@ final class GroupSafetyJourneyTests: XCTestCase {
         // The source row and any already-open detail must stop displaying it.
         XCTAssertFalse(app.staticTexts["A gentle loop"].exists)
         app.swipeDown()
+        XCUIDevice.shared.press(.home)
+        app.activate()
+        XCTAssertFalse(app.staticTexts["Sample member"].exists)
         tap(app.tabBars.buttons["Profile"], app: app)
         tap(app.buttons["Group safety"], app: app)
         tap(app.buttons["Unblock"], app: app)

@@ -142,7 +142,7 @@ struct ProfileView: View {
                 await groupModel.refreshMe()
             }
         }
-        .refreshable { await groupModel.refreshMe() }
+        .refreshable { await groupModel.load() }
     }
 
     // MARK: - Account

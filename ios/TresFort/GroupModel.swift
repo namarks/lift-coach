@@ -280,7 +280,9 @@ final class GroupModel: ObservableObject {
     /// Revalidate the roster, feed and stats for one group. Used by
     /// pull-to-refresh and after a `logActivity` succeeds.
     func refreshGroup(groupID: String, refreshRoster: Bool = true) async {
-        guard let jwt = currentJWT else { return }
+        // A removed detail view can still start its queued task while a full
+        // roster reload is in flight. It must not supersede that reload.
+        guard groups.contains(where: { $0.id == groupID }), let jwt = currentJWT else { return }
         identityCacheGeneration += 1
         let generation = identityCacheGeneration
         feed[groupID] = nil
@@ -743,7 +745,7 @@ final class GroupModel: ObservableObject {
 
     /// Drop every shared projection and fence earlier requests. Private history
     /// and the activity outbox are separate and remain intact.
-    private func invalidateSharedGroups() {
+    func invalidateSharedGroups() {
         identityCacheGeneration += 1
         groups.removeAll()
         feed.removeAll()

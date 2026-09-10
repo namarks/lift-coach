@@ -100,11 +100,11 @@ struct MainTabView: View {
             health.start()
         }
         .onChange(of: scenePhase) { _, new in
-            // On foreground, refresh the currently-visible group's feed +
-            // drain any pending activity POSTs the user logged while the
-            // app was backgrounded/offline. Same idea as iOS's URLSession
-            // background-task continuation, just cooperative.
+            // A block or restriction may have changed while backgrounded.
+            // Drop every shared projection before authentication/network waits,
+            // then reload the whole roster and drain queued private writes.
             if new == .active {
+                groupModel.invalidateSharedGroups()
                 Task {
                     guard let initiatingUserID = auth.userID else { return }
                     await auth.checkAppleCredentialState()
@@ -115,11 +115,7 @@ struct MainTabView: View {
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     await sync.recoverWorkoutWrites()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
-                    await groupModel.drainOutbox()
-                    guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
-                    if let gid = groupModel.selectedGroupID {
-                        await groupModel.refreshGroup(groupID: gid)
-                    }
+                    await groupModel.load()
                     guard auth.featureJWT != nil, auth.userID == initiatingUserID else { return }
                     // Pull any workouts recorded while we were backgrounded.
                     await health.sync()
