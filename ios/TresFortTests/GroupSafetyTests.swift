@@ -176,4 +176,54 @@ final class GroupSafetyTests: XCTestCase {
         model = nil
     }
 
+    func testForegroundRefreshRevalidatesMountedSafetySettings() async throws {
+        let suite = "GroupSafetyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let auth = AuthModel(tokenStore: TokenStore(), defaults: defaults)
+        auth.userID = "user-a"
+        let payload = try JSONSerialization.data(withJSONObject: ["sub": "user-a", "exp": 4_000_000_000])
+        auth.jwt = "header." + payload.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".signature"
+        var calls = 0
+        let model = GroupModel(auth: auth, defaults: defaults, groupLister: { _ in [] },
+            profileLoader: { _ in throw URLError(.notConnectedToInternet) }, groupSafetyLoader: { _ in
+                calls += 1
+                return .init(blocks: calls == 1 ? [.init(user_id: "user-b", created_at: 1)] : [],
+                             restriction: calls == 1 ? nil : .init(active: 1, reason: "harassment", updated_at: 2),
+                             can_moderate: false)
+            })
+        try await model.refreshGroupSafety()
+        XCTAssertEqual(model.groupSafety?.blocks.count, 1)
+        model.invalidateSharedGroups()
+        XCTAssertNil(model.groupSafety, "Old safety settings must disappear before foreground network waits")
+        await model.refreshAfterForeground()
+        XCTAssertEqual(calls, 2)
+        XCTAssertEqual(model.groupSafety?.blocks.count, 0)
+        XCTAssertEqual(model.groupSafety?.restriction?.active, 1)
+    }
+
+    func testFailedRosterRefreshShowsRetryInsteadOfAnEmptyGroup() async throws {
+        let suite = "GroupSafetyTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(LocalPersistence(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let auth = AuthModel(tokenStore: TokenStore(), defaults: defaults)
+        auth.userID = "user-a"
+        let payload = try JSONSerialization.data(withJSONObject: ["sub": "user-a", "exp": 4_000_000_000])
+        auth.jwt = "header." + payload.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".signature"
+        let model = GroupModel(auth: auth, defaults: defaults, groupLister: { _ in [] },
+            groupLoader: { _, _ in throw URLError(.notConnectedToInternet) },
+            profileLoader: { _ in throw URLError(.notConnectedToInternet) })
+        model.groups = [.init(id: "group", name: "Cached crew", created_by: "user-b", created_at: 1, members: [])]
+        model.selectedGroupID = "group"
+        model.phase = .ready
+        model.feed["group"] = [.unknown(.init(id: "activity", user_id: "user-b", user_display_name: "Member",
+            is_me: false, date: "2026-09-10", occurred_at: 1))]
+        await model.refreshGroup(groupID: "group")
+        XCTAssertNil(model.feed["group"])
+        XCTAssertTrue(model.groups[0].members.isEmpty)
+        if case .error = model.phase {} else { XCTFail("Failed roster verification must show the existing retry screen") }
+        await model.load()
+        XCTAssertEqual(model.phase, .none, "A successful Retry must leave the error state")
+    }
+
 }

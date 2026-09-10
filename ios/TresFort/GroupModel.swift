@@ -89,6 +89,7 @@ final class GroupModel: ObservableObject {
     private let activityLogger: ((PendingActivity, String) async throws -> ActivityRow)?
     private let activityDeleter: ((String, String) async throws -> Void)?
     private let groupLister: ((String) async throws -> [GroupSummary])?
+    private let groupLoader: ((String, String) async throws -> GroupSummary)?
     private let groupSafetyLoader: ((String) async throws -> GroupSafetyState)?
     private let groupBlockWriter: ((String, Bool, String) async throws -> Void)?
     private let groupRestrictionWriter: ((String, Bool, GroupReportReason, String) async throws -> Void)?
@@ -116,6 +117,7 @@ final class GroupModel: ObservableObject {
         activityLogger: ((PendingActivity, String) async throws -> ActivityRow)? = nil,
         activityDeleter: ((String, String) async throws -> Void)? = nil,
         groupLister: ((String) async throws -> [GroupSummary])? = nil,
+        groupLoader: ((String, String) async throws -> GroupSummary)? = nil,
         profileLoader: ((String) async throws -> MeProfile)? = nil,
         groupBlockWriter: ((String, Bool, String) async throws -> Void)? = nil,
         groupRestrictionWriter: ((String, Bool, GroupReportReason, String) async throws -> Void)? = nil,
@@ -131,6 +133,7 @@ final class GroupModel: ObservableObject {
         self.activityLogger = activityLogger
         self.activityDeleter = activityDeleter
         self.groupLister = groupLister
+        self.groupLoader = groupLoader
         self.profileLoader = profileLoader
         self.groupBlockWriter = groupBlockWriter
         self.groupRestrictionWriter = groupRestrictionWriter
@@ -240,6 +243,12 @@ final class GroupModel: ObservableObject {
 
     // MARK: - Load / refresh
 
+    /// Reconcile both group content and the mounted Profile safety screen.
+    func refreshAfterForeground() async {
+        await load()
+        try? await refreshGroupSafety()
+    }
+
     /// Pull the groups list + drain the outbox. Sets `phase` to
     /// `.none` / `.ready` / `.error` accordingly. Called on tab `.task`
     /// and on scene-foreground transitions.
@@ -298,12 +307,14 @@ final class GroupModel: ObservableObject {
                                              created_at: group.created_at, members: [])
             }
             do {
-                let current = try await api.getGroup(id: groupID, jwt: jwt)
+                let current: GroupSummary
+                if let groupLoader { current = try await groupLoader(groupID, jwt) }
+                else { current = try await api.getGroup(id: groupID, jwt: jwt) }
                 guard isCurrentAccount, generation == identityCacheGeneration else { return }
                 if let index = groups.firstIndex(where: { $0.id == groupID }) { groups[index] = current }
             } catch {
                 guard isCurrentAccount, generation == identityCacheGeneration else { return }
-                handle(error, jwt: jwt)
+                handleGroupRefreshFailure(error, jwt: jwt, generation: generation)
                 return
             }
         }
@@ -311,6 +322,12 @@ final class GroupModel: ObservableObject {
         async let statsTask: Void = refreshStats(groupID: groupID)
         async let seriesTask: Void = refreshActivitySeries(groupID: groupID)
         _ = await (feedTask, statsTask, seriesTask)
+    }
+
+    private func handleGroupRefreshFailure(_ error: Error, jwt: String, generation: Int) {
+        guard isCurrentAccount, generation == identityCacheGeneration else { return }
+        handle(error, jwt: jwt)
+        phase = .error(error.localizedDescription)
     }
 
     func refreshFeed(groupID: String) async {
@@ -327,8 +344,7 @@ final class GroupModel: ObservableObject {
             feedNextSinceID[groupID] = res.next_since_id
             lastError = nil
         } catch {
-            guard isCurrentAccount else { return }
-            handle(error, jwt: jwt)
+            handleGroupRefreshFailure(error, jwt: jwt, generation: generation)
         }
     }
 
@@ -344,14 +360,13 @@ final class GroupModel: ObservableObject {
             stats[groupID] = res.members
             lastError = nil
         } catch {
-            guard isCurrentAccount else { return }
-            handle(error, jwt: jwt)
+            handleGroupRefreshFailure(error, jwt: jwt, generation: generation)
         }
     }
 
     /// Pull the per-member daily activity series (year window) that backs
-    /// the week/month/year zoom strip. Failure leaves the cached series in
-    /// place (same forgiving stance as feed/stats).
+    /// the week/month/year zoom strip. Unavailable shared data uses the same
+    /// retryable error state as a failed roster or feed refresh.
     func refreshActivitySeries(groupID: String) async {
         guard let jwt = currentJWT else { return }
         let generation = identityCacheGeneration
@@ -362,8 +377,7 @@ final class GroupModel: ObservableObject {
             activitySeries[groupID] = res.members
             lastError = nil
         } catch {
-            guard isCurrentAccount else { return }
-            handle(error, jwt: jwt)
+            handleGroupRefreshFailure(error, jwt: jwt, generation: generation)
         }
     }
 
@@ -750,6 +764,7 @@ final class GroupModel: ObservableObject {
     /// and the activity outbox are separate and remain intact.
     func invalidateSharedGroups() {
         identityCacheGeneration += 1
+        groupSafety = nil
         groups.removeAll()
         feed.removeAll()
         stats.removeAll()

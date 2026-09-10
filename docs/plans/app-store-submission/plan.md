@@ -133,8 +133,12 @@ App Store publication remain separately authorized steps.
   share one recovery path that clears shared projections before either write and
   reconciles uncertain responses. The lost-restriction-response regression also
   failed before this correction; all five safety unit tests and both safety
-  journeys pass afterward, with all 274 input hashes matching. No production or
-  App Store changes occurred.
+  journeys pass afterward, with all 274 input hashes matching. Foreground recovery
+  also reloads mounted safety settings; failed roster/feed/statistics/series
+  refreshes use the existing retry screen instead of implying an empty group.
+  Both additional review regressions reproduced before correction; all seven
+  safety unit tests and both safety journeys pass on the corrected source, with
+  274 matching input hashes. No production or App Store changes occurred.
 - P1 protected-storage repository work was delivered in
   [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
   `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as
