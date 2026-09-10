@@ -48,6 +48,48 @@ async function mcp(userId: string, name: string, args: Record<string, unknown>) 
 }
 
 describe('plan REST and MCP wrapper integrity', () => {
+  it('projects coach and manual changes into the same revisitable history and restores the predecessor', async () => {
+    const { userId, jwt, plan } = await fixture('visible-changes');
+    const slot = plan.workouts[0]!.exercises[0]!;
+    const headers = { authorization: `Bearer ${jwt}`, 'content-type': 'application/json' };
+    await mcp(userId, 'update_exercise', { template_exercise_id: slot.id, patch: { target_weight: 115 } });
+    const manual = await SELF.fetch(`${BASE}/api/workouts/${plan.workouts[0]!.id}/exercises/${slot.id}`, {
+      method: 'PATCH', headers, body: JSON.stringify({ target_reps: 6 }),
+    });
+    expect(manual.status).toBe(200);
+    const response = await SELF.fetch(`${BASE}/api/plan/history?limit=2`, { headers });
+    expect(response.status).toBe(200);
+    const history = await response.json<{
+      plan_id: string; current_version: number; next_before_version: number;
+      items: Array<{ version: number; previous_version: number; actor: string; reason: string; affected: string[]; created_at: number }>;
+    }>();
+    expect(history.items.map((item) => item.actor)).toEqual(['ios', 'mcp']);
+    for (const item of history.items) {
+      expect(item.affected).toEqual([`Strength · ${slot.exercise_name}`]);
+      expect(item.created_at).toBeGreaterThan(0);
+      expect(item.previous_version).toBe(item.version - 1);
+    }
+    expect(history.items[1]!.reason).toBe('Updated exercise slot.');
+    expect(await mcp(userId, 'get_plan_history', { limit: 2 })).toEqual(history);
+    const earlier = await SELF.fetch(`${BASE}/api/plan/history?limit=2&before_version=${history.next_before_version}`, { headers });
+    const page = await earlier.json<{ items: Array<{ version: number }> }>();
+    expect(page.items[0]!.version).toBe(plan.version);
+    const predecessor = history.items[1]!.previous_version;
+    const comparison = await SELF.fetch(`${BASE}/api/plan/history/${predecessor}/compare?to_version=${history.current_version}`, { headers });
+    expect((await comparison.json<{ changes: unknown[] }>()).changes).not.toHaveLength(0);
+    const beforeRestore = await footprint(userId);
+    const restored = await SELF.fetch(`${BASE}/api/plan/history/${predecessor}/restore`, {
+      method: 'POST', headers,
+      body: JSON.stringify({ expected_plan_id: history.plan_id, expected_version: history.current_version, reason: 'Undo after review' }),
+    });
+    expect(restored.status).toBe(200);
+    const afterRestore = await footprint(userId);
+    expect(afterRestore.counts!.snapshots).toBe(beforeRestore.counts!.snapshots + 1);
+    const revisited = await mcp(userId, 'get_plan_history', { limit: 3 }) as { items: Array<{ actor: string; operation: string }> };
+    expect(revisited.items.map((item) => item.actor)).toEqual(['ios', 'ios', 'mcp']);
+    expect(revisited.items[0]!.operation).toBe('restore_plan');
+  });
+
   it('rejects malformed replacement plans without changing durable plan state', async () => {
     const { userId, jwt } = await fixture('bad-rest-plan');
     const before = await footprint(userId);

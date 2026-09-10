@@ -207,6 +207,7 @@ struct TodayView: View {
     @State private var editTarget: EditDayTarget?
     /// Full member-owned plan/day/schedule editor.
     @State private var showRoutine = false
+    @State private var showPlanHistory = false
     /// Keeps a double tap from starting twice while iOS is presenting the
     /// one-time notification permission prompt before a new workout.
     @State private var isPreparingWorkoutStart = false
@@ -227,6 +228,7 @@ struct TodayView: View {
                     if !sync.setCorrections.isEmpty {
                         PendingCorrectionsView(sync: sync)
                     }
+                    RecentPlanChanges(sync: sync) { showPlanHistory = true }
                     content
                 }
                 // The full rest screen is modal. Without explicitly removing
@@ -287,6 +289,9 @@ struct TodayView: View {
                                   systemImage: "calendar.badge.clock")
                         }
                         .disabled(sync.plan == nil && !sync.canCreateRoutine)
+                        if sync.plan != nil {
+                            Button("Workout history") { showPlanHistory = true }
+                        }
                         if let id = sync.running ? sync.selectedDay?.id : sync.todayResolvedDay?.id {
                             Button {
                                 editTarget = EditDayTarget(id: id)
@@ -360,6 +365,12 @@ struct TodayView: View {
             }
             .sheet(item: $editTarget) { t in
                 EditWorkoutSheet(sync: sync, dayID: t.id)
+            }
+            .task(id: [sync.plan?.id ?? "", String(sync.plan?.version ?? 0)]) {
+                await sync.refreshRecentPlanChanges()
+            }
+            .sheet(isPresented: $showPlanHistory) {
+                PlanHistoryView(sync: sync)
             }
             .sheet(isPresented: $showRoutine) {
                 WorkoutsView(sync: sync)

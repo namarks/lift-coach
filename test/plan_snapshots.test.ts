@@ -46,6 +46,51 @@ describe('plan snapshots', () => {
     expect(diff.changes[0]?.path).toContain('Strength A');
   });
 
+  it('keeps the history page bounded to the version read before a concurrent change', async () => {
+    const { userId, plan } = await fixture('history race');
+    let injected = false;
+    const racingDb = new Proxy(env.DB, {
+      get(target, property) {
+        if (property === 'prepare') return (sql: string) => {
+          const statement = target.prepare(sql);
+          if (!sql.includes('SELECT * FROM plan_snapshots')) return statement;
+          return new Proxy(statement, {
+            get(target, property) {
+              if (property === 'bind') return (...values: unknown[]) => {
+                const bound = target.bind(...values);
+                return new Proxy(bound, {
+                  get(target, property) {
+                    if (property === 'all') return async () => {
+                      if (!injected) {
+                        injected = true;
+                        await updateExercise(env.DB, userId, {
+                          template_exercise_id: plan.workouts[0]!.exercises[0]!.id,
+                        }, { target_weight: 155 });
+                      }
+                      return target.all();
+                    };
+                    const value = Reflect.get(target, property, target);
+                    return typeof value === 'function' ? value.bind(target) : value;
+                  },
+                });
+              };
+              const value = Reflect.get(target, property, target);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          });
+        };
+        const value = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    }) as D1Database;
+    const history = await listPlanHistory(racingDb, userId);
+    expect(injected).toBe(true);
+    expect(history).toMatchObject({ current_version: plan.version });
+    if (!('items' in history) || !history.items) throw new Error('history_missing');
+    expect(history.items[0]!.version).toBe(plan.version);
+    expect((await getPlanTree(env.DB, userId))?.version).toBe(plan.version + 1);
+  });
+
   it('compares a labeled current version from its immutable snapshot', async () => {
     const { userId, plan } = await fixture('comparison fence');
     const snapshotOnlyDb = new Proxy(env.DB, {
