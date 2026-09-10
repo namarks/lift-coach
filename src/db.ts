@@ -1787,12 +1787,12 @@ export async function setUserIntervalsCreds(
   userId: string,
   apiKey: string | null,
   athleteId: string | null,
-): Promise<{ connected: boolean }> {
+): Promise<{ connected: boolean; credential_generation: number }> {
   const connect = !!(apiKey && athleteId);
   // The API-key and OAuth schemes are mutually exclusive: writing an API key
   // clears any OAuth token, and a disconnect (nulls) clears BOTH schemes'
   // columns so "not connected" is unambiguous across the codebase.
-  await workoutDB(db)
+  const { results: [row] } = await workoutDB(db)
     .prepare(
       `UPDATE users
           SET intervals_api_key = ?2,
@@ -1837,11 +1837,13 @@ export async function setUserIntervalsCreds(
                 THEN intervals_activities_sync_attempt ELSE 0 END,
               intervals_protocol_write_seq = intervals_protocol_write_seq
                 + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
-        WHERE id = ?1`,
+        WHERE id = ?1
+        RETURNING intervals_credential_generation AS credential_generation`,
     )
     .bind(userId, connect ? apiKey : null, connect ? athleteId : null, connect ? 1 : 0)
-    .run();
-  return { connected: connect };
+    .run<{ credential_generation: number }>();
+  if (!row) throw new Error('intervals_user_not_found');
+  return { connected: connect, credential_generation: row.credential_generation };
 }
 
 /**
@@ -1861,8 +1863,9 @@ async function writeUserIntervalsOAuth(
   refreshToken: string | null,
   expiresAt: number | null,
   athleteId: string,
-): Promise<void> {
-  await workoutDB(db)
+  expectedGeneration?: number,
+): Promise<number | null> {
+  const { results: [row] } = await workoutDB(db)
     .prepare(
       `UPDATE users
           SET intervals_oauth_access_token = ?2,
@@ -1902,7 +1905,9 @@ async function writeUserIntervalsOAuth(
                 THEN intervals_activities_sync_attempt ELSE 0 END,
               intervals_protocol_write_seq = intervals_protocol_write_seq
                 + ${INTERVALS_SOURCE_FENCE_ENABLED_SQL}
-        WHERE id = ?1`,
+        WHERE id = ?1
+          AND (?6 IS NULL OR intervals_credential_generation = ?6)
+        RETURNING intervals_credential_generation AS credential_generation`,
     )
     .bind(
       userId,
@@ -1910,8 +1915,10 @@ async function writeUserIntervalsOAuth(
       refreshToken,
       expiresAt,
       athleteId,
+      expectedGeneration ?? null,
     )
-    .run();
+    .run<{ credential_generation: number }>();
+  return row?.credential_generation ?? null;
 }
 
 export async function setUserIntervalsOAuth(
@@ -1921,14 +1928,16 @@ export async function setUserIntervalsOAuth(
   refreshToken: string | null,
   expiresAt: number | null,
   athleteId: string,
-): Promise<void> {
-  await writeUserIntervalsOAuth(
+  expectedGeneration?: number,
+): Promise<number | null> {
+  return writeUserIntervalsOAuth(
     db,
     userId,
     accessToken,
     refreshToken,
     expiresAt,
     athleteId,
+    expectedGeneration,
   );
 }
 
@@ -1966,20 +1975,33 @@ export async function consumeIntervalsOAuthState(
   db: D1Database,
   state: string,
 ): Promise<string | null> {
+  return (await consumeIntervalsOAuthAttempt(db, state))?.user_id ?? null;
+}
+
+/** Consume the state and capture its user's credential generation atomically.
+ * Migration 0047 cancels unconsumed states on generation changes. The callback
+ * uses this captured generation to reject replacement/disconnect during I/O. */
+export async function consumeIntervalsOAuthAttempt(
+  db: D1Database,
+  state: string,
+): Promise<{ user_id: string; credential_generation: number } | null> {
   const ts = now();
   // ATOMIC single-use: DELETE … RETURNING removes the row and yields its value
   // in one statement, so two concurrent callbacks (browser preload, double-tap,
   // replay) can't both observe the same valid state — only one DELETE returns
   // the row, the other gets nothing.
   const row = await workoutDB(db)
-    .prepare('DELETE FROM intervals_oauth_states WHERE state = ?1 RETURNING user_id, expires_at')
+    .prepare(`DELETE FROM intervals_oauth_states WHERE state = ?1
+      RETURNING user_id, expires_at,
+        (SELECT intervals_credential_generation FROM users
+          WHERE id = intervals_oauth_states.user_id) AS credential_generation`)
     .bind(state)
-    .first<{ user_id: string; expires_at: number }>();
+    .first<{ user_id: string; expires_at: number; credential_generation: number }>();
   // Best-effort sweep of any OTHER now-expired rows (kept out of the atomic
   // statement above so it never affects the single-use result).
   await workoutDB(db).prepare('DELETE FROM intervals_oauth_states WHERE expires_at < ?1').bind(ts).run();
   if (!row || row.expires_at < ts) return null;
-  return row.user_id;
+  return { user_id: row.user_id, credential_generation: row.credential_generation };
 }
 
 // ---- groups + invites (M2) -----------------------------------------------
@@ -2039,11 +2061,46 @@ function newInviteCode(): string {
 export interface MeProfile {
   display_name: string | null;
   email: string | null;
-  intervals: { connected: boolean; athlete_id: string | null; needs_reauth: boolean };
+  intervals: IntervalsConnectionStatus;
   claude: { is_owner: boolean; connected: boolean; last_active: number | null };
   // Apple Health group-feed opt-in (migration 0028). Off by default; the iOS
   // Apple Health detail toggle flips it via PATCH /api/me/health-sharing.
   health: { sharing_in_group: boolean };
+}
+
+export interface IntervalsConnectionStatus {
+  connected: boolean;
+  athlete_id: string | null;
+  needs_reauth: boolean;
+  credential_generation: number;
+  sync_pending: boolean;
+  last_synced_at: number | null;
+}
+
+interface IntervalsStatusRow {
+  intervals_effective_athlete_id: string | null;
+  intervals_auth_error_at: number | null;
+  intervals_credential_generation: number;
+  intervals_activities_synced_at: number | null;
+}
+
+function intervalsStatus(row: IntervalsStatusRow | null): IntervalsConnectionStatus {
+  const connected = !!row?.intervals_effective_athlete_id;
+  return {
+    connected,
+    athlete_id: row?.intervals_effective_athlete_id ?? null,
+    needs_reauth: row?.intervals_auth_error_at != null,
+    credential_generation: row?.intervals_credential_generation ?? 0,
+    sync_pending: connected && row?.intervals_activities_synced_at == null,
+    last_synced_at: row?.intervals_activities_synced_at ?? null,
+  };
+}
+
+export async function getIntervalsConnectionStatus(db: D1Database, userId: string): Promise<IntervalsConnectionStatus> {
+  return intervalsStatus(await workoutDB(db).prepare(`SELECT
+    ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_effective_athlete_id,
+    intervals_auth_error_at, intervals_credential_generation, intervals_activities_synced_at
+    FROM users WHERE id = ?1`).bind(userId).first<IntervalsStatusRow>());
 }
 
 export async function getMeProfile(
@@ -2055,7 +2112,8 @@ export async function getMeProfile(
     .prepare(
       `SELECT display_name, email,
               ${INTERVALS_EFFECTIVE_ATHLETE_SQL} AS intervals_effective_athlete_id,
-              intervals_auth_error_at, share_health_activities
+              intervals_auth_error_at, share_health_activities,
+              intervals_credential_generation, intervals_activities_synced_at
          FROM users WHERE id = ?1`,
     )
     .bind(userId)
@@ -2064,6 +2122,8 @@ export async function getMeProfile(
       email: string | null;
       intervals_effective_athlete_id: string | null;
       intervals_auth_error_at: number | null;
+      intervals_credential_generation: number;
+      intervals_activities_synced_at: number | null;
       share_health_activities: number | null;
     }>();
 
@@ -2093,14 +2153,7 @@ export async function getMeProfile(
   return {
     display_name: u?.display_name ?? null,
     email: u?.email ?? null,
-    intervals: {
-      connected: !!u?.intervals_effective_athlete_id,
-      athlete_id: u?.intervals_effective_athlete_id ?? null,
-      // A dead credential clears athlete_id (connected:false) AND sets the
-      // marker — so iOS can say "your intervals connection expired, reconnect"
-      // rather than the ambiguous "not connected".
-      needs_reauth: u?.intervals_auth_error_at != null,
-    },
+    intervals: intervalsStatus(u),
     claude: {
       is_owner: isOwner,
       connected: claudeConnected,
@@ -9613,6 +9666,56 @@ export interface ActivitySyncDeps extends ActivityFetchDeps {
   ownerSub?: string;
   /** Server-owned successful-sync stamp override for deterministic tests. */
   syncedAt?: number;
+  /** Connect/retry work may only use the credential the member selected. */
+  expectedCredentialGeneration?: number;
+}
+
+export interface IntervalsImportResult {
+  status: 'synced' | 'retry' | 'reconnect' | 'disconnected' | 'superseded';
+  connection: IntervalsConnectionStatus | null;
+}
+
+/** Recent-activity import after an acknowledged connect, or an explicit retry.
+ * Failures describe the import and never turn a saved credential into a failed
+ * connect acknowledgement. All provider/cache writes retain the existing fence. */
+export async function reconcileIntervalsConnection(
+  db: D1Database,
+  env: Env,
+  userId: string,
+  expectedGeneration: number,
+  deps: Pick<ActivitySyncDeps, 'fetcher' | 'today' | 'timeoutMs'> = {},
+): Promise<IntervalsImportResult> {
+  try {
+    const before = await getIntervalsConnectionStatus(db, userId);
+    if (before.credential_generation !== expectedGeneration) {
+      return { status: 'superseded', connection: before };
+    }
+    if (!before.connected) {
+      return { status: before.needs_reauth ? 'reconnect' : 'disconnected', connection: before };
+    }
+    const timeoutMs = deps.timeoutMs ?? 10_000;
+    // This deadline covers response bodies and an optional OAuth refresh too;
+    // the existing adapter's fetch timeout ends once headers arrive.
+    const signal = AbortSignal.timeout(timeoutMs);
+    const fetcher: Fetcher = deps.fetcher ?? ((input, init) => globalThis.fetch(input, {
+      ...init, signal,
+    }));
+    const result = await syncExternalActivities(db, env, {
+      ...deps, fetcher, timeoutMs, userId,
+      today: deps.today ?? todayInTz(await getUserTimezone(db, userId)),
+      expectedCredentialGeneration: expectedGeneration,
+    });
+    const connection = await getIntervalsConnectionStatus(db, userId);
+    if (connection.needs_reauth) return { status: 'reconnect', connection };
+    if (connection.credential_generation !== expectedGeneration || result.status === 'superseded') {
+      return { status: 'superseded', connection };
+    }
+    return { status: result.status === 'ok' ? 'synced' : 'retry', connection };
+  } catch (error) {
+    console.warn({ event: 'intervals_connection_import_failed',
+      error_type: error instanceof Error ? error.name : 'unknown' });
+    return { status: 'retry', connection: null };
+  }
 }
 
 /**
@@ -9646,7 +9749,11 @@ export async function syncExternalActivities(
   if (deps.userId) {
     userId = deps.userId;
     let creds = await getUserIntervalsCreds(db, userId);
-    const envFallbackOk = await canUseOwnerIntervalsEnvFallback(
+    if (deps.expectedCredentialGeneration !== undefined &&
+        creds.credential_generation !== deps.expectedCredentialGeneration) {
+      return { status: 'superseded', synced: 0, detail: 'superseded' };
+    }
+    const envFallbackOk = deps.expectedCredentialGeneration === undefined && await canUseOwnerIntervalsEnvFallback(
       db,
       userId,
       deps.ownerSub ?? env.OWNER_APPLE_SUB,

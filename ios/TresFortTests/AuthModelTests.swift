@@ -2022,3 +2022,157 @@ extension AuthModelTests {
         XCTAssertEqual(finished.nextEntryIntent?.destination, .coach)
     }
 }
+
+extension AuthModelTests {
+    private func intervalsProfile(connected: Bool = true, pending: Bool = false, generation: Int = 1) -> MeProfile {
+        MeProfile(display_name: nil, email: nil,
+            intervals: .init(connected: connected, athlete_id: connected ? "athlete-a" : nil,
+                needs_reauth: false, credential_generation: generation, sync_pending: pending,
+                last_synced_at: pending ? nil : 1),
+            claude: .init(is_owner: false, connected: false, last_active: nil), health: nil)
+    }
+
+    func testIntervalsAcknowledgementSurvivesOutageAndRetriesWithoutCredentials() async throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        var writes = 0, imports = 0, refreshes = 0
+        let pending = intervalsProfile(pending: true).intervals, complete = intervalsProfile().intervals
+        let group = GroupModel(auth: auth, defaults: defaults,
+            profileLoader: { _ in throw URLError(.notConnectedToInternet) },
+            intervalsConnector: { _, athlete, _ in
+                writes += 1; XCTAssertEqual(athlete, "0")
+                return .init(connected: true, credential_generation: 1,
+                    initial_sync: .init(status: .retry, connection: pending))
+            }, intervalsImporter: { generation, _ in
+                imports += 1; XCTAssertEqual(generation, 1)
+                return .init(status: .synced, connection: complete)
+            })
+        group.onActivityPersisted = { refreshes += 1 }
+        try await group.setIntervalsCredentials(apiKey: "synthetic-key", athleteID: "")
+        XCTAssertEqual(group.intervalsStatus?.connected, true)
+        XCTAssertEqual(group.intervalsImportStatus, .retry)
+        XCTAssertEqual(refreshes, 0)
+        await group.retryIntervalsSync()
+        XCTAssertEqual(writes, 1); XCTAssertEqual(imports, 1); XCTAssertEqual(refreshes, 1)
+        XCTAssertEqual(group.intervalsStatus?.sync_pending, false)
+        XCTAssertFalse(group.intervalsBusy)
+    }
+
+    func testIntervalsCurrentServerDisconnectOverridesPersistedMirror() async throws {
+        let defaults = defaults()
+        defaults.set(try JSONEncoder().encode(IntervalsConnection(athlete_id: "old-athlete", connected_at: 1)),
+            forKey: GroupModel.intervalsConnectionKey(userID: "user-a"))
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let profile = intervalsProfile(connected: false)
+        let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in profile })
+        XCTAssertNil(group.intervalsStatus) // Cold launch cannot certify saved credentials.
+        await group.refreshMe()
+        XCTAssertEqual(group.intervalsStatus?.connected, false)
+        XCTAssertNil(group.intervalsConnection)
+        XCTAssertNil(defaults.data(forKey: GroupModel.intervalsConnectionKey(userID: "user-a")))
+    }
+
+    func testIntervalsLateImportCannotUndoDisconnectOrNotifyCalendar() async throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let started = AsyncLatch(), release = AsyncLatch(), profile = intervalsProfile()
+        var refreshes = 0
+        let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in profile },
+            intervalsConnector: { key, _, _ in XCTAssertNil(key); return .init(connected: false, credential_generation: 2) },
+            intervalsImporter: { _, _ in
+                await started.open(); await release.wait()
+                return .init(status: .synced, connection: profile.intervals)
+            })
+        group.onActivityPersisted = { refreshes += 1 }
+        await group.refreshMe()
+        let syncing = Task { await group.retryIntervalsSync() }
+        await started.wait()
+        try await group.disconnectIntervals()
+        await release.open(); await syncing.value
+        XCTAssertEqual(group.intervalsStatus?.connected, false)
+        XCTAssertEqual(group.intervalsStatus?.credential_generation, 2)
+        XCTAssertEqual(refreshes, 0)
+    }
+
+    func testIntervalsProfileStartedBeforeDisconnectCannotRestoreConnection() async throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let started = AsyncLatch(), release = AsyncLatch(), profile = intervalsProfile()
+        let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in
+            await started.open(); await release.wait(); return profile
+        }, intervalsConnector: { _, _, _ in .init(connected: false, credential_generation: 2) })
+        let reading = Task { await group.refreshMe() }
+        await started.wait(); try await group.disconnectIntervals()
+        await release.open(); await reading.value
+        XCTAssertEqual(group.intervalsStatus?.connected, false)
+        XCTAssertEqual(group.intervalsStatus?.credential_generation, 2)
+    }
+
+    func testIntervalsReceiptSurvivesSameAccountRenewalButCannotCrossAccount() async throws {
+        for switchAccount in [false, true] {
+            let defaults = defaults(), api = AuthAPIStub()
+            let auth = AuthModel(api: api, tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+            let started = AsyncLatch(), release = AsyncLatch(), profile = intervalsProfile()
+            var refreshes = 0
+            let group = GroupModel(auth: auth, defaults: defaults, intervalsConnector: { _, _, _ in
+                await started.open(); await release.wait()
+                return .init(connected: true, credential_generation: 1,
+                    initial_sync: .init(status: .synced, connection: profile.intervals))
+            })
+            group.onActivityPersisted = { refreshes += 1 }
+            let saving = Task { try await group.setIntervalsCredentials(apiKey: "synthetic", athleteID: "athlete-a") }
+            await started.wait()
+            let nextUser = switchAccount ? "user-b" : "user-a"
+            api.authResult = .success(response(jwt: jwt(expiration: Date.distantFuture.addingTimeInterval(-3600), subject: nextUser), userID: nextUser))
+            await auth.exchange(identityToken: "synthetic", fullName: nil)
+            await release.open(); try await saving.value
+            XCTAssertEqual(refreshes, switchAccount ? 0 : 1)
+            XCTAssertEqual(group.intervalsStatus?.connected, switchAccount ? nil : true)
+        }
+    }
+
+    func testIntervalsOAuthAcceptedCallbackDoesNotBecomeFailureWhenProfileUnavailable() async throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        var authorizations = 0, reads = 0
+        let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in
+            reads += 1; throw URLError(.notConnectedToInternet)
+        }, intervalsAuthorizer: { _ in authorizations += 1; return .init(connected: true, importStatus: .retry) })
+        let connected = try await group.connectIntervalsViaOAuth()
+        XCTAssertTrue(connected)
+        XCTAssertTrue(group.intervalsStatusUnavailable)
+        await group.retryIntervalsSync() // Recover by reading status, never by resending authorization.
+        XCTAssertEqual(authorizations, 1); XCTAssertEqual(reads, 2)
+    }
+
+    func testIntervalsOAuthCancellationKeepsCurrentStatusAndLateCallbackCannotUndoDisconnect() async throws {
+        let defaults = defaults()
+        let auth = AuthModel(api: AuthAPIStub(), tokenStore: MemoryTokenStore(sessionToken(for: "user-a")), defaults: defaults)
+        let profile = intervalsProfile()
+        var cancelled = true
+        let started = AsyncLatch(), release = AsyncLatch()
+        let group = GroupModel(auth: auth, defaults: defaults, profileLoader: { _ in profile },
+            intervalsConnector: { _, _, _ in .init(connected: false, credential_generation: 2) },
+            intervalsAuthorizer: { _ in
+                if cancelled { return .init(connected: false) }
+                await started.open(); await release.wait()
+                return .init(connected: true, importStatus: .synced)
+            })
+        await group.refreshMe()
+        let result = try await group.connectIntervalsViaOAuth()
+        XCTAssertFalse(result); XCTAssertEqual(group.intervalsStatus?.connected, true)
+        cancelled = false
+        let connecting = Task { try await group.connectIntervalsViaOAuth() }
+        await started.wait(); try await group.disconnectIntervals(); await release.open()
+        let late = try await connecting.value
+        XCTAssertFalse(late); XCTAssertEqual(group.intervalsStatus?.connected, false)
+    }
+
+    func testIntervalsOAuthParserSeparatesAcceptedImportFailureFromAuthorizationFailure() throws {
+        let result = try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1&sync=retry")!)
+        XCTAssertTrue(result.connected); XCTAssertEqual(result.importStatus, .retry)
+        XCTAssertThrowsError(try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?error=bad_state")!))
+        XCTAssertThrowsError(try IntervalsOAuthResult.parse(URL(string: "https://untrusted.example?ok=1")!))
+        XCTAssertNil(try IntervalsOAuthResult.parse(URL(string: "tresfort://intervals-connected?ok=1")!).importStatus)
+    }
+}

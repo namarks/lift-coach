@@ -62,6 +62,13 @@ final class GroupModel: ObservableObject {
     /// profile status still comes from /api/me; this mirror is account-scoped
     /// so switching Apple accounts cannot display another athlete id.
     @Published var intervalsConnection: IntervalsConnection?
+    /// Only a current server response can establish connection authority.
+    /// The persisted mirror is historical and cannot override this status.
+    @Published private(set) var intervalsStatus: MeProfile.IntervalsStatus?
+    @Published private(set) var intervalsBusy = false
+    @Published private(set) var intervalsImportStatus: IntervalsImportStatus?
+    @Published private(set) var intervalsStatusUnavailable = false
+    private var intervalsOperation = 0
 
     // MARK: Activity outbox (the one persisted piece)
 
@@ -81,6 +88,9 @@ final class GroupModel: ObservableObject {
     private let activityDeleter: ((String, String) async throws -> Void)?
     private let groupLister: ((String) async throws -> [GroupSummary])?
     private let profileLoader: ((String) async throws -> MeProfile)?
+    private let intervalsConnector: ((String?, String?, String) async throws -> APIClient.IntervalsConnectResult)?
+    private let intervalsImporter: ((Int, String) async throws -> IntervalsImportResult)?
+    private let intervalsAuthorizer: ((String) async throws -> IntervalsOAuthResult)?
     /// Invalidates identity-bearing responses that began before a global
     /// profile-name update. Without this, an older in-flight feed or stats
     /// response could restore the previous effective display name.
@@ -101,7 +111,10 @@ final class GroupModel: ObservableObject {
         activityLogger: ((PendingActivity, String) async throws -> ActivityRow)? = nil,
         activityDeleter: ((String, String) async throws -> Void)? = nil,
         groupLister: ((String) async throws -> [GroupSummary])? = nil,
-        profileLoader: ((String) async throws -> MeProfile)? = nil
+        profileLoader: ((String) async throws -> MeProfile)? = nil,
+        intervalsConnector: ((String?, String?, String) async throws -> APIClient.IntervalsConnectResult)? = nil,
+        intervalsImporter: ((Int, String) async throws -> IntervalsImportResult)? = nil,
+        intervalsAuthorizer: ((String) async throws -> IntervalsOAuthResult)? = nil
     ) {
         self.auth = auth
         self.accountID = auth.userID
@@ -110,6 +123,9 @@ final class GroupModel: ObservableObject {
         self.activityDeleter = activityDeleter
         self.groupLister = groupLister
         self.profileLoader = profileLoader
+        self.intervalsConnector = intervalsConnector
+        self.intervalsImporter = intervalsImporter
+        self.intervalsAuthorizer = intervalsAuthorizer
         self.intervalsConnection = Self.loadIntervalsConnection(
             userID: auth.userID, defaults: defaults)
         self.outbox = ActivityOutboxStore.load(
@@ -318,14 +334,19 @@ final class GroupModel: ObservableObject {
     func refreshMe() async {
         guard let jwt = currentJWT else { return }
         let generation = identityCacheGeneration
+        let operation = intervalsOperation
         do {
             let profile = try await loadProfile(jwt: jwt)
             guard isCurrentAccount,
                   generation == identityCacheGeneration else { return }
             me = profile
+            if operation == intervalsOperation && !intervalsBusy {
+                acceptIntervalsStatus(profile.intervals)
+            }
             lastError = nil
         } catch {
             guard isCurrentAccount else { return }
+            if operation == intervalsOperation && !intervalsBusy { intervalsStatusUnavailable = true }
             handle(error, jwt: jwt)
         }
     }
@@ -681,61 +702,159 @@ final class GroupModel: ObservableObject {
 
     // MARK: - Intervals.icu
 
-    /// PATCH /api/me/integrations/intervals. Persists the connection
-    /// locally on success so the settings view can render "Connected"
-    /// across app restarts.
-    func setIntervalsCredentials(apiKey: String, athleteID: String) async throws {
-        guard let jwt = currentJWT else {
-            throw APIError.http(401, "not_signed_in")
+    private func acceptIntervalsStatus(_ status: MeProfile.IntervalsStatus) {
+        intervalsStatus = status
+        intervalsStatusUnavailable = false
+        if !status.connected {
+            intervalsConnection = nil
+            Self.saveIntervalsConnection(nil, userID: accountID, defaults: defaults)
         }
-        // intervals.icu supports athlete id "0" = the athlete that owns the
-        // API key, so a blank Athlete ID is valid (#1094). Send "0" and the
-        // backend's .../athlete/{id}/... path resolves to the key's owner.
-        let resolvedAthlete =
-            athleteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                ? "0" : athleteID
-        _ = try await api.setIntervalsCredentials(
-            apiKey: apiKey, athleteID: resolvedAthlete, jwt: jwt)
-        guard isCurrentBearer(jwt) else { return }
-        intervalsConnection = IntervalsConnection(
-            athlete_id: resolvedAthlete,
-            connected_at: Int(Date().timeIntervalSince1970 * 1000))
-        Self.saveIntervalsConnection(
-            intervalsConnection, userID: accountID, defaults: defaults)
-        await refreshMe()
+        if status.needs_reauth == true { intervalsImportStatus = .reconnect }
+        else if status.sync_pending == true { intervalsImportStatus = .retry }
+        else { intervalsImportStatus = nil }
+    }
+
+    private func beginIntervalsOperation() -> Int {
+        intervalsOperation += 1
+        intervalsBusy = true
+        return intervalsOperation
+    }
+
+    private func finishIntervalsOperation(_ operation: Int) {
+        guard operation == intervalsOperation else { return }
+        // Invalidate profile reads that started during the mutation, too.
+        intervalsOperation += 1
+        intervalsBusy = false
+    }
+
+    private func isCurrentIntervalsOperation(_ operation: Int) -> Bool {
+        isCurrentAccount && operation == intervalsOperation
+    }
+
+    private func writeIntervalsCredentials(
+        apiKey: String?, athleteID: String?, jwt: String
+    ) async throws -> APIClient.IntervalsConnectResult {
+        if let intervalsConnector { return try await intervalsConnector(apiKey, athleteID, jwt) }
+        return try await api.setIntervalsCredentials(apiKey: apiKey, athleteID: athleteID, jwt: jwt)
+    }
+
+    private func publishIntervalsImport(_ result: IntervalsImportResult, operation: Int) async {
+        guard isCurrentIntervalsOperation(operation) else { return }
+        if let connection = result.connection { acceptIntervalsStatus(connection) }
+        else { intervalsStatusUnavailable = true }
+        if result.connection?.needs_reauth == true { intervalsImportStatus = .reconnect }
+        else if result.connection?.connected == false { intervalsImportStatus = .disconnected }
+        else { intervalsImportStatus = result.status }
+        if result.status == .synced {
+            await onActivityPersisted?()
+            guard isCurrentIntervalsOperation(operation) else { return }
+            if let id = selectedGroupID { await refreshGroup(groupID: id) }
+        }
+    }
+
+    /// A credential acknowledgement is retained even if the initial import
+    /// needs retry. Neither a failed import nor a profile read asks for a
+    /// second credential write.
+    func setIntervalsCredentials(apiKey: String, athleteID: String) async throws {
+        guard let jwt = currentJWT else { throw APIError.http(401, "not_signed_in") }
+        let operation = beginIntervalsOperation()
+        defer { finishIntervalsOperation(operation) }
+        let resolvedAthlete = athleteID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "0" : athleteID
+        do {
+            let receipt = try await writeIntervalsCredentials(apiKey: apiKey, athleteID: resolvedAthlete, jwt: jwt)
+            guard isCurrentIntervalsOperation(operation) else { return }
+            acceptIntervalsStatus(.init(connected: receipt.connected,
+                athlete_id: receipt.connected ? resolvedAthlete : nil, needs_reauth: false,
+                credential_generation: receipt.credential_generation, sync_pending: receipt.connected))
+            if let imported = receipt.initial_sync {
+                await publishIntervalsImport(imported, operation: operation)
+            } else {
+                await loadIntervalsAfterAcknowledgement(jwt: jwt, operation: operation)
+            }
+        } catch {
+            guard isCurrentIntervalsOperation(operation) else { return }
+            handle(error, jwt: jwt)
+            throw error
+        }
     }
 
     func disconnectIntervals() async throws {
-        guard let jwt = currentJWT else {
-            throw APIError.http(401, "not_signed_in")
+        guard let jwt = currentJWT else { throw APIError.http(401, "not_signed_in") }
+        let operation = beginIntervalsOperation()
+        defer { finishIntervalsOperation(operation) }
+        do {
+            let receipt = try await writeIntervalsCredentials(apiKey: nil, athleteID: nil, jwt: jwt)
+            guard isCurrentIntervalsOperation(operation) else { return }
+            acceptIntervalsStatus(.init(connected: false, athlete_id: nil, needs_reauth: false,
+                credential_generation: receipt.credential_generation, sync_pending: false))
+        } catch {
+            guard isCurrentIntervalsOperation(operation) else { return }
+            handle(error, jwt: jwt)
+            throw error
         }
-        _ = try await api.setIntervalsCredentials(
-            apiKey: nil, athleteID: nil, jwt: jwt)
-        guard isCurrentBearer(jwt) else { return }
-        intervalsConnection = nil
-        Self.saveIntervalsConnection(
-            nil, userID: accountID, defaults: defaults)
-        await refreshMe()
     }
 
-    /// One-tap intervals.icu connect via OAuth: fetch the authorize URL, run
-    /// the ASWebAuthenticationSession sheet, and refresh the profile on a
-    /// connected callback. The bearer token is exchanged + stored server-side
-    /// (the app never sees it), so success is reflected purely by re-reading
-    /// `/api/me` (`me.intervals.connected`). Returns false when the user
-    /// dismissed the sheet — the caller treats that as a no-op, not an error.
+    /// Explicit retry is pinned to the current server connection generation.
+    func retryIntervalsSync() async {
+        guard let jwt = currentJWT else { return }
+        guard let generation = intervalsStatus?.credential_generation,
+              !intervalsStatusUnavailable else { await refreshMe(); return }
+        let operation = beginIntervalsOperation()
+        defer { finishIntervalsOperation(operation) }
+        do {
+            let result: IntervalsImportResult
+            if let intervalsImporter { result = try await intervalsImporter(generation, jwt) }
+            else { result = try await api.syncIntervals(expectedGeneration: generation, jwt: jwt) }
+            await publishIntervalsImport(result, operation: operation)
+        } catch {
+            guard isCurrentIntervalsOperation(operation) else { return }
+            intervalsImportStatus = .retry
+            handle(error, jwt: jwt)
+        }
+    }
+
+    private func loadIntervalsAfterAcknowledgement(jwt: String, operation: Int) async {
+        do {
+            let profile = try await loadProfile(jwt: jwt)
+            guard isCurrentIntervalsOperation(operation) else { return }
+            acceptIntervalsStatus(profile.intervals)
+        } catch {
+            guard isCurrentIntervalsOperation(operation) else { return }
+            intervalsStatusUnavailable = true
+            // The write was already acknowledged. A failed status read must
+            // never become a connect failure or invite a duplicate submission.
+            handle(error, jwt: jwt)
+        }
+    }
+
     @discardableResult
     func connectIntervalsViaOAuth() async throws -> Bool {
-        guard let jwt = currentJWT else {
-            throw APIError.http(401, "not_signed_in")
+        guard let jwt = currentJWT else { throw APIError.http(401, "not_signed_in") }
+        let operation = beginIntervalsOperation()
+        defer { finishIntervalsOperation(operation) }
+        do {
+            let result: IntervalsOAuthResult
+            if let intervalsAuthorizer { result = try await intervalsAuthorizer(jwt) }
+            else {
+                let url = try await api.startIntervalsOAuth(jwt: jwt)
+                guard isCurrentIntervalsOperation(operation) else { return false }
+                result = try await IntervalsWebAuth().authorize(url)
+            }
+            guard isCurrentIntervalsOperation(operation), result.connected else { return false }
+            // The redirect acknowledges a saved connection, but only a fresh
+            // profile can say whether it remains connected after import.
+            intervalsStatus = nil
+            await loadIntervalsAfterAcknowledgement(jwt: jwt, operation: operation)
+            guard isCurrentIntervalsOperation(operation) else { return false }
+            if let status = result.importStatus {
+                await publishIntervalsImport(.init(status: status, connection: intervalsStatus), operation: operation)
+            }
+            return true
+        } catch {
+            guard isCurrentIntervalsOperation(operation) else { return false }
+            handle(error, jwt: jwt)
+            throw error
         }
-        let url = try await api.startIntervalsOAuth(jwt: jwt)
-        guard isCurrentBearer(jwt) else { return false }
-        let web = IntervalsWebAuth()
-        let connected = try await web.authorize(url)
-        guard isCurrentBearer(jwt) else { return false }
-        if connected { await refreshMe() }
-        return connected
     }
 
     // MARK: - Apple Health

@@ -14,6 +14,10 @@ enum UIFixtureScenario: String, CaseIterable {
     var isActivation: Bool { rawValue.hasPrefix("activation-") }
     case historySmall = "history-small", historyLarge = "history-large"
 
+    case intervalsConnect = "intervals-connect", intervalsRetry = "intervals-retry"
+    case intervalsReauth = "intervals-reauth"
+    var isIntervals: Bool { rawValue.hasPrefix("intervals-") }
+
     case historyProgress = "history-progress"
 
     var isHistory: Bool { self == .historySmall || self == .historyLarge || self == .historyProgress }
@@ -50,7 +54,8 @@ enum UIFixtureModel {
         let auth = AuthModel(tokenStore: FixtureTokenStore(), defaults: defaults)
         if UIFixtureScenario.selected != .signIn && UIFixtureScenario.selected?.isActivation != true {
             auth.userID = "synthetic-ui-user"
-            auth.jwt = "synthetic-ui-bearer"
+            auth.jwt = UIFixtureScenario.selected?.isIntervals == true
+                ? UIFixtureServer(scenario: UIFixtureScenario.selected!).syntheticJWT : "synthetic-ui-bearer"
             auth.onboardingComplete = UIFixtureScenario.selected != .onboarding
             auth.phase = .signedIn
         }
@@ -85,6 +90,34 @@ struct UIFixtureView: View {
     @Environment(\.dynamicTypeSize) private var systemDynamicTypeSize
     @ObservedObject var auth: AuthModel
     let scenario: UIFixtureScenario
+
+    var body: some View {
+        Group {
+            if scenario == .signIn || scenario.isActivation || scenario.isIntervals {
+                VStack(spacing: 0) {
+                    Text("SYNTHETIC · \(scenario.rawValue)")
+                        .font(.caption).dynamicTypeSize(.large)
+                        .accessibilityIdentifier("fixture.scenario")
+                    RootView(defaults: UIFixtureModel.defaults,
+                             now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
+                }
+            } else {
+                UIFixtureTrainingView(auth: auth, scenario: scenario)
+            }
+        }
+        .tint(Theme.accent)
+        .environment(\.openURL, OpenURLAction { _ in .discarded })
+        .environment(\.dynamicTypeSize,
+            ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : systemDynamicTypeSize)
+    }
+}
+
+/// RootView owns its own SyncModel. Construct the standalone training model
+/// only for fixtures that render it, so an unused subscriber cannot supersede
+/// the visible app's state request in the shared account snapshot store.
+private struct UIFixtureTrainingView: View {
+    @ObservedObject var auth: AuthModel
+    let scenario: UIFixtureScenario
     @StateObject private var sync: SyncModel
 
     init(auth: AuthModel, scenario: UIFixtureScenario) {
@@ -103,10 +136,7 @@ struct UIFixtureView: View {
                 .font(.caption).dynamicTypeSize(.large)
                 .accessibilityIdentifier("fixture.scenario")
                 .accessibilityValue(Text(verbatim: scenario.isHistory ? "\(sync.sets.count) sets" : ""))
-            if scenario == .signIn || scenario.isActivation {
-                RootView(defaults: UIFixtureModel.defaults,
-                         now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
-            } else if scenario == .onboarding && !auth.onboardingComplete {
+            if scenario == .onboarding && !auth.onboardingComplete {
                 OnboardingView(auth: auth)
             } else if scenario.isHistory {
                 HistoryView(sync: sync)
@@ -114,12 +144,8 @@ struct UIFixtureView: View {
                 TodayView(sync: sync, auth: auth)
             }
         }
-        .tint(Theme.accent)
-        .environment(\.openURL, OpenURLAction { _ in .discarded })
-        .environment(\.dynamicTypeSize,
-            ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : systemDynamicTypeSize)
         .task {
-            guard scenario != .signIn, !scenario.isActivation, !scenario.isHistory else { return }
+            guard !scenario.isHistory else { return }
             await sync.load()
             if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
             if ![.empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .planChanges].contains(scenario) {
@@ -178,6 +204,22 @@ private struct UIFixtureServer {
     var inviteAttempts = 0
     var joined = false
     var coachConnected = false
+    var intervalsConnected = false
+    var intervalsReauth = false
+    var intervalsPending = false
+    var intervalsGeneration = 0
+    var importedActivities: [[String: Any]] = []
+    var intervalsStatus: [String: Any] {
+        ["connected": intervalsConnected, "needs_reauth": intervalsReauth,
+         "athlete_id": intervalsConnected ? "synthetic-athlete" as Any : NSNull(),
+         "credential_generation": intervalsGeneration, "sync_pending": intervalsPending,
+         "last_synced_at": intervalsConnected && !intervalsPending ? revision as Any : NSNull()]
+    }
+    mutating func importIntervalsActivity() {
+        importedActivities = [["id": "synthetic-imported-ride", "source": "intervals", "external_id": "ride-1",
+            "date": "2026-09-08", "kind": "ride", "name": "Morning ride", "start_date_local_ms": revision,
+            "duration_s": 1800, "load": 25, "synced_at": revision]]
+    }
     var syntheticUserID: String { scenario == .activationOwner ? "synthetic-owner" : "synthetic-ui-user" }
     var syntheticJWT: String {
         let data = try! JSONSerialization.data(withJSONObject: ["sub": syntheticUserID, "exp": 4_000_000_000], options: [.sortedKeys])
@@ -205,6 +247,11 @@ private struct UIFixtureServer {
                     "set_index": 1, "weight": 45, "reps": 5, "is_warmup": 0,
                     "logged_at": revision, "updated_at": revision, "is_timed": 0]]
             }
+        }
+        if scenario.isIntervals { sessions = [] }
+        if scenario == .intervalsReauth {
+            intervalsReauth = true
+            importIntervalsActivity()
         }
         if let fixture = coachingFixture {
             sessions = [fixture["session"] as! [String: Any]]
@@ -300,9 +347,26 @@ private struct UIFixtureServer {
             response = ["jwt": syntheticJWT, "user": ["id": syntheticUserID, "display_name": "Synthetic member"]]
         case ("GET", "/api/me"):
             response = ["display_name": "Synthetic member", "email": NSNull(),
-                "intervals": ["connected": false],
+                "intervals": intervalsStatus,
                 "claude": ["is_owner": scenario == .activationOwner, "connected": coachConnected],
                 "health": ["sharing_in_group": false]]
+        case ("PATCH", "/api/me/integrations/intervals") where scenario.isIntervals:
+            intervalsGeneration += 1
+            intervalsConnected = body["api_key"] is String
+            intervalsReauth = false
+            intervalsPending = intervalsConnected && scenario == .intervalsRetry
+            if intervalsConnected && !intervalsPending { importIntervalsActivity() }
+            var result: [String: Any] = ["connected": intervalsConnected, "credential_generation": intervalsGeneration]
+            if intervalsConnected {
+                result["initial_sync"] = ["status": intervalsPending ? "retry" : "synced", "connection": intervalsStatus]
+            }
+            response = result
+        case ("POST", "/api/me/integrations/intervals/sync") where scenario.isIntervals:
+            guard body["expected_generation"] as? Int == intervalsGeneration, intervalsConnected
+            else { throw URLError(.badServerResponse) }
+            intervalsPending = false
+            importIntervalsActivity()
+            response = ["status": "synced", "connection": intervalsStatus]
         case ("POST", "/api/me/mcp-passphrase"):
             response = ["ok": true]
         case ("GET", "/api/groups"):
@@ -338,7 +402,7 @@ private struct UIFixtureServer {
             }
             response = ["plan": plan as Any? ?? NSNull(), "plan_version": plan?["version"] ?? 0,
                 "sessions": sessions, "sets": sets, "server_time": revision, "plan_groups_version": 1,
-                "activities": [], "external_events": [], "external_activities": []]
+                "activities": [], "external_events": [], "external_activities": importedActivities]
         case ("GET", "/api/plan/history"):
             let version = plan?["version"] as? Int ?? 1
             var items: [[String: Any]] = []

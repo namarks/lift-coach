@@ -25,6 +25,24 @@ extension APIClient {
     }
 }
 
+struct IntervalsOAuthResult: Equatable {
+    let connected: Bool
+    var importStatus: IntervalsImportStatus? = nil
+
+    static func parse(_ url: URL) throws -> Self {
+        guard url.scheme == "tresfort", url.host == "intervals-connected" else {
+            throw APIError.decoding("invalid intervals callback")
+        }
+        let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        guard items.first(where: { $0.name == "ok" })?.value == "1" else {
+            throw APIError.http(0, "intervals connection was not accepted")
+        }
+        let status = items.first(where: { $0.name == "sync" })?.value
+            .flatMap(IntervalsImportStatus.init(rawValue:))
+        return Self(connected: true, importStatus: status)
+    }
+}
+
 /// Runs one ASWebAuthenticationSession and resolves to connected / cancelled.
 /// Plain NSObject (not @MainActor) so it can satisfy the synchronous, non-
 /// isolated `presentationAnchor` requirement cleanly; callers invoke
@@ -44,12 +62,12 @@ final class IntervalsWebAuth: NSObject, ASWebAuthenticationPresentationContextPr
             .first { $0.isKeyWindow } ?? ASPresentationAnchor()
     }
 
-    /// Present the auth sheet. Returns `true` on a connected callback,
-    /// `false` if the user dismissed/cancelled it, and throws on a real
+    /// Present the auth sheet. Returns the accepted connection/import outcome,
+    /// or `connected: false` if dismissed/cancelled, and throws on a real
     /// failure (intervals error, malformed callback, couldn't start).
     @MainActor
-    func authorize(_ url: URL) async throws -> Bool {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Bool, Error>) in
+    func authorize(_ url: URL) async throws -> IntervalsOAuthResult {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<IntervalsOAuthResult, Error>) in
             let s = ASWebAuthenticationSession(
                 url: url,
                 callbackURLScheme: Self.callbackScheme
@@ -58,7 +76,7 @@ final class IntervalsWebAuth: NSObject, ASWebAuthenticationPresentationContextPr
                 if let error {
                     // A user-dismissed sheet is a benign cancel, not an error.
                     if (error as? ASWebAuthenticationSessionError)?.code == .canceledLogin {
-                        cont.resume(returning: false)
+                        cont.resume(returning: .init(connected: false))
                     } else {
                         cont.resume(throwing: error)
                     }
@@ -68,17 +86,11 @@ final class IntervalsWebAuth: NSObject, ASWebAuthenticationPresentationContextPr
                     // No error AND no callback URL → an interrupted/dismissed
                     // session (a documented edge case). Treat it as a benign
                     // cancel so the user can simply retry, not a hard failure.
-                    cont.resume(returning: false)
+                    cont.resume(returning: .init(connected: false))
                     return
                 }
-                let items = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false)?
-                    .queryItems ?? []
-                if items.first(where: { $0.name == "ok" })?.value == "1" {
-                    cont.resume(returning: true)
-                } else {
-                    let reason = items.first(where: { $0.name == "error" })?.value ?? "unknown"
-                    cont.resume(throwing: APIError.http(0, "intervals_oauth: \(reason)"))
-                }
+                do { cont.resume(returning: try IntervalsOAuthResult.parse(callbackURL)) }
+                catch { cont.resume(throwing: error) }
             }
             s.presentationContextProvider = self
             // Reuse an existing intervals.icu web session if the user is

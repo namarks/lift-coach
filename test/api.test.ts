@@ -1,11 +1,19 @@
-import { env, applyD1Migrations, SELF } from 'cloudflare:test';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { env, applyD1Migrations, fetchMock, SELF } from 'cloudflare:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 const BASE = 'https://tres-fort.test';
 
 beforeAll(async () => {
   await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 });
+
+beforeEach(() => {
+  fetchMock.activate();
+  fetchMock.disableNetConnect();
+  fetchMock.get('https://intervals.icu').intercept({ path: /\/api\/v1\/athlete\/[^/]+\/activities\?/ })
+    .reply(503, {}).persist();
+});
+afterEach(() => { fetchMock.deactivate(); });
 
 async function devJwt(): Promise<string> {
   const r = await SELF.fetch(`${BASE}/auth/dev`, {
@@ -1835,7 +1843,7 @@ describe('PATCH /api/me/integrations/intervals', () => {
       body: JSON.stringify({ api_key: 'live-key-1', athlete_id: 'i-1' }),
     });
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ connected: true });
+    expect(await r.json()).toMatchObject({ connected: true });
     const userId = await userIdFromJwt();
     const row = await env.DB.prepare(
       'SELECT intervals_api_key, intervals_athlete_id FROM users WHERE id = ?1',
@@ -1869,7 +1877,7 @@ describe('PATCH /api/me/integrations/intervals', () => {
       body: JSON.stringify({ api_key: null, athlete_id: 'a' }),
     });
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ connected: false });
+    expect(await r.json()).toMatchObject({ connected: false });
     const userId = await userIdFromJwt();
     const row = await env.DB.prepare(
       'SELECT intervals_api_key, intervals_athlete_id FROM users WHERE id = ?1',
@@ -1893,7 +1901,7 @@ describe('PATCH /api/me/integrations/intervals', () => {
       body: JSON.stringify({ api_key: '', athlete_id: '' }),
     });
     expect(r.status).toBe(200);
-    expect(await r.json()).toEqual({ connected: false });
+    expect(await r.json()).toMatchObject({ connected: false });
   });
 
   it('missing fields → 400 (typo guard, so a partial body cannot wipe creds silently)', async () => {

@@ -8,6 +8,7 @@ import { isGroupId } from '../exerciseGroups';
 import { appleProviderConfig } from '../apple';
 import { validActivitySourceTime } from '../activityTime';
 import {
+  reconcileIntervalsConnection,
   accountDeletionContinuationMatches,
   addWorkoutAtVersion,
   addTemplateExercise,
@@ -1401,7 +1402,7 @@ apiRoutes.patch('/me/integrations/intervals', async (c) => {
   }
   // Required keys (either value may be null = disconnect). Reject silently-
   // missing keys so a typo doesn't accidentally clear a working connection.
-  if (!('api_key' in b) || !('athlete_id' in b)) {
+  if (!b || typeof b !== 'object' || Array.isArray(b) || !('api_key' in b) || !('athlete_id' in b)) {
     return c.json(workoutWire({ error: 'missing_fields' }), 400);
   }
   const rawKey = b.api_key;
@@ -1424,7 +1425,23 @@ apiRoutes.patch('/me/integrations/intervals', async (c) => {
     result.connected ? 'connected' : 'disconnected',
     'ios',
   );
-  return c.json(workoutWire(result));
+  const initialSync = result.connected
+    ? await reconcileIntervalsConnection(c.env.DB, c.env, userId, result.credential_generation)
+    : undefined;
+  return c.json(workoutWire({ ...result, ...(initialSync ? { initial_sync: initialSync } : {}) }));
+});
+
+apiRoutes.post('/me/integrations/intervals/sync', async (c) => {
+  const body: unknown = await c.req.json().catch(() => null);
+  if (!body || typeof body !== 'object' || Array.isArray(body) ||
+      Object.keys(body).some(key => key !== 'expected_generation') ||
+      !('expected_generation' in body) || typeof body.expected_generation !== 'number' ||
+      !Number.isSafeInteger(body.expected_generation) || body.expected_generation < 0) {
+    return c.json({ error: 'invalid_expected_generation' }, 400);
+  }
+  return c.json(await reconcileIntervalsConnection(
+    c.env.DB, c.env, c.get('userId'), body.expected_generation,
+  ));
 });
 
 // ---- MCP passphrase (M3 multi-tenant) -----------------------------------

@@ -37,7 +37,7 @@ Done means:
     duplicates, the existing intervals-plus-HealthKit regression, UTC
     boundaries, and one daylight-saving transition in the existing activity,
     state, calendar, statistics, and group contracts.
-- [ ] **P1 — Connect, reconnect, and initial reconciliation**
+- [x] **P1 — Connect, reconnect, and initial reconciliation**
   - After a successful intervals.icu connection, reconcile the user's recent
     activities immediately instead of waiting for the webhook or hourly cron.
   - Expose expired or revoked credentials as a reconnect action while keeping
@@ -71,12 +71,35 @@ Done means:
 
 ## Next step
 
-**Now (@owner):** P0 is complete for repository delivery, subject to this change's
-exact-head independent review and green CI before merge. Leave P1/P2 inactive
-until selected as the next slice. Rollout remains deferred and HealthKit
-write-back retains its explicit P3 decision.
+**Now (@owner):** Choose whether to activate P2, the next core-product
+candidate. No additional implementation phase is active. P1 is complete for
+repository delivery; its implementation PR carries the exact-head review and CI
+evidence. Rollout and HealthKit write-back remain separate owner decisions.
 
 ## Notes / open questions
+
+- P1 adds immediate 90-day activity reconciliation after API-key or OAuth
+  connect, using the member's stored timezone and existing source fences. A
+  saved credential is acknowledged separately from import success. Failed
+  imports can retry with the server's current credential generation; auth
+  rejection follows existing recovery, and auth failure/disconnect retain
+  imported history. Planned-event ingestion keeps its existing webhook/cron.
+- Migration `0047` cancels pending OAuth states on credential changes; consumed
+  callbacks use a generation claim so an in-flight token exchange cannot undo
+  disconnect. Apply this additive migration before a later authorized Worker
+  release. No production migration, deployment, client distribution or provider
+  write occurred in this slice.
+- iOS displays current server connection authority, pending import, retry and
+  reconnect actions. Old persisted mirrors and late profile/import/OAuth
+  responses cannot restore a disconnected account. Successful imports notify
+  the account-scoped activity bridge so calendar/history refresh immediately.
+- P1 validation includes the full 960-test backend suite, 11 focused connection
+  tests (including two additional OAuth failure cases), 445 Swift unit tests,
+  synthetic connect/retry/reconnect-disconnect calendar journeys, the iOS
+  verification-script tests, typecheck and plan compilation. The implementation
+  PR records terminal CI and independent review against its final source head.
+- P1 was activated by the owner's explicit goal from verified main `86dd9b6`
+  (P0 PR #167), using `codex/activity-integration-p1` in the isolated worktree.
 
 - P0 activated (2026-09-09) after the owner chose continued core-product work
   before rollout. Remote main and fetched source are `ef21188a39d59627c9610fd33ba09d41d03e9ad4`;

@@ -510,6 +510,25 @@ every client-visible session change; manual `activities.updated_at` advances
 on insert and soft deletion. Client-authored `logged_at` remains event data and
 is never a sync cursor.
 
+Connecting by API key or OAuth immediately reconciles the member's last 90 days
+of completed Intervals activity, using their stored timezone for the window.
+The credential acknowledgement is separate from the import result: an outage
+returns a saved connection with a retry action. `GET /api/me` exposes the current
+credential generation, whether initial activity sync is pending, and its last
+successful timestamp. `POST /api/me/integrations/intervals/sync` accepts only
+`expected_generation` for the authenticated member and cannot import with a
+replacement connection. Provider rejection follows the existing credential
+recovery path; disconnect and auth failure retain the activity cache.
+
+Migration `0047` cancels pending OAuth states when the credential generation
+changes. A consumed callback also captures that generation and conditionally
+stores its token, so a disconnect during token exchange cannot reconnect the
+member. Apply this additive migration before a later authorized Worker release;
+repository delivery does not apply it in production. The iOS connection screens
+use server status, reject late operation/profile responses, and refresh shared
+activity state after a successful import. A saved local connection is historical
+context and cannot override a current disconnected or reconnect-required state.
+
 The intervals.icu event and activity caches use change-aware upserts. An
 existing row updates only when a normalized, extracted field differs or the
 row is being resurrected; an unchanged provider result performs no write and

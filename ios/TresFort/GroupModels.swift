@@ -457,6 +457,20 @@ struct MeProfile: Decodable, Equatable {
         /// connection is gone and the user must reconnect. Optional so an app
         /// built before the server field shipped still decodes; nil == false.
         let needs_reauth: Bool?
+        let credential_generation: Int?
+        let sync_pending: Bool?
+        let last_synced_at: Int?
+
+        init(connected: Bool, athlete_id: String?, needs_reauth: Bool?,
+             credential_generation: Int? = nil, sync_pending: Bool? = nil,
+             last_synced_at: Int? = nil) {
+            self.connected = connected
+            self.athlete_id = athlete_id
+            self.needs_reauth = needs_reauth
+            self.credential_generation = credential_generation
+            self.sync_pending = sync_pending
+            self.last_synced_at = last_synced_at
+        }
     }
 
     /// `is_owner` identifies the bootstrap owner; all members can connect their
@@ -478,11 +492,17 @@ struct MeProfile: Decodable, Equatable {
 
 // MARK: - Integrations (M1)
 
-/// Local mirror of the user's intervals.icu connection state. There's no
-/// GET endpoint today — the backend simply UPDATEs columns on `users` —
-/// so iOS tracks this from the PATCH response plus the input the user
-/// typed. Persist in the current user's scoped UserDefaults namespace so a
-/// sign-out/in retains it without exposing it to another Apple account.
+enum IntervalsImportStatus: String, Decodable, Equatable {
+    case synced, retry, reconnect, disconnected, superseded
+}
+
+struct IntervalsImportResult: Decodable, Equatable {
+    let status: IntervalsImportStatus
+    let connection: MeProfile.IntervalsStatus?
+}
+
+/// Legacy account-scoped connection record, retained for local-state migration.
+/// Current connection authority comes from server profiles and acknowledgements.
 struct IntervalsConnection: Codable, Equatable {
     /// The athlete id the user supplied. iOS never re-reads the api_key
     /// (it's write-only on the wire — SecureField on the form).

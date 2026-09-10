@@ -1,5 +1,5 @@
-import { env, applyD1Migrations, SELF } from 'cloudflare:test';
-import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
+import { env, applyD1Migrations, fetchMock, SELF } from 'cloudflare:test';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const BASE = 'https://tres-fort.test';
 // Matches INTERVALS_WEBHOOK_SECRET injected by vitest.config.ts.
@@ -12,6 +12,14 @@ beforeAll(async () => {
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+beforeEach(() => {
+  fetchMock.activate();
+  fetchMock.disableNetConnect();
+  fetchMock.get('https://intervals.icu').intercept({ path: /\/api\/v1\/athlete\/[^/]+\/activities\?/ })
+    .reply(503, {}).persist();
+});
+afterEach(() => { fetchMock.deactivate(); });
 
 async function devJwt(): Promise<string> {
   const r = await SELF.fetch(`${BASE}/auth/dev`, {
@@ -41,7 +49,7 @@ async function connectAthlete(athleteId: string): Promise<string> {
     body: JSON.stringify({ api_key: 'webhook-test-key', athlete_id: athleteId }),
   });
   expect(r.status).toBe(200);
-  expect(await r.json()).toEqual({ connected: true });
+  expect(await r.json()).toMatchObject({ connected: true });
   return athleteId;
 }
 
