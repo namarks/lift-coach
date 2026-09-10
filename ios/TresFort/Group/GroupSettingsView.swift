@@ -25,11 +25,13 @@ struct GroupSettingsView: View {
     @State private var confirmLeave = false
     @State private var leaving = false
 
+    private var currentGroup: GroupSummary? { groupModel.groups.first { $0.id == group.id } }
+
     var body: some View {
         NavigationStack {
             Form {
                 Section {
-                    ForEach(group.members) { m in
+                    ForEach(currentGroup?.members ?? []) { m in
                         HStack {
                             Avatar(
                                 initials: avatarInitials(from:
@@ -41,11 +43,13 @@ struct GroupSettingsView: View {
                             Spacer()
                             if m.user_id == auth.userID {
                                 Text("you").foregroundStyle(.secondary)
+                            } else {
+                                GroupMemberSafetyActions(report: .init(groupID: group.id, memberID: m.user_id), model: groupModel)
                             }
                         }
                     }
                 } header: {
-                    Text("\(group.member_count) member\(group.member_count == 1 ? "" : "s")")
+                    Text("Members")
                 }
 
                 Section {
@@ -130,6 +134,16 @@ struct GroupSettingsView: View {
                     Text("Anyone with this 6-character code can join. Codes expire in 30 days.")
                 }
 
+                if let currentGroup, !currentGroup.created_by.isEmpty {
+                    Section {
+                        HStack {
+                            Text("Report this group")
+                            Spacer()
+                            GroupMemberSafetyActions(report: .init(groupID: group.id, memberID: currentGroup.created_by), model: groupModel,
+                                canBlock: currentGroup.created_by != auth.userID)
+                        }
+                    }
+                }
                 Section {
                     Button(role: .destructive) {
                         confirmLeave = true
@@ -143,7 +157,7 @@ struct GroupSettingsView: View {
                     .disabled(leaving)
                 }
             }
-            .navigationTitle(group.name)
+            .navigationTitle(currentGroup?.name ?? "Group unavailable")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -151,7 +165,7 @@ struct GroupSettingsView: View {
                 }
             }
             .confirmationDialog(
-                "Leave \(group.name)?",
+                "Leave \(currentGroup?.name ?? "this group")?",
                 isPresented: $confirmLeave,
                 titleVisibility: .visible
             ) {

@@ -65,7 +65,7 @@ struct GroupDetailView: View {
             GroupSettingsView(group: group, groupModel: groupModel, auth: auth)
         }
         .sheet(item: $selectedItem) { item in
-            FeedItemDetailSheet(item: item, groupModel: groupModel)
+            FeedItemDetailSheet(item: item, groupID: group.id, groupModel: groupModel)
         }
         .task(id: group.id) {
             await groupModel.refreshGroup(groupID: group.id)

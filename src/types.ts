@@ -389,7 +389,7 @@ export interface ActivityRow {
 export interface Group {
   id: string;
   name: string;
-  created_by: string;       // user_id of the creator
+  created_by: string;       // creator user_id; shared projections use '' when hidden
   created_at: number;       // epoch ms
 }
 

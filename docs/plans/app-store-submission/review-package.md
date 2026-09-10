@@ -83,7 +83,7 @@ Manual path: sign in; continue setup while skipping optional groups and
 Intervals.icu; choose **Build my first workout**; create a workout and add an
 exercise; open Today and start that workout; log a set; finish; inspect History.
 Exercise targets can be edited from Workouts. Profile contains account export,
-account deletion and privacy/support links.
+account deletion, Group safety and privacy/support links.
 
 Feedback: near workout completion, choose **Talk about your workout**. Type a
 note or choose the microphone option, stop recording, edit the transcript and
@@ -106,6 +106,14 @@ Account deletion: Profile → Delete Account, confirm, and complete fresh Apple
 authentication if requested. Verify with a designated review/test account;
 never delete the operator's account to demonstrate this path.
 
+Groups: open a member's safety menu from group settings or an activity detail.
+**Report** prepares an email with a category and reference IDs; review the draft
+before sending. The app also shows the support address and **Copy report
+reference** when Mail is unavailable. **Block member** hides the two accounts'
+shared profiles and activity from one another in every common group. Profile →
+Group safety allows unblocking. This does not erase past views or copies.
+Reports are checked daily and actionable abuse addressed within 24 hours.
+
 ## Privacy and rating preparation
 
 The following is an evidence worksheet, not completed App Store answers.
@@ -119,7 +127,8 @@ and diagnostic practices before finalizing the declaration.
 | Exercises, sets, durations, training load | Shared training service and history | Fitness; linked to user; app functionality |
 | Imported heart-rate/health workout summaries | Optional HealthKit and Intervals imports | Health and fitness; linked to user; app functionality |
 | Saved notes, fatigue, plan details, group names | Member/coach authoring, history and group feed | Other user content and relevant health/fitness data; linked to user |
-| Request/error diagnostics | Cloudflare observability and provider operation | Confirm actual retained fields and linkage before selecting diagnostic categories |
+| Group safety | Member block IDs, sharing restrictions, category-only operator audit; optional support email | Linked identifiers and support/user content; app functionality |
+| Performance diagnostics | Candidate disables Worker log persistence and exports, preserving aggregate metrics | Verify deployed settings, independent provider analytics and historical exports before final classification |
 | Microphone recording | On-device transcription; discarded | Audio is not uploaded; saved transcript is user content |
 
 The required-reason manifest declares app-private UserDefaults use (`CA92.1`).
@@ -130,16 +139,26 @@ third-party SDK manifest before upload.
 Age questionnaire: health/wellness topics and user-generated group names/notes
 must be evaluated truthfully. There is no general chat, gambling, purchase,
 advertising or open-web browsing feature in the examined source. Do not select
-a final age rating or attest answers until the group review scope is resolved.
+a final age rating or attest answers until the final candidate and its group controls are verified.
 
-## Public-group and backup design requirements
+## Group safety and protected storage
 
-Private membership does not by itself settle Apple's Guideline 1.2. Members see
-other members' display names, activity titles and notes. Existing controls allow
-leaving, not reporting or blocking. Prepare a narrow design for reporting,
-blocking and objectionable-content handling; keep enforcement shared across
-REST/MCP feed and statistics. Owner policy must specify report handling and
-retention before storing reports or changing another member's visibility.
+The owner approved the [private-group safety policy](group-safety-proposal.md)
+and [aggregate-only diagnostics policy](diagnostics-policy-proposal.md) on
+2026-09-10. The candidate adds mutual blocking, email reports, conservative
+shared-text filtering and reversible operator sharing restrictions. Enforcement
+uses the same membership rule for rosters, REST/MCP feeds and statistics, before
+pagination. It preserves private originals. Filtering is limited; human reports
+handle context and evasion. Approval of this design does not establish Apple's
+acceptance or production delivery.
+
+The operator uses Profile → Group safety with the member ID from an email and a
+bounded reason. Only the configured owner Apple identity has this control;
+ordinary group creators do not. Restriction and audit commit together. No new
+moderation service, admin website or report-content database is introduced.
+Verify support-mail delivery and operator access before release. Apply migration
+`0048` before the compatible Worker, and verify its settings before distributing
+the app. Rolling back to a Worker without enforcement would undo the controls.
 
 The candidate migrates training snapshots, queued writes, runner recovery,
 HealthKit anchors and Intervals metadata into app-owned files with complete

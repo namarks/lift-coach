@@ -1,7 +1,8 @@
 # Private-group safety proposal
 
-This is a proposed product/data policy for owner approval, not an implemented
-feature or an assertion of App Review approval. Live status belongs to
+The owner approved this product/data policy on 2026-09-10, including the daily
+inbox check and 24-hour response commitment, and requested a small implementation.
+Approval does not establish production delivery or App Review approval. Live status belongs to
 [plan.md](plan.md).
 
 The existing app shares member-authored names, activity titles and notes in
@@ -9,7 +10,7 @@ private groups. Apple Guideline 1.2 calls for objectionable-content filtering,
 reporting, blocking and reachable support. Leaving a group does not provide
 those controls. Preserve private training history and existing group features.
 
-## Proposed member behavior
+## Approved member behavior
 
 1. **Block a member:** from the member's group profile/settings row, confirm
    that the two accounts will stop seeing one another's shared profiles,
@@ -50,10 +51,34 @@ member, account-deletion, pagination and tenant-isolation tests must cover both
 REST and MCP paths, including caches and reconnects.
 
 This proposal adds no chat, public discovery, paid service or AI moderation.
-Migration/deployment remains a later exact-source owner gate. Do not promise a
-24-hour response in public policy unless the owner accepts that operational
-commitment. Inspect all relevant source paths and refine the implementation
-contract before writing enforcement code.
+Migration/deployment remains a later exact-source owner gate. The owner accepted the 24-hour response commitment. Use the existing Worker,
+email and Profile screens; do not add a moderation service or report database.
 
 Reference: [Apple Guideline 1.2](https://developer.apple.com/app-store/review/guidelines/#user-generated-content),
 checked 2026-09-10.
+
+## Implementation contract
+
+Migration `0048` adds two small tables: directed member blocks (applied mutually
+on reads) and reversible sharing restrictions. A single caller-aware member
+query feeds rosters, REST/MCP feeds, statistics and activity series before
+pagination. Filtering applies to shared projections, including invite names;
+private source records and catalog exercise names stay intact. Restrictions
+mask creator-authored group names and exclude the account from others' shared
+projections. The affected person can still read their private training and own
+activity.
+
+Authenticated members manage their own blocks. Operator writes require the
+explicitly configured `OWNER_APPLE_SUB`, never the oldest account or a group
+creator. Profile's Group safety screen accepts the member ID from a report and
+a bounded reason category; restriction and audit commit in one transaction.
+No additional credentials, admin website or report-content storage is needed.
+Account deletion cascades through blocks and restrictions. Exports include the
+caller's own blocks and restriction, not the identities of incoming blockers.
+
+iOS drops shared projections and rejects older in-flight responses when safety
+settings change, on foreground reload and on group refresh. Existing selections
+show unavailable content once removed. No promise covers previously viewed,
+exported or copied content. Production needs the additive migration before the
+new Worker, then the compatible app. A Worker rollback that lacks these controls
+would undo enforcement and is not an acceptable rollback after activation.

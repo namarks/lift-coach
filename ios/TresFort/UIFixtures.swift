@@ -8,6 +8,7 @@ enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
     case appStore = "app-store"
+    case groupSafety = "group-safety"
     case planChanges = "plan-changes"
     case activationOwner = "activation-owner", activationInvite = "activation-invite"
     case activationManual = "activation-manual", activationCoach = "activation-coach"
@@ -55,7 +56,7 @@ enum UIFixtureModel {
         let auth = AuthModel(tokenStore: FixtureTokenStore(), defaults: defaults)
         if UIFixtureScenario.selected != .signIn && UIFixtureScenario.selected?.isActivation != true {
             auth.userID = "synthetic-ui-user"
-            auth.jwt = UIFixtureScenario.selected?.isIntervals == true || UIFixtureScenario.selected == .appStore
+            auth.jwt = UIFixtureScenario.selected?.isIntervals == true || [.appStore, .groupSafety].contains(UIFixtureScenario.selected)
                 ? UIFixtureServer(scenario: UIFixtureScenario.selected!).syntheticJWT : "synthetic-ui-bearer"
             auth.onboardingComplete = UIFixtureScenario.selected != .onboarding
             auth.phase = .signedIn
@@ -100,7 +101,7 @@ struct UIFixtureView: View {
                 // is excluded from release and physical-device builds.
                 RootView(defaults: UIFixtureModel.defaults,
                          now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
-            } else if scenario == .signIn || scenario.isActivation || scenario.isIntervals {
+            } else if scenario == .signIn || scenario.isActivation || scenario.isIntervals || scenario == .groupSafety {
                 VStack(spacing: 0) {
                     Text("SYNTHETIC · \(scenario.rawValue)")
                         .font(.caption).dynamicTypeSize(.large)
@@ -232,10 +233,17 @@ private struct UIFixtureServer {
         let data = try! JSONSerialization.data(withJSONObject: ["sub": syntheticUserID, "exp": 4_000_000_000], options: [.sortedKeys])
         return "header." + data.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".synthetic"
     }
+    let safetyPeerID = "c3223561-0e27-4727-b369-681078533ca6"
+    var safetyBlocked = false
+    var safetyRestricted = false
     var syntheticGroup: [String: Any] {
-        ["id": "synthetic-group", "name": "Synthetic Crew", "created_by": "synthetic-owner", "created_at": 1,
-         "members": [["group_id": "synthetic-group", "user_id": syntheticUserID,
-                       "display_name": "Synthetic member", "effective_display_name": "Synthetic member", "joined_at": 1]]]
+        var members: [[String: Any]] = [["group_id": "synthetic-group", "user_id": syntheticUserID,
+            "display_name": "Synthetic member", "effective_display_name": "Synthetic member", "joined_at": 1]]
+        if scenario == .groupSafety && !safetyBlocked {
+            members.append(["group_id": "synthetic-group", "user_id": safetyPeerID,
+                "display_name": "Sample member", "effective_display_name": "Sample member", "joined_at": 2])
+        }
+        return ["id": "synthetic-group", "name": "Synthetic Crew", "created_by": "synthetic-owner", "created_at": 1, "members": members]
     }
     var planRestored = false
     var revision = 1_788_912_000_000
@@ -243,6 +251,7 @@ private struct UIFixtureServer {
 
     init(scenario: UIFixtureScenario) {
         self.scenario = scenario
+        if scenario == .groupSafety { joined = true }
         coachConnected = [.activationOwner, .activationCoach, .activationInvite].contains(scenario)
         if ![.signIn, .empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .activationManual].contains(scenario) {
             plan = makePlan()
@@ -377,6 +386,15 @@ private struct UIFixtureServer {
             response = ["status": "synced", "connection": intervalsStatus]
         case ("POST", "/api/me/mcp-passphrase"):
             response = ["ok": true]
+        case ("GET", "/api/me/group-safety"):
+            response = ["blocks": safetyBlocked ? [["user_id": safetyPeerID, "created_at": revision]] : [],
+                "restriction": NSNull(), "can_moderate": true]
+        case ("PUT", "/api/me/group-blocks/\(safetyPeerID)"):
+            safetyBlocked = body["active"] as? Bool ?? false
+            response = ["ok": true]
+        case ("PUT", "/api/group-safety/restrictions/\(safetyPeerID)"):
+            safetyRestricted = body["active"] as? Bool ?? false
+            response = ["ok": true]
         case ("GET", "/api/groups"):
             response = ["groups": joined ? [syntheticGroup] : []]
         case ("GET", "/api/groups/invite/ABC234"):
@@ -392,7 +410,11 @@ private struct UIFixtureServer {
         case ("GET", "/api/groups/synthetic-group"):
             response = syntheticGroup
         case ("GET", "/api/groups/synthetic-group/feed"):
-            response = ["group_id": "synthetic-group", "items": [], "next_since": NSNull(), "server_time": revision]
+            let items: [[String: Any]] = scenario == .groupSafety && !safetyBlocked && !safetyRestricted
+                ? [["type": "activity", "id": "synthetic-shared-walk", "user_id": safetyPeerID,
+                    "user_display_name": "Sample member", "is_me": false, "date": "2026-09-08", "occurred_at": revision,
+                    "activity": ["kind": "walk", "title": "Evening walk", "duration_min": 20, "notes": "A gentle loop"]]] : []
+            response = ["group_id": "synthetic-group", "items": items, "next_since": NSNull(), "server_time": revision]
         case ("GET", "/api/groups/synthetic-group/stats"):
             response = ["group_id": "synthetic-group", "range": "week", "members": []]
         case ("GET", "/api/groups/synthetic-group/activity"):

@@ -57,6 +57,9 @@ struct ProfileView: View {
                 coachSection
                 integrationsSection
                 groupsSection
+                Section {
+                    NavigationLink("Group safety") { GroupSafetyView(model: groupModel) }
+                }
                 Section("About Très Fort") {
                     PrivacyPolicyLink()
                     Link("Contact support", destination: AppInformation.supportURL)
@@ -139,7 +142,7 @@ struct ProfileView: View {
                 await groupModel.refreshMe()
             }
         }
-        .refreshable { await groupModel.refreshMe() }
+        .refreshable { await groupModel.load() }
     }
 
     // MARK: - Account

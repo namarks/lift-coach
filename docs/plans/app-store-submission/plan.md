@@ -65,12 +65,11 @@ public release require separate authorization and are outside this goal.
 
 ## Next step
 
-**Now (@agent):** Finish independent review, CI and merge of the screenshot
-workflow on the delivered protected-storage changes. Continue review-package
-preparation; await the owner's decisions on the
-[group-safety proposal](group-safety-proposal.md) and
-[diagnostics policy](diagnostics-policy-proposal.md) before changing those policies.
-Preserve external release and publication gates.
+**Now (@agent):** Prepare the exact candidate-release proposal from PR #175 after
+its required independent review, CI and merge. Resolve any remaining review
+findings in that same PR. Keep the existing service, email and Profile screens;
+production changes, TestFlight distribution, physical-device verification and
+App Store publication remain separately authorized steps.
 
 ## Notes / open questions
 
@@ -98,10 +97,58 @@ Preserve external release and publication gates.
   as recorded above.
 - A paired physical iPhone was unavailable on 2026-09-10; simulator evidence
   does not satisfy the P3 physical-device gate.
-- The [review package](review-package.md) is a draft. The proposed group controls
-  and daily inbox / 24-hour response commitment await owner approval. Persisted
+- The [review package](review-package.md) is a draft. The owner approved group controls, the daily inbox / 24-hour response
+  commitment and aggregate-only diagnostics on 2026-09-10, with an explicit
+  preference against overengineering. The implementation is prepared for exact-head
+  independent review and CI. Persisted
   HealthKit records now use the candidate's protected, backup-excluded
   app-owned storage; verification and release gates remain in P1/P3.
+- The group-safety candidate is in [PR #175](https://github.com/namarks/tres-fort/pull/175),
+  using the existing Worker/D1 and Profile screens:
+  mutual member blocking, reviewed email drafts with copyable references,
+  conservative shared-text filtering and audited, reversible operator sharing
+  restrictions. Migration `0048` is additive and must precede the new Worker.
+  TypeScript, plan checks and Wrangler 4.92 dry-run/type generation passed.
+  Local backend verification passed 980 tests; the remaining assertion assumed
+  a random group sort order. Selecting the intended group by ID corrected that
+  test, and all 12 safety/export tests then passed. Export controls use the same
+  D1 batch snapshot as the training projection. All 489 iOS unit tests completed
+  without failures (one physical-protection test explicitly skipped), and both
+  safety journeys passed on iPhone 17 / iOS 26.2. All 274 iOS input hashes matched;
+  the synthetic report screen was visually inspected. Independent review and
+  remote CI remain required. The CI selection check now accounts for the added
+  safety suite; all 11 verification-workflow checks, seven asset checks, six CI
+  scope checks and two review-submission checks pass locally. An unsigned
+  generic-iOS Release build at `03b50c043a0d239721038becacc3ce23c78c8162` passed:
+  version 1.0, iPhone-only, embedded widget, `CA92.1` manifest and no synthetic
+  fixture markers. Its build 29 is an unreserved placeholder, not an upload
+  candidate. Independent review identified cached secondary groups on foreground;
+  the app now invalidates every shared projection before authentication waits and
+  reloads all rosters. A stale detail task cannot supersede that reload. All
+  three safety unit tests and five safety/Intervals journeys passed after the
+  correction, including background/foreground use. Rejected block requests now
+  revalidate membership rather than leaving a false empty-group screen; an offline
+  reload exposes retry while preserving the original block error. The regression
+  reproduced both failures before the fix. Blocks and operator restrictions now
+  share one recovery path that clears shared projections before either write and
+  reconciles uncertain responses. The lost-restriction-response regression also
+  failed before this correction; all five safety unit tests and both safety
+  journeys pass afterward, with all 274 input hashes matching. Foreground recovery
+  also reloads mounted safety settings; failed roster/feed/statistics/series
+  refreshes use the existing retry screen instead of implying an empty group.
+  Both additional review regressions reproduced before correction; all seven
+  safety unit tests and both safety journeys pass on the corrected source, with
+  274 matching input hashes. Account downloads apply the same masking to other
+  members' group names inside the existing export snapshot, preserving a creator's
+  own original. The unmasked-export regression reproduced before correction;
+  all 13 safety/export tests and TypeScript checks pass afterward. Shared creator
+  metadata and exported names now honor either-direction blocks and restrictions;
+  unavailable creators use an empty string to retain older clients' wire shape.
+  The app removes unavailable report targets and uses one complete group/safety
+  reload after successful or rejected safety writes and foreground return. These
+  metadata and lost-settings regressions also reproduced before correction. All
+  14 safety/export tests, seven safety unit tests and five safety/Intervals UI
+  journeys passed afterward, with 274 matching iOS input hashes. No production or App Store changes occurred.
 - P1 protected-storage repository work was delivered in
   [PR #172](https://github.com/namarks/tres-fort/pull/172), reviewed head
   `9bdcbee7a3de96b2384a3c9de9e64cefa86f5df9`, merged as
@@ -133,8 +180,7 @@ Preserve external release and publication gates.
   invocation logs with 100% sampling and URL query redaction disabled. Tracing
   is disabled; no tail consumers or export destinations were returned. Logpush
   is not exposed by the download path. No request logs were opened. The
-  [diagnostics policy proposal](diagnostics-policy-proposal.md) awaits an owner
-  choice; production changes, historical exports and final privacy declarations
+  [diagnostics policy proposal](diagnostics-policy-proposal.md) is owner-approved; production changes, historical exports and final privacy declarations
   remain separate gates.
 - [Release audit, 2026-09-10](release-audit-2026-09-10.md): production version
   `c5a298d1-a72a-4fa8-a24f-bd2cf0e27a6b`, source annotation `ff512825779f90b630a4a5dfd11a68e6a113825a`,
@@ -144,7 +190,7 @@ Preserve external release and publication gates.
   Mailbox delivery is untested. No production change was made.
   A SELECT-only refresh at 17:47–17:48 UTC confirmed the same deployment and ledger
   through `0045`, with zero rows written.
-- P2 screenshot workflow is in [PR #174](https://github.com/namarks/tres-fort/pull/174),
+- P2 screenshot workflow was delivered in [PR #174](https://github.com/namarks/tres-fort/pull/174),
   refreshed onto the verified storage merge. The complete workflow passed on
   clean capture source `d1ef8111419cd0fcae0cf01c1df5a73881ef7acf`: both UI journeys
   passed, all 270 iOS source hashes matched, and five opaque RGB 1320 × 2868
@@ -156,7 +202,13 @@ Preserve external release and publication gates.
   validation bypasses reproduced before the fixes. A generic-iOS unsigned
   Release build of the same iOS inputs passed with version 1.0, embedded widget,
   `CA92.1` manifest and no synthetic fixture markers. Build 29 remains an
-  unreserved placeholder. Fresh review and CI remain required for #174.
+  unreserved placeholder. Reviewed head `a3b5849f9035d71097119d8e319c545a13db60b9`
+  merged as `efa16e84fcddc1ea44bd1082ea435b63b1d84a03`, with identical tree
+  `88808504401105f61116e253a05700050fe2308b`. Independent review found no issues,
+  all threads were resolved and all eight checks in run `34521185926` passed.
+  Source ancestry and tree equality were verified after merge. Subsequent group
+  changes require a fresh candidate build; the prior Release proof covers only
+  its recorded source inputs.
   Final candidate selection, device verification and capture comparison remain
   open. Nothing was uploaded or published to App Store Connect.
 - Source baseline `bb4db9c40675ba6be6a0b8ff42f8cdbabcf14a4c`;
