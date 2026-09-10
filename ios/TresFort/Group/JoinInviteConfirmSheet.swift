@@ -21,6 +21,7 @@ struct JoinInviteConfirmSheet: View {
         case loading
         case ready(groupName: String)
         case invalid(message: String)
+        case failed
 
         var isReady: Bool { if case .ready = self { return true } else { return false } }
     }
@@ -96,6 +97,13 @@ struct JoinInviteConfirmSheet: View {
                 .foregroundStyle(Theme.muted)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+        case .failed:
+            Text("Couldn't load this invite")
+                .font(.title3.weight(.bold)).foregroundStyle(Theme.text)
+            Text("Check your connection and try again to review this invite.")
+                .font(.subheadline).foregroundStyle(Theme.muted).multilineTextAlignment(.center)
+            Button("Try again") { Task { await load() } }
+                .frame(minHeight: 44)
         case let .invalid(message):
             Text("Invite unavailable")
                 .font(.title3.weight(.bold))
@@ -109,6 +117,7 @@ struct JoinInviteConfirmSheet: View {
     }
 
     private func load() async {
+        phase = .loading
         switch await groupModel.invitePreview(code: code) {
         case let .valid(groupName):
             phase = .ready(groupName: groupName)
@@ -119,7 +128,7 @@ struct JoinInviteConfirmSheet: View {
         case .unknown:
             phase = .invalid(message: "We couldn't find this invite. Double-check the link.")
         case .failed:
-            phase = .invalid(message: "Couldn't load this invite. Check your connection and try again.")
+            phase = .failed
         }
     }
 

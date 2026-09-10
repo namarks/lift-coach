@@ -8,6 +8,10 @@ enum UIFixtureScenario: String, CaseIterable {
     case signIn = "sign-in", empty, loadFailure = "load-failure"
     case ordinary, bodyweight, timed, pending, onboarding, groups, library
     case planChanges = "plan-changes"
+    case activationOwner = "activation-owner", activationInvite = "activation-invite"
+    case activationManual = "activation-manual", activationCoach = "activation-coach"
+    case serverFailure = "server-failure", cachedEmpty = "cached-empty", cachedPlan = "cached-plan"
+    var isActivation: Bool { rawValue.hasPrefix("activation-") }
     case historySmall = "history-small", historyLarge = "history-large"
 
     case historyProgress = "history-progress"
@@ -44,11 +48,20 @@ enum UIFixtureModel {
     }()
     static func makeAuth() -> AuthModel {
         let auth = AuthModel(tokenStore: FixtureTokenStore(), defaults: defaults)
-        if UIFixtureScenario.selected != .signIn {
+        if UIFixtureScenario.selected != .signIn && UIFixtureScenario.selected?.isActivation != true {
             auth.userID = "synthetic-ui-user"
             auth.jwt = "synthetic-ui-bearer"
             auth.onboardingComplete = UIFixtureScenario.selected != .onboarding
             auth.phase = .signedIn
+        }
+        if UIFixtureScenario.selected == .activationInvite {
+            auth.handleDeepLink(Config.apiBaseURL.appendingPathComponent("join/ABC234"))
+        }
+        if let scenario = UIFixtureScenario.selected, [.cachedEmpty, .cachedPlan].contains(scenario) {
+            let plan = scenario == .cachedEmpty ? nil : PlanTree(id: "cached-plan", name: "Saved training", version: 1, workouts: [], meta: nil)
+            StateSnapshotStore.save(StateResponse(plan: plan, plan_version: plan == nil ? 0 : 1,
+                sessions: [], sets: [], external_events: [], external_activities: [], activities: [], server_time: 1),
+                userID: auth.userID, defaults: defaults)
         }
         if let scenario = UIFixtureScenario.selected, scenario.isHistory,
            ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_HISTORY"] != "1" {
@@ -90,8 +103,9 @@ struct UIFixtureView: View {
                 .font(.caption).dynamicTypeSize(.large)
                 .accessibilityIdentifier("fixture.scenario")
                 .accessibilityValue(Text(verbatim: scenario.isHistory ? "\(sync.sets.count) sets" : ""))
-            if scenario == .signIn {
-                RootView().environmentObject(auth)
+            if scenario == .signIn || scenario.isActivation {
+                RootView(defaults: UIFixtureModel.defaults,
+                         now: { CalendarProjection.date(from: "2026-09-08")! }).environmentObject(auth)
             } else if scenario == .onboarding && !auth.onboardingComplete {
                 OnboardingView(auth: auth)
             } else if scenario.isHistory {
@@ -105,10 +119,10 @@ struct UIFixtureView: View {
         .environment(\.dynamicTypeSize,
             ProcessInfo.processInfo.environment["TRESFORT_UI_LARGE_TEXT"] == "1" ? .accessibility5 : systemDynamicTypeSize)
         .task {
-            guard scenario != .signIn, !scenario.isHistory else { return }
+            guard scenario != .signIn, !scenario.isActivation, !scenario.isHistory else { return }
             await sync.load()
             if ProcessInfo.processInfo.environment["TRESFORT_UI_REUSE_FEEDBACK"] == "1" { return }
-            if ![.empty, .loadFailure, .onboarding, .groups, .planChanges].contains(scenario) {
+            if ![.empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .groups, .planChanges].contains(scenario) {
                 sync.startWorkout()
                 if [.readyToFinish, .correctionFailure].contains(scenario) {
                     sync.finished = true
@@ -159,13 +173,29 @@ private struct UIFixtureServer {
     var sets: [[String: Any]] = []
     var groupReceipts: [String: [String: Any]] = [:]
     var returnedFeedbackConflict = false
+    var signInAttempts = 0
+    var stateAttempts = 0
+    var inviteAttempts = 0
+    var joined = false
+    var coachConnected = false
+    var syntheticUserID: String { scenario == .activationOwner ? "synthetic-owner" : "synthetic-ui-user" }
+    var syntheticJWT: String {
+        let data = try! JSONSerialization.data(withJSONObject: ["sub": syntheticUserID, "exp": 4_000_000_000], options: [.sortedKeys])
+        return "header." + data.base64EncodedString().replacingOccurrences(of: "=", with: "") + ".synthetic"
+    }
+    var syntheticGroup: [String: Any] {
+        ["id": "synthetic-group", "name": "Synthetic Crew", "created_by": "synthetic-owner", "created_at": 1,
+         "members": [["group_id": "synthetic-group", "user_id": syntheticUserID,
+                       "display_name": "Synthetic member", "effective_display_name": "Synthetic member", "joined_at": 1]]]
+    }
     var planRestored = false
     var revision = 1_788_912_000_000
     let dayID = "synthetic-day", sessionID = "synthetic-session"
 
     init(scenario: UIFixtureScenario) {
         self.scenario = scenario
-        if ![.signIn, .empty, .loadFailure, .onboarding].contains(scenario) {
+        coachConnected = [.activationOwner, .activationCoach, .activationInvite].contains(scenario)
+        if ![.signIn, .empty, .loadFailure, .serverFailure, .cachedEmpty, .cachedPlan, .onboarding, .activationManual].contains(scenario) {
             plan = makePlan()
             sessions = [.groups, .library, .planChanges].contains(scenario) ? [] : [makeSession()]
             if scenario == .planChanges { plan?["version"] = 3 }
@@ -227,7 +257,8 @@ private struct UIFixtureServer {
             "target_sets": 1, "target_reps": 5, "rest_seconds": 0,
             "target_weight": modality == "barbell" ? 45 : 0]
         if scenario == .timed { slot["target_duration_s"] = 5 }
-        let meta = "{\"schedule\":{\"version\":1,\"week\":{\"tue\":\"synthetic-day\"}}}"
+        let meta = scenario == .activationManual ? "{}"
+            : "{\"schedule\":{\"version\":1,\"week\":{\"tue\":\"synthetic-day\"}}}"
         return ["id": "synthetic-plan", "name": name, "version": 1, "meta": meta,
             "days": workouts ? [["id": dayID, "name": "Workout A", "order_index": 0,
                               "exercises": [slot]]] : []]
@@ -238,6 +269,11 @@ private struct UIFixtureServer {
         guard !scenario.isHistory else { throw URLError(.notConnectedToInternet) }
         let path = request.url!.path
         let method = request.httpMethod ?? "GET"
+        if scenario.isActivation && path != "/auth/apple" {
+            guard request.value(forHTTPHeaderField: "Authorization") == "Bearer \(syntheticJWT)" else {
+                throw URLError(.userAuthenticationRequired)
+            }
+        }
         var data = request.httpBody
         if data == nil, let stream = request.httpBodyStream {
             stream.open(); defer { stream.close() }
@@ -256,8 +292,45 @@ private struct UIFixtureServer {
         var response: Any
         var status = 200
         switch (method, path) {
+        case ("POST", "/auth/apple"):
+            signInAttempts += 1
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_AUTH_RETRY"] == "1", signInAttempts == 1 {
+                throw URLError(.notConnectedToInternet)
+            }
+            response = ["jwt": syntheticJWT, "user": ["id": syntheticUserID, "display_name": "Synthetic member"]]
+        case ("GET", "/api/me"):
+            response = ["display_name": "Synthetic member", "email": NSNull(),
+                "intervals": ["connected": false],
+                "claude": ["is_owner": scenario == .activationOwner, "connected": coachConnected],
+                "health": ["sharing_in_group": false]]
+        case ("POST", "/api/me/mcp-passphrase"):
+            response = ["ok": true]
+        case ("GET", "/api/groups"):
+            response = ["groups": joined ? [syntheticGroup] : []]
+        case ("GET", "/api/groups/invite/ABC234"):
+            inviteAttempts += 1
+            if ProcessInfo.processInfo.environment["TRESFORT_UI_INVITE_RETRY"] == "1", inviteAttempts == 1 {
+                throw URLError(.notConnectedToInternet)
+            }
+            response = ["status": "valid", "group_name": "Synthetic Crew"]
+        case ("POST", "/api/groups/join"):
+            guard body["code"] as? String == "ABC234" else { throw URLError(.badServerResponse) }
+            joined = true
+            response = ["ok": true, "group": syntheticGroup]
+        case ("GET", "/api/groups/synthetic-group"):
+            response = syntheticGroup
+        case ("GET", "/api/groups/synthetic-group/feed"):
+            response = ["group_id": "synthetic-group", "items": [], "next_since": NSNull(), "server_time": revision]
+        case ("GET", "/api/groups/synthetic-group/stats"):
+            response = ["group_id": "synthetic-group", "range": "week", "members": []]
+        case ("GET", "/api/groups/synthetic-group/activity"):
+            response = ["group_id": "synthetic-group", "days": 371, "server_time": revision, "members": []]
         case ("GET", "/api/state"):
-            if scenario == .loadFailure { throw URLError(.notConnectedToInternet) }
+            stateAttempts += 1
+            if [.loadFailure, .cachedEmpty, .cachedPlan].contains(scenario) { throw URLError(.notConnectedToInternet) }
+            if scenario == .serverFailure && stateAttempts == 1 {
+                status = 500; response = ["error": "synthetic_server_failure"]; break
+            }
             if scenario == .groups {
                 guard request.value(forHTTPHeaderField: "X-TresFort-Capabilities")?
                     .split(separator: ",").contains(where: { $0.trimmingCharacters(in: .whitespaces) == "groups" }) == true
@@ -328,6 +401,17 @@ private struct UIFixtureServer {
             plan?["days"] = remaining
             plan?["version"] = version
             response = ["ok": true, "version": plan?["version"] ?? 1]
+        case ("POST", "/api/days/\(dayID)/exercises") where scenario == .activationManual:
+            guard body["exercise"] as? String == "synthetic-exercise" else { throw URLError(.badServerResponse) }
+            var days = plan!["days"] as! [[String: Any]]
+            let source = makePlan()["days"] as! [[String: Any]]
+            var slot = (source[0]["exercises"] as! [[String: Any]])[0]
+            for key in ["target_sets", "target_reps", "target_weight", "rest_seconds"] {
+                slot[key] = body[key] ?? slot[key]
+            }
+            slot["target_weight"] = body["target_weight"] ?? NSNull()
+            days[0]["exercises"] = [slot]; plan?["days"] = days; plan?["version"] = 3
+            response = ["id": "synthetic-slot"]
         case ("POST", "/api/days"):
             var day: [String: Any] = ["id": dayID, "name": body["name"] ?? "Workout A",
                                       "order_index": 0, "exercises": []]
