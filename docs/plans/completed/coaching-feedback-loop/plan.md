@@ -1,6 +1,6 @@
 # Coaching Feedback Loop
 
-Slug: coaching-feedback-loop · Status: active · Updated: 2026-09-09 · Theme: coaching
+Slug: coaching-feedback-loop · Status: done · Updated: 2026-09-09 · Theme: coaching · Archived: completed
 
 ## Goal
 
@@ -66,7 +66,7 @@ surfaces without adding AI to the Worker or creating a second coaching record.
     path owned by `reversible-plan-management`.
   - Keep manual and AI-authored edits equally visible; actor labels explain who
     changed the plan without giving either path a different data model.
-- [ ] **P2 — Coaching uses the whole training context**
+- [x] **P2 — Coaching uses the whole training context**
   - Include the existing schedule, recent feedback, races, periodization,
     trips, and stress settings in one compact coaching context where relevant.
   - Correct misleading trend labels and pair simple load or volume trends with
@@ -90,31 +90,23 @@ surfaces without adding AI to the Worker or creating a second coaching record.
     interference advice.
   - Verify that iOS and MCP describe the same recent sessions and plan state.
 
-## Execution frontier
-
-- P2
-
 ## Dependencies
 
-P1 reuses the completed [shared snapshot/history projection](../completed/reversible-plan-management/decisions.md) for visibility and reversion, preserving one change feed.
+P1 reuses the completed [shared snapshot/history projection](../reversible-plan-management/decisions.md) for visibility and reversion, preserving one change feed.
 
-P0(b) reuses the completed [superset runner/editor integration](../completed/supersets-and-circuits/plan.md), including shared recovery, models, API/cache handling and synthetic fixtures. Its temporary shared-file blockers are satisfied; preserve those delivered contracts when adding finish-flow feedback.
+P0(b) reuses the completed [superset runner/editor integration](../supersets-and-circuits/plan.md), including shared recovery, models, API/cache handling and synthetic fixtures. Its temporary shared-file blockers are satisfied; preserve those delivered contracts when adding finish-flow feedback.
 
-| Local phase | Relationship | Target | Reason |
-|---|---|---|---|
-| P2 | coordinates_with | plan:activity-integration-integrity#P0 | Identity/civil-date fixes and unknown-load labels need consistent source context. |
+P2 retains the civil-date and source identities supplied by the current activity
+integration. The separate Activity Integration Integrity P0 workstream remains
+planned; no provider reconciliation, HealthKit writes or permissions were added.
 
-## Next step
+## Release follow-up
 
-**Now (@agent):** Complete activated P2 in the isolated coaching-feedback-p2
-branch: shared semantic session/context projections, accurate working-set and
-external-load labels, unknown scheduling inputs, TS/Swift fixture parity, then
-exact-head independent review, terminal-green CI, merge and integration proof.
-Production deployment, migrations and TestFlight remain separately authorized.
-
-The [physical iPhone feedback checks](device-verification.md) remain deferred to
-an eventual separately authorized build containing P0. They are a release
-follow-up and do not block P1 repository delivery.
+Repository delivery covers P0/P1/P2. Production deployment and TestFlight remain
+separately authorized. The [physical iPhone feedback checks](device-verification.md)
+remain deferred to a future build containing P0; this retained release follow-up
+is not repository completion evidence. Deploy the compatible Worker before
+that iOS build because older Workers can reject `expected_feedback`.
 
 ## Notes / open questions
 
@@ -225,12 +217,12 @@ follow-up and do not block P1 repository delivery.
   existing session note and discard the recording. Cloud transcription or
   retained audio would require a separate product/privacy decision.
 
-- [Completed bodyweight support](../completed/bodyweight-training-support/plan.md)
+- [Completed bodyweight support](../bodyweight-training-support/plan.md)
   supplies variation replacement and comparable metrics. Reuse the shared
   `BodyweightProgress.json` contract for bodyweight PR/hold claims; this is a
   delivered repository foundation, not an unresolved dependency.
 
-- The [September app review](../../reviews/2026-09-app-review/report.md)
+- The [September app review](../../../reviews/2026-09-app-review/report.md)
   found that current compact strings omit timed/load semantics and session
   notes. These are projection gaps even though fuller tools expose much of
   the underlying data. P0 remains independent of later metrics/history work.
@@ -243,5 +235,5 @@ follow-up and do not block P1 repository delivery.
 - The Worker remains deterministic data infrastructure. Claude interprets the
   feedback in conversation; the backend stores and returns it.
 - Reuse the durable terminal session-write path completed in
-  [Workout Write Reliability](../completed/workout-write-reliability/plan.md);
+  [Workout Write Reliability](../workout-write-reliability/plan.md);
   it is historical foundation rather than an unresolved dependency.

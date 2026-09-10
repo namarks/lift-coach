@@ -8,12 +8,14 @@ Give athletes one trustworthy view of connected workouts and a dependable
 private-group experience, without expanding Tres Fort into an endurance
 authoring platform or general social network.
 
+The [completed coaching context](../plans/completed/coaching-feedback-loop/plan.md)
+provides the shared scheduling heuristic and unknown-input projection.
+
 ## Scope
 
 - plan:activity-integration-integrity#P0
 - plan:activity-integration-integrity#P1
 - plan:activity-integration-integrity#P2
-- plan:coaching-feedback-loop#P2
 - plan:group-experience-and-governance
 
 ## Priority policy
