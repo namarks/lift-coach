@@ -4,15 +4,19 @@ import SwiftUI
 
 struct RootView: View {
     @EnvironmentObject private var model: AuthModel
+    var defaults: UserDefaults = .standard
+    var now: () -> Date = Date.init
 
     var body: some View {
         Group {
             switch model.phase {
             case .signedIn:
                 if model.onboardingComplete {
-                    MainTabView(auth: model)
+                    MainTabView(auth: model, defaults: defaults, now: now)
+                        .id(model.featureSessionEpoch)
                 } else {
-                    OnboardingView(auth: model)
+                    OnboardingView(auth: model, defaults: defaults)
+                        .id(model.featureSessionEpoch)
                 }
             default:
                 ZStack {
@@ -89,7 +93,7 @@ private struct SignedOutView: View {
 
     var body: some View {
         VStack(spacing: 16) {
-            Text("Your coach owns the plan.\nSign in to sync.")
+            Text("Build your workouts or connect your own Claude coach.\nSign in to keep your training in sync.")
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
@@ -98,6 +102,18 @@ private struct SignedOutView: View {
                     .font(.footnote)
                     .multilineTextAlignment(.center)
                     .foregroundStyle(.orange)
+            }
+
+            if model.pendingInviteCode != nil {
+                Text("Your group invite will be ready after sign-in and setup.")
+                    .font(.footnote).multilineTextAlignment(.center)
+            }
+            if model.pendingEntryIntents.contains(where: { $0.destination == .coach }) {
+                Text("Sign in to continue to Coach Connect.")
+                    .font(.footnote).multilineTextAlignment(.center)
+            } else {
+                Button("Set up my coach") { model.requestEntry(.coach) }
+                    .frame(minHeight: 44)
             }
 
             signInControl
@@ -119,7 +135,11 @@ private struct SignedOutView: View {
             // A synthetic intent must never launch a real Apple exchange,
             // including when someone manually explores the fixture screen.
             Button {
-                model.phase = .working("Sign-in requested (synthetic)")
+                if UIFixtureScenario.selected?.isActivation == true {
+                    Task { await model.exchange(identityToken: "synthetic", fullName: nil) }
+                } else {
+                    model.phase = .working("Sign-in requested (synthetic)")
+                }
             } label: {
                 Label("Sign in with Apple", systemImage: "apple.logo")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

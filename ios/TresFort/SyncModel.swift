@@ -141,6 +141,13 @@ final class SyncModel: ObservableObject {
     @Published var selectedDayID: String?
     @Published var loadError: String?
     @Published var isLoading = false
+    /// Only an accepted live state read can establish an empty account. An
+    /// absent plan in a cold model or cached snapshot is not creation authority.
+    @Published private(set) var hasVerifiedPlanState = false
+    var canCreateRoutine: Bool {
+        canInitiateBoundFeatureAction && plan == nil && hasVerifiedPlanState
+            && !isUsingCachedState && !isLoading && loadError == nil
+    }
     /// True after a target PATCH is acknowledged until a bound live-state
     /// response reconciles the workout editor's cached prescription values.
     @Published private(set) var workoutEditorRefreshNeeded = false
@@ -741,6 +748,7 @@ final class SyncModel: ObservableObject {
             isLiveResponse: true,
             provenDeletedSetIDs: provenDeletedSetIDs)
         workoutEditorRefreshNeeded = false
+        hasVerifiedPlanState = true
         return true
     }
 

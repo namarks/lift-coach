@@ -17,12 +17,13 @@ struct OnboardingView: View {
     @ObservedObject var auth: AuthModel
     @StateObject private var groupModel: GroupModel
 
-    enum Step: Int, CaseIterable { case welcome, group, intervals, coach }
-    @State private var step: Step = .welcome
+    @StateObject private var flow: OnboardingFlow
+    private var step: OnboardingFlow.Step { flow.step }
 
-    init(auth: AuthModel) {
+    init(auth: AuthModel, defaults: UserDefaults = .standard) {
         self.auth = auth
-        _groupModel = StateObject(wrappedValue: GroupModel(auth: auth))
+        _flow = StateObject(wrappedValue: OnboardingFlow(auth: auth))
+        _groupModel = StateObject(wrappedValue: GroupModel(auth: auth, defaults: defaults))
     }
 
     var body: some View {
@@ -31,7 +32,7 @@ struct OnboardingView: View {
             GeometryReader { geometry in
                 ScrollView {
                     VStack(spacing: 0) {
-                        ProgressDots(total: Step.allCases.count, index: step.rawValue)
+                        ProgressDots(total: OnboardingFlow.Step.allCases.count, index: step.rawValue)
                             .padding(.top, 20)
                         Spacer(minLength: 12)
                         content
@@ -46,39 +47,39 @@ struct OnboardingView: View {
             }
         }
         .preferredColorScheme(.dark)
-        // The coach step adapts its copy on whether THIS account is the
-        // Claude owner; refresh the /api/me snapshot so it's resolved by
-        // the time we reach it. Best-effort — failure just defaults to the
-        // non-owner (invited-member) phrasing.
-        .task { await groupModel.refreshMe() }
     }
 
     @ViewBuilder private var content: some View {
+        let checkpoint = flow.checkpoint
         switch step {
         case .welcome:
-            WelcomeStep(onContinue: advance)
+            WelcomeStep(invitePending: auth.pendingInviteCode != nil,
+                        onContinue: { advance(from: checkpoint) })
         case .group:
-            JoinGroupStep(groupModel: groupModel, onDone: advance, onSkip: advance)
+            JoinGroupStep(groupModel: groupModel,
+                          onDone: { advance(from: checkpoint) },
+                          onSkip: { advance(from: checkpoint) })
         case .intervals:
-            ConnectIntervalsStep(groupModel: groupModel, onDone: advance, onSkip: advance)
+            ConnectIntervalsStep(groupModel: groupModel,
+                                 onDone: { advance(from: checkpoint) },
+                                 onSkip: { advance(from: checkpoint) })
         case .coach:
-            CoachIntroStep(isOwner: groupModel.me?.claude.is_owner ?? false,
-                           onFinish: auth.completeOnboarding)
+            CoachIntroStep(
+                onManual: { flow.finish(from: checkpoint, destination: .workouts) },
+                onCoach: { flow.finish(from: checkpoint, destination: .coach) },
+                onFinish: { flow.finish(from: checkpoint) })
         }
     }
 
-    private func advance() {
-        if let next = Step(rawValue: step.rawValue + 1) {
-            withAnimation(reduceMotion ? nil : .snappy) { step = next }
-        } else {
-            auth.completeOnboarding()
-        }
+    private func advance(from checkpoint: OnboardingFlow.Checkpoint) {
+        withAnimation(reduceMotion ? nil : .snappy) { flow.advance(from: checkpoint) }
     }
 }
 
 // MARK: - Steps
 
 private struct WelcomeStep: View {
+    let invitePending: Bool
     let onContinue: () -> Void
 
     var body: some View {
@@ -86,7 +87,7 @@ private struct WelcomeStep: View {
             Text("TRÈS FORT")
                 .font(Theme.display(46)).tracking(2)
                 .foregroundStyle(Theme.text)
-            Text("Your AI strength coach")
+            Text("Your training, your way")
                 .font(.headline)
                 .foregroundStyle(Theme.muted)
 
@@ -94,12 +95,16 @@ private struct WelcomeStep: View {
                 OnboardingBullet(icon: "dumbbell.fill", title: "Lift, logged",
                                  text: "Run your workout in the app — it tracks every set, rep, and rest.")
                 OnboardingBullet(icon: "brain.head.profile", title: "A coach that adapts",
-                                 text: "Claude reviews your training and adjusts the plan as you go.")
+                                 text: "Build workouts yourself, or connect your own Claude to review and adjust your plan.")
                 OnboardingBullet(icon: "person.2.fill", title: "Your crew",
                                  text: "Share progress with family and friends in a private group.")
             }
             .padding(.vertical, 8)
 
+            if invitePending {
+                Text("Your group invite is saved. You can join after setup.")
+                    .font(.footnote).foregroundStyle(Theme.text)
+            }
             OnboardingPrimaryButton("Get started", action: onContinue)
         }
     }
@@ -288,21 +293,21 @@ private struct ConnectIntervalsStep: View {
 }
 
 private struct CoachIntroStep: View {
-    let isOwner: Bool
+    let onManual: () -> Void
+    let onCoach: () -> Void
     let onFinish: () -> Void
-
-    private var subtitle: String {
-        isOwner
-            ? "Your coach is Claude. In the Claude app, open Settings → Connectors and add “Très Fort.” Then ask it to review your training or build your plan."
-            : "Coaching runs through your group for now — the owner's Claude sees everyone's activity and programs your plan. You'll get your own AI coach soon."
-    }
 
     var body: some View {
         VStack(spacing: 22) {
-            StepHeader(icon: "brain.head.profile",
-                       title: "Meet your coach",
-                       subtitle: subtitle)
-            OnboardingPrimaryButton("Enter Très Fort", action: onFinish)
+            StepHeader(icon: "dumbbell.fill",
+                       title: "Choose your first step",
+                       subtitle: "Build and schedule your workouts here, or connect your own Claude to help with your plan. Every member has their own Coach Connect, whether joining a group or training independently.")
+            Text("Both paths use your same plan. Workouts and Coach Connect in Profile are available whenever you're ready.")
+                .font(.footnote).foregroundStyle(Theme.muted)
+                .multilineTextAlignment(.center)
+            OnboardingPrimaryButton("Build my first workout", action: onManual)
+            OnboardingPrimaryButton("Set up my coach", action: onCoach)
+            OnboardingSkipButton("Enter Très Fort", action: onFinish)
         }
     }
 }

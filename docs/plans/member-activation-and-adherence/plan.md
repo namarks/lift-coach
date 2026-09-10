@@ -1,6 +1,6 @@
 # Member Activation and Adherence
 
-Slug: member-activation-and-adherence · Status: planned · Updated: 2026-09-07 · Theme: gym-floor
+Slug: member-activation-and-adherence · Status: active · Updated: 2026-09-09 · Theme: gym-floor
 
 ## Goal
 
@@ -54,15 +54,28 @@ correct workout.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
+| P0 | coordinates_with | plan:coaching-feedback-loop#P1 | Start onboarding/authentication independently; integrate after PR #164 lands and rerun affected tests and exact-head review for shared SyncModel, Today and fixtures. |
 | P2(a) | gated_by | external:starter-plan-policy | Implementing or explicitly declining the starter path requires the product decision; evidence and recommendation do not. |
 
 ## Next step
 
-**Now (@owner):** Activate P0 when the member entry path should enter the
-backlog. P2 evidence and recommendation remain ungated; only P2(a) waits on the
-starter-plan product decision.
+**Now (@agent):** Complete P0 repository delivery from verified main, preserving
+manual authoring, account isolation, workout write reliability and coaching
+feedback. Integrate Coaching Feedback Loop P1 before final verification and
+review, then merge after all configured gates pass. P1 and P2 remain inactive.
 
 ## Notes / open questions
+
+- P0 activated on 2026-09-09 from verified main `4ec8a9e`. Reconciliation:
+  manual creation and returned-load-error recovery already exist; remaining
+  gaps are durable account-bound entry intent, personal Coach Connect copy and
+  direct setup entry, first-read/cached-empty authority, and onboarding callbacks
+  bound to their originating step and feature session. Synthetic journeys will
+  exercise entry through first completion and interrupted/retried entry.
+- Repository delivery is the P0 boundary. Production deployment/migrations,
+  TestFlight distribution and actual member messages remain separately
+  authorized. Existing physical-device coaching feedback checks remain release
+  follow-up; no new pre-merge device gate is introduced here.
 
 - The [September app review](../../reviews/2026-09-app-review/report.md)
   revalidated the working manual entry path. P0 closes remaining intent,
