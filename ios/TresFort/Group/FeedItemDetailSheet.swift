@@ -1,11 +1,12 @@
 import SwiftUI
 
-/// Type-discriminated detail sheet for a feed item. Read-only — friends'
-/// rows have no actions; the caller's own activity rows get a "Delete"
-/// button at the bottom (manual activities only).
+/// Detail uses the current visible feed, so revoked sharing cannot leave an
+/// old snapshot open. Other members can be reported or blocked; the caller
+/// can delete their own manual activities.
 struct FeedItemDetailSheet: View {
     let item: FeedItem
-    let groupModel: GroupModel
+    let groupID: String
+    @ObservedObject var groupModel: GroupModel
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -13,11 +14,23 @@ struct FeedItemDetailSheet: View {
             Theme.bg.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
-                    switch item {
-                    case .session(let s):  SessionDetail(item: s)
-                    case .ride(let r):     RideDetail(item: r)
-                    case .activity(let a): ActivityDetail(item: a, groupModel: groupModel, dismiss: { dismiss() })
-                    case .unknown(let u):  UnknownDetail(item: u)
+                    if let item = groupModel.feed[groupID]?.first(where: { $0.id == self.item.id }) {
+                        switch item {
+                        case .session(let s):  SessionDetail(item: s)
+                        case .ride(let r):     RideDetail(item: r)
+                        case .activity(let a): ActivityDetail(item: a, groupModel: groupModel, dismiss: { dismiss() })
+                        case .unknown(let u):  UnknownDetail(item: u)
+                        }
+                        if !item.isMe {
+                            HStack {
+                                Text("Report or block")
+                                Spacer()
+                                GroupMemberSafetyActions(report: .init(groupID: groupID, memberID: item.userID,
+                                    itemID: item.id, itemType: item.reportType), model: groupModel)
+                            }
+                        }
+                    } else {
+                        Text("This shared activity is no longer available.")
                     }
                 }
                 .padding(22)

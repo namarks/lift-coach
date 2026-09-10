@@ -57,6 +57,9 @@ struct ProfileView: View {
                 coachSection
                 integrationsSection
                 groupsSection
+                Section {
+                    NavigationLink("Group safety") { GroupSafetyView(model: groupModel) }
+                }
                 Section("About Très Fort") {
                     PrivacyPolicyLink()
                     Link("Contact support", destination: AppInformation.supportURL)

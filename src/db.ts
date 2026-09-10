@@ -1,3 +1,4 @@
+import { sharedText, type GroupReportReason } from './groupSafety';
 import { shareWorkoutSchemaCache, workoutDB } from './workoutSchema';
 import { validActivitySourceTime } from './activityTime';
 import { diagnosticErrorType } from './errors';
@@ -2298,6 +2299,12 @@ export async function exportUserData(
           ORDER BY gm.joined_at, gm.group_id`,
       )
       .bind(userId),
+    workoutDB(db)
+      .prepare('SELECT blocked_id AS user_id, created_at FROM group_member_blocks WHERE blocker_id = ?1 AND active = 1 ORDER BY created_at, blocked_id')
+      .bind(userId),
+    workoutDB(db)
+      .prepare('SELECT active, reason, updated_at FROM group_sharing_restrictions WHERE user_id = ?1')
+      .bind(userId),
   ]);
   const rowsAt = (index: number): Record<string, unknown>[] =>
     projection[index]?.results ?? [];
@@ -2358,6 +2365,10 @@ export async function exportUserData(
       plan_snapshots: planSnapshots,
     },
     group_memberships: memberships,
+    group_safety: {
+      blocks: rowsAt(16),
+      sharing_restriction: rowsAt(17)[0] ?? null,
+    },
   };
 }
 
@@ -2441,39 +2452,115 @@ export async function isGroupMember(
   return !!r;
 }
 
-/**
- * Hydrate a group with its members + effective display names (per-group
- * override > users.display_name). Returns null if no such group.
- */
+interface VisibleGroupMember {
+  user_id: string;
+  per_group_name: string | null;
+  global_name: string | null;
+  email: string | null;
+  timezone: string | null;
+  joined_at: number;
+}
+
+// One visibility rule for rosters, REST/MCP feeds, stats and activity series.
+// Filtering before activity reads keeps pagination and totals consistent.
+async function visibleGroupMembers(db: D1Database, groupId: string, callerUserId: string): Promise<VisibleGroupMember[]> {
+  const rows = await workoutDB(db).prepare(`
+    SELECT gm.user_id, gm.display_name AS per_group_name, gm.joined_at,
+           u.display_name AS global_name, u.email, u.timezone
+      FROM group_members gm JOIN users u ON u.id = gm.user_id
+     WHERE gm.group_id = ?1
+       AND EXISTS (SELECT 1 FROM group_members viewer WHERE viewer.group_id = ?1 AND viewer.user_id = ?2)
+       AND (gm.user_id = ?2 OR (
+         NOT EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = gm.user_id AND r.active = 1)
+         AND NOT EXISTS (SELECT 1 FROM group_member_blocks b WHERE b.active = 1 AND
+           ((b.blocker_id = ?2 AND b.blocked_id = gm.user_id) OR
+            (b.blocked_id = ?2 AND b.blocker_id = gm.user_id)))
+       ))
+     ORDER BY gm.joined_at, gm.user_id`).bind(groupId, callerUserId).all<VisibleGroupMember>();
+  return rows.results;
+}
+
+export async function listGroupBlocks(db: D1Database, userId: string) {
+  const rows = await workoutDB(db).prepare(`
+    SELECT blocked_id AS user_id, created_at FROM group_member_blocks
+     WHERE blocker_id = ?1 AND active = 1 ORDER BY created_at, blocked_id
+  `).bind(userId).all<{ user_id: string; created_at: number }>();
+  return rows.results;
+}
+
+export async function setGroupMemberBlock(db: D1Database, userId: string, targetId: string, active: boolean): Promise<boolean> {
+  if (userId === targetId) return false;
+  if (!active) {
+    // Only the block's owner can undo it; retry and leaving the group are safe.
+    await workoutDB(db).prepare('UPDATE group_member_blocks SET active = 0 WHERE blocker_id = ?1 AND blocked_id = ?2')
+      .bind(userId, targetId).run();
+    return true;
+  }
+  const result = await workoutDB(db).prepare(`
+    INSERT INTO group_member_blocks (blocker_id, blocked_id, created_at, active)
+    SELECT ?1, ?2, ?3, 1
+     WHERE EXISTS (SELECT 1 FROM group_members a JOIN group_members b ON a.group_id = b.group_id
+                    WHERE a.user_id = ?1 AND b.user_id = ?2)
+       AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id IN (?1, ?2))
+    ON CONFLICT (blocker_id, blocked_id) DO UPDATE SET active = 1
+  `).bind(userId, targetId, now()).run();
+  return (result.meta.changes ?? 0) > 0;
+}
+
+// Operator authority requires the explicitly configured Apple identity. Never
+// promote the earliest account or a group creator into platform moderation.
+export async function isGroupSafetyOperator(db: D1Database, userId: string, ownerAppleSub: string | undefined): Promise<boolean> {
+  if (!ownerAppleSub) return false;
+  const row = await workoutDB(db).prepare(`SELECT 1 AS allowed FROM users
+    WHERE id = ?1 AND apple_sub = ?2
+      AND NOT EXISTS (SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1)
+      AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id = ?1)
+  `).bind(userId, ownerAppleSub).first();
+  return row !== null;
+}
+
+export async function getGroupSharingRestriction(db: D1Database, userId: string) {
+  return workoutDB(db).prepare('SELECT active, reason, updated_at FROM group_sharing_restrictions WHERE user_id = ?1')
+    .bind(userId).first<{ active: number; reason: GroupReportReason; updated_at: number }>();
+}
+
+export async function setGroupSharingRestriction(
+  db: D1Database, operatorId: string, ownerAppleSub: string | undefined,
+  targetId: string, active: boolean, reason: GroupReportReason,
+): Promise<boolean> {
+  if (!ownerAppleSub) return false;
+  const ts = now();
+  // Restriction and audit commit together. Authority is rechecked at the write,
+  // including account deletion; no report content is copied into the audit.
+  const [result] = await workoutDB(db).batch([
+    workoutDB(db).prepare(`INSERT INTO group_sharing_restrictions (user_id, active, reason, updated_at)
+      SELECT ?1, ?2, ?3, ?4 WHERE EXISTS (SELECT 1 FROM users WHERE id = ?1)
+        AND EXISTS (SELECT 1 FROM users WHERE id = ?5 AND apple_sub = ?6)
+        AND NOT EXISTS (SELECT 1 FROM owner_deletion_tombstone WHERE singleton = 1)
+        AND NOT EXISTS (SELECT 1 FROM account_deletion_intents WHERE user_id IN (?1, ?5))
+      ON CONFLICT (user_id) DO UPDATE SET active = excluded.active, reason = excluded.reason, updated_at = excluded.updated_at
+    `).bind(targetId, active ? 1 : 0, reason, ts, operatorId, ownerAppleSub),
+    workoutDB(db).prepare(`INSERT INTO audit_log (id, user_id, actor, tool, args, result, created_at)
+      SELECT ?1, ?2, 'ios', 'set_group_sharing_restriction', ?3, ?4, ?5 WHERE changes() = 1
+    `).bind(uuid(), operatorId, JSON.stringify({ user_id: targetId, reason }), active ? 'restricted' : 'restored', ts),
+  ]);
+  return (result?.meta.changes ?? 0) > 0;
+}
+
 async function hydrateGroup(
   db: D1Database,
   group: Group,
+  callerUserId: string,
 ): Promise<Group & { members: ResolvedGroupMember[] }> {
-  const r = await workoutDB(db)
-    .prepare(
-      `SELECT gm.group_id, gm.user_id, gm.display_name, gm.joined_at,
-              u.display_name AS user_display_name
-         FROM group_members gm
-         JOIN users u ON u.id = gm.user_id
-        WHERE gm.group_id = ?1
-        ORDER BY gm.joined_at, gm.user_id`,
-    )
-    .bind(group.id)
-    .all<{
-      group_id: string;
-      user_id: string;
-      display_name: string | null;
-      joined_at: number;
-      user_display_name: string | null;
-    }>();
-  const members: ResolvedGroupMember[] = r.results.map((row) => ({
-    group_id: row.group_id,
+  const rows = await visibleGroupMembers(db, group.id, callerUserId);
+  const members: ResolvedGroupMember[] = rows.map((row) => ({
+    group_id: group.id,
     user_id: row.user_id,
-    display_name: row.display_name,
+    display_name: sharedText(row.per_group_name, 'Member'),
     joined_at: row.joined_at,
-    effective_display_name: row.display_name ?? row.user_display_name,
+    effective_display_name: sharedText(row.per_group_name ?? row.global_name, 'Member'),
   }));
-  return { ...group, members };
+  return { ...group, name: sharedText(group.name, 'Private group')!, members };
 }
 
 /**
@@ -2486,7 +2573,7 @@ export async function listGroupsForUser(
 ): Promise<Array<Group & { members: ResolvedGroupMember[] }>> {
   const r = await workoutDB(db)
     .prepare(
-      `SELECT g.* FROM groups g
+      `SELECT g.*, CASE WHEN EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = g.created_by AND r.active = 1) THEN 'Private group' ELSE g.name END AS name FROM groups g
          JOIN group_members gm ON gm.group_id = g.id
         WHERE gm.user_id = ?1
         ORDER BY g.created_at, g.id`,
@@ -2495,7 +2582,7 @@ export async function listGroupsForUser(
     .all<Group>();
   const out: Array<Group & { members: ResolvedGroupMember[] }> = [];
   for (const g of r.results) {
-    out.push(await hydrateGroup(db, g));
+    out.push(await hydrateGroup(db, g, userId));
   }
   return out;
 }
@@ -2504,13 +2591,14 @@ export async function listGroupsForUser(
 export async function getGroupWithMembers(
   db: D1Database,
   groupId: string,
+  callerUserId: string,
 ): Promise<(Group & { members: ResolvedGroupMember[] }) | null> {
   const g = await workoutDB(db)
-    .prepare('SELECT * FROM groups WHERE id = ?1')
+    .prepare("SELECT g.*, CASE WHEN EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = g.created_by AND r.active = 1) THEN 'Private group' ELSE g.name END AS name FROM groups g WHERE id = ?1")
     .bind(groupId)
     .first<Group>();
   if (!g) return null;
-  return hydrateGroup(db, g);
+  return hydrateGroup(db, g, callerUserId);
 }
 
 /**
@@ -2615,10 +2703,10 @@ export async function getInvitePreview(
   const invite = await getInviteForRedemption(db, code.trim().toUpperCase());
   if (!invite) return { status: 'unknown', group_name: null };
   const group = await workoutDB(db)
-    .prepare('SELECT name FROM groups WHERE id = ?1')
+    .prepare("SELECT CASE WHEN EXISTS (SELECT 1 FROM group_sharing_restrictions r WHERE r.user_id = g.created_by AND r.active = 1) THEN 'Private group' ELSE g.name END AS name FROM groups g WHERE id = ?1")
     .bind(invite.group_id)
     .first<{ name: string }>();
-  const group_name = group?.name ?? null;
+  const group_name = sharedText(group?.name ?? null, 'Private group');
   if (group_name == null) return { status: 'unknown', group_name: null };
   if (invite.used_at != null) return { status: 'used', group_name };
   if (invite.expires_at != null && invite.expires_at < now()) {
@@ -10879,30 +10967,14 @@ export async function getGroupFeed(
 
   // 1. Resolve group members + their effective display names + email
   //    fallback. Join into a single row per user_id for the join later.
-  const memberRows = await workoutDB(db)
-    .prepare(
-      `SELECT gm.user_id,
-              gm.display_name AS per_group_name,
-              u.display_name  AS global_name,
-              u.email
-         FROM group_members gm
-         JOIN users u ON u.id = gm.user_id
-        WHERE gm.group_id = ?1`,
-    )
-    .bind(groupId)
-    .all<{
-      user_id: string;
-      per_group_name: string | null;
-      global_name: string | null;
-      email: string | null;
-    }>();
+  const memberRows = { results: await visibleGroupMembers(db, groupId, callerUserId) };
   if (memberRows.results.length === 0) return [];
 
   const memberMeta = new Map<string, { displayName: string }>();
   const memberIds: string[] = [];
   for (const m of memberRows.results) {
     memberMeta.set(m.user_id, {
-      displayName: resolveDisplayName(m.per_group_name, m.global_name, m.email),
+      displayName: sharedText(resolveDisplayName(m.per_group_name, m.global_name, m.email), 'Member')!,
     });
     memberIds.push(m.user_id);
   }
@@ -11071,8 +11143,8 @@ export async function getGroupFeed(
     date: s.date,
     occurred_at: s.occurred_at,
     session: {
-      day_name: s.day_name,
-      day_label: s.day_label,
+      day_name: sharedText(s.day_name),
+      day_label: sharedText(s.day_label),
       // duration_sec is only meaningful once the session is completed;
       // a still-in-progress session emits null (matches calendar.ts).
       duration_sec:
@@ -11140,8 +11212,8 @@ export async function getGroupFeed(
     date: r.date,
     occurred_at: r.occurred_at,
     ride: {
-      kind: r.kind,
-      name: r.name,
+      kind: sharedText(r.kind)!,
+      name: sharedText(r.name),
       distance_m: r.distance_m,
       moving_time_sec: r.moving_time_sec,
       average_watts: r.average_watts,
@@ -11188,10 +11260,10 @@ export async function getGroupFeed(
     date: a.date,
     occurred_at: a.logged_at,
     activity: {
-      kind: a.type,
-      title: a.title,
+      kind: sharedText(a.type)!,
+      title: sharedText(a.title),
       duration_min: a.duration_minutes,
-      notes: a.notes,
+      notes: sharedText(a.notes),
     },
   }));
 
@@ -11232,32 +11304,12 @@ export async function getGroupStats(
   const range = Math.max(1, Math.min(rangeDays, 365));
 
   // 1. Resolve members + names + timezones + emails in one round trip.
-  const memberRows = await workoutDB(db)
-    .prepare(
-      `SELECT gm.user_id,
-              gm.display_name AS per_group_name,
-              u.display_name  AS global_name,
-              u.email,
-              u.timezone
-         FROM group_members gm
-         JOIN users u ON u.id = gm.user_id
-        WHERE gm.group_id = ?1
-        ORDER BY gm.joined_at, gm.user_id`,
-    )
-    .bind(groupId)
-    .all<{
-      user_id: string;
-      per_group_name: string | null;
-      global_name: string | null;
-      email: string | null;
-      timezone: string | null;
-    }>();
-
+  const memberRows = { results: await visibleGroupMembers(db, groupId, callerUserId) };
   if (memberRows.results.length === 0) return [];
 
   const out: MemberStat[] = [];
   for (const m of memberRows.results) {
-    const displayName = resolveDisplayName(m.per_group_name, m.global_name, m.email);
+    const displayName = sharedText(resolveDisplayName(m.per_group_name, m.global_name, m.email), 'Member')!;
     const today = todayInTz(m.timezone);
     // The window: [windowStart, today] inclusive, in this member's civil
     // calendar. We collect ALL activity dates within (and one day before,
@@ -11404,22 +11456,11 @@ export async function getGroupActivitySeries(
   callerUserId: string,
 ): Promise<MemberActivitySeries[]> {
   // Cap at 372 (53 weeks) — enough for the year view's week buckets,
-  // bounded so the per-member GROUP BY stays cheap. callerUserId is
-  // accepted for signature symmetry with getGroupStats/getGroupFeed (the
-  // series itself is identity-blind; is_me is resolved from /stats).
-  void callerUserId;
+  // bounded so the per-member GROUP BY stays cheap. The caller determines
+  // which members are visible; is_me is resolved from /stats.
   const days = Math.max(1, Math.min(Math.floor(windowDays), 372));
 
-  const memberRows = await workoutDB(db)
-    .prepare(
-      `SELECT gm.user_id, u.timezone
-         FROM group_members gm
-         JOIN users u ON u.id = gm.user_id
-        WHERE gm.group_id = ?1
-        ORDER BY gm.joined_at, gm.user_id`,
-    )
-    .bind(groupId)
-    .all<{ user_id: string; timezone: string | null }>();
+  const memberRows = { results: await visibleGroupMembers(db, groupId, callerUserId) };
   if (memberRows.results.length === 0) return [];
 
   const out: MemberActivitySeries[] = [];
@@ -11479,7 +11520,11 @@ export async function getGroupActivitySeries(
       )
       .bind(m.user_id, start, today)
       .all<{ date: string; type: string; n: number }>();
-    for (const r of actRows.results) ensure(r.date).activities[r.type] = r.n;
+    for (const r of actRows.results) {
+      const counts = ensure(r.date).activities;
+      const kind = sharedText(r.type, 'other')!;
+      counts[kind] = (counts[kind] ?? 0) + r.n;
+    }
 
     const daysArr = [...byDate.values()].sort((x, y) =>
       x.date < y.date ? -1 : x.date > y.date ? 1 : 0,

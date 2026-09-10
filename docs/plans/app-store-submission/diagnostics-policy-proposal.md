@@ -1,6 +1,7 @@
 # Diagnostics policy proposal
 
-Prepared 2026-09-10. This is a proposal, not an applied production setting.
+Approved by the owner 2026-09-10. Prepared in the repository; not an applied
+production setting. The owner prefers a small first-release implementation.
 
 ## Evidence
 
@@ -67,8 +68,8 @@ does not establish that custom-log metadata contains no identifiers.
 
 ## Authority and verification
 
-The owner chooses the policy before its configuration is changed. Approval of
-the policy authorizes preparing and reviewing repository changes; applying them
+The owner approved the aggregate-metrics-only recommendation. This authorizes
+preparing and reviewing repository changes; applying them
 to production remains part of the separately approved candidate release.
 After deployment, re-read provider settings and verify with synthetic requests
 before finalizing App Privacy declarations. Native aggregate metrics and any

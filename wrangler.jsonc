@@ -9,7 +9,14 @@
   "main": "src/index.ts",
   "compatibility_date": "2024-12-30",
   "compatibility_flags": ["nodejs_compat"],
-  "observability": { "enabled": true },
+  // Approved first-release policy: aggregate platform metrics only.
+  "observability": {
+    "enabled": false,
+    "logs": { "enabled": false, "persist": false, "invocation_logs": false, "destinations": [] },
+    "traces": { "enabled": false, "persist": false, "destinations": [] }
+  },
+  "logpush": false,
+  "tail_consumers": [],
   "d1_databases": [
     {
       "binding": "DB",

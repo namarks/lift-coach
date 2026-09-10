@@ -51,6 +51,7 @@ if [[ "$ui_suite" == smoke ]]; then
   fi
   if [[ "$ci_shard" != 1 ]]; then
     test_args+=("-only-testing:TresFortUITests/IntervalsConnectionJourneyTests")
+    test_args+=("-only-testing:TresFortUITests/GroupSafetyJourneyTests")
     test_args+=("-only-testing:TresFortUITests/ExerciseGroupJourneyTests/testAuthorWarmupAndWorkingSupersetThenRunAlternatingRounds")
   fi
 elif [[ -n "$ci_shard" ]]; then

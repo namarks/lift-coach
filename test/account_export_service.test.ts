@@ -31,7 +31,7 @@ describe('account export projection', () => {
       async batch(statements: unknown[]) {
         batchCalls += 1;
         batchSize = statements.length;
-        return Array.from({ length: 16 }, (_, index) => ({
+        return Array.from({ length: statements.length }, (_, index) => ({
           results: index === 0 ? [{ id: userId }] : [],
         }));
       },
@@ -40,12 +40,13 @@ describe('account export projection', () => {
     const exported = await exportUserData(fakeDb, userId);
 
     expect(batchCalls).toBe(1);
-    expect(batchSize).toBe(16);
-    expect(preparedSql).toHaveLength(16);
+    expect(batchSize).toBe(18);
+    expect(preparedSql).toHaveLength(18);
     expect(exported).toMatchObject({
       account: { id: userId },
       training: { plans: [], sessions: [], set_logs: [] },
       group_memberships: [],
+      group_safety: { blocks: [], sharing_restriction: null },
     });
   });
 

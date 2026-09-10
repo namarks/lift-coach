@@ -1,3 +1,4 @@
+import { isGroupReportReason } from '../groupSafety';
 import { workoutExportWire, workoutInput, workoutWire } from '../workoutWire';
 import { Hono } from 'hono';
 import type { Context } from 'hono';
@@ -13,6 +14,11 @@ import {
   addWorkoutAtVersion,
   addTemplateExercise,
   createGroup,
+  setGroupMemberBlock,
+  listGroupBlocks,
+  isGroupSafetyOperator,
+  setGroupSharingRestriction,
+  getGroupSharingRestriction,
   setGroup,
   clearGroup,
   createInvite,
@@ -82,6 +88,12 @@ import type { Weekday } from '../types';
 
 export const apiRoutes = new Hono<HonoEnv>();
 apiRoutes.use('*', requireAppJwt);
+for (const path of ['/groups', '/groups/*', '/me/group-safety', '/me/group-blocks/*', '/group-safety/*']) {
+  apiRoutes.use(path, async (c, next) => {
+    c.header('Cache-Control', 'no-store');
+    await next();
+  });
+}
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -1506,6 +1518,36 @@ apiRoutes.delete('/me/coach-grants', async (c) => {
 });
 
 // ---- groups (M2 — friends/family invite-gated containers) ----------------
+apiRoutes.get('/me/group-safety', async (c) => {
+  const userId = c.get('userId');
+  return c.json({
+    blocks: await listGroupBlocks(c.env.DB, userId),
+    restriction: await getGroupSharingRestriction(c.env.DB, userId),
+    can_moderate: await isGroupSafetyOperator(c.env.DB, userId, c.env.OWNER_APPLE_SUB),
+  });
+});
+
+apiRoutes.put('/me/group-blocks/:userId', async (c) => {
+  const body = await c.req.json<{ active?: unknown }>().catch(() => null);
+  if (!body || typeof body.active !== 'boolean') return c.json({ error: 'invalid_active' }, 400);
+  const ok = await setGroupMemberBlock(c.env.DB, c.get('userId'), c.req.param('userId'), body.active);
+  return ok ? c.json({ ok: true }) : c.json({ error: 'member_unavailable' }, 404);
+});
+
+apiRoutes.put('/group-safety/restrictions/:userId', async (c) => {
+  const userId = c.get('userId');
+  if (!await isGroupSafetyOperator(c.env.DB, userId, c.env.OWNER_APPLE_SUB)) {
+    return c.json({ error: 'forbidden' }, 403);
+  }
+  const body = await c.req.json<{ active?: unknown; reason?: unknown }>().catch(() => null);
+  if (!body || typeof body.active !== 'boolean' || !isGroupReportReason(body.reason)) {
+    return c.json({ error: 'invalid_restriction' }, 400);
+  }
+  const ok = await setGroupSharingRestriction(c.env.DB, userId, c.env.OWNER_APPLE_SUB,
+    c.req.param('userId'), body.active, body.reason);
+  return ok ? c.json({ ok: true }) : c.json({ error: 'member_unavailable' }, 404);
+});
+
 //
 // All routes require requireAppJwt (mounted at the top). Membership is the
 // authorization unit: non-members see 403 on group-scoped GET/PATCH/POST,
@@ -1526,7 +1568,7 @@ apiRoutes.post('/groups', async (c) => {
   const group = await createGroup(c.env.DB, userId, b.name.trim());
   // Hydrate so the iOS client gets the full shape (creator listed as the
   // sole member) without a second roundtrip.
-  const full = await getGroupWithMembers(c.env.DB, group.id);
+  const full = await getGroupWithMembers(c.env.DB, group.id, userId);
   return c.json(workoutWire(full), 201);
 });
 
@@ -1561,7 +1603,7 @@ apiRoutes.get('/groups/:id', async (c) => {
   if (!(await isGroupMember(c.env.DB, userId, groupId))) {
     return c.json(workoutWire({ error: 'forbidden' }), 403);
   }
-  const full = await getGroupWithMembers(c.env.DB, groupId);
+  const full = await getGroupWithMembers(c.env.DB, groupId, userId);
   return c.json(workoutWire(full));
 });
 
@@ -1628,7 +1670,7 @@ apiRoutes.post('/groups/join', async (c) => {
   }
   // On success, hand back the freshly-joined group with members hydrated
   // so the iOS client can render the group page without a follow-up GET.
-  const group = await getGroupWithMembers(c.env.DB, result.group_id);
+  const group = await getGroupWithMembers(c.env.DB, result.group_id, userId);
   return c.json(workoutWire({ ok: true, group }));
 });
 
@@ -1665,7 +1707,7 @@ apiRoutes.patch('/groups/:id/members/me', async (c) => {
   const ok = await setGroupDisplayName(c.env.DB, userId, groupId, displayName);
   if (!ok) return c.json(workoutWire({ error: 'forbidden' }), 403);
   // Return the hydrated group so the iOS client can update its model.
-  const full = await getGroupWithMembers(c.env.DB, groupId);
+  const full = await getGroupWithMembers(c.env.DB, groupId, userId);
   return c.json(workoutWire(full));
 });
 

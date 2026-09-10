@@ -30,6 +30,7 @@ final class GroupModel: ObservableObject {
     /// Account + setup snapshot (GET /api/me) for the Profile tab. Holds
     /// server-derived intervals + Claude-connector status.
     @Published var me: MeProfile?
+    @Published private(set) var groupSafety: GroupSafetyState?
 
     // MARK: Per-group caches (keyed by group.id)
 
@@ -88,6 +89,8 @@ final class GroupModel: ObservableObject {
     private let activityLogger: ((PendingActivity, String) async throws -> ActivityRow)?
     private let activityDeleter: ((String, String) async throws -> Void)?
     private let groupLister: ((String) async throws -> [GroupSummary])?
+    private let groupSafetyLoader: ((String) async throws -> GroupSafetyState)?
+    private let groupBlockWriter: ((String, Bool, String) async throws -> Void)?
     private let profileLoader: ((String) async throws -> MeProfile)?
     private let intervalsConnector: ((String?, String?, String) async throws -> APIClient.IntervalsConnectResult)?
     private let intervalsImporter: ((Int, String) async throws -> IntervalsImportResult)?
@@ -113,6 +116,8 @@ final class GroupModel: ObservableObject {
         activityDeleter: ((String, String) async throws -> Void)? = nil,
         groupLister: ((String) async throws -> [GroupSummary])? = nil,
         profileLoader: ((String) async throws -> MeProfile)? = nil,
+        groupBlockWriter: ((String, Bool, String) async throws -> Void)? = nil,
+        groupSafetyLoader: ((String) async throws -> GroupSafetyState)? = nil,
         intervalsConnector: ((String?, String?, String) async throws -> APIClient.IntervalsConnectResult)? = nil,
         intervalsImporter: ((Int, String) async throws -> IntervalsImportResult)? = nil,
         intervalsAuthorizer: ((String) async throws -> IntervalsOAuthResult)? = nil,
@@ -125,6 +130,8 @@ final class GroupModel: ObservableObject {
         self.activityDeleter = activityDeleter
         self.groupLister = groupLister
         self.profileLoader = profileLoader
+        self.groupBlockWriter = groupBlockWriter
+        self.groupSafetyLoader = groupSafetyLoader
         self.intervalsConnector = intervalsConnector
         self.intervalsImporter = intervalsImporter
         self.intervalsAuthorizer = intervalsAuthorizer
@@ -235,6 +242,7 @@ final class GroupModel: ObservableObject {
     /// and on scene-foreground transitions.
     func load() async {
         guard let jwt = currentJWT else { phase = .loading; return }
+        invalidateSharedGroups()
         let generation = identityCacheGeneration
         phase = .loading
         do {
@@ -247,14 +255,14 @@ final class GroupModel: ObservableObject {
             lastError = nil
             // Refresh the visible group's feed/stats so the tab is hot.
             if let id = selectedGroupID {
-                await refreshGroup(groupID: id)
+                await refreshGroup(groupID: id, refreshRoster: false)
             }
             // Drain any pending activity POSTs that survived a relaunch.
             await drainOutbox()
             // Account/setup snapshot for the Profile tab.
             await refreshMe()
         } catch {
-            guard isCurrentAccount else { return }
+            guard isCurrentAccount, generation == identityCacheGeneration else { return }
             if case let APIError.http(code, _) = error,
                code == 401,
                !isCurrentBearer(jwt) {
@@ -269,9 +277,31 @@ final class GroupModel: ObservableObject {
         }
     }
 
-    /// Refresh BOTH the feed and the stats for one group. Used by
+    /// Revalidate the roster, feed and stats for one group. Used by
     /// pull-to-refresh and after a `logActivity` succeeds.
-    func refreshGroup(groupID: String) async {
+    func refreshGroup(groupID: String, refreshRoster: Bool = true) async {
+        guard let jwt = currentJWT else { return }
+        identityCacheGeneration += 1
+        let generation = identityCacheGeneration
+        feed[groupID] = nil
+        stats[groupID] = nil
+        activitySeries[groupID] = nil
+        if refreshRoster {
+            if let index = groups.firstIndex(where: { $0.id == groupID }) {
+                let group = groups[index]
+                groups[index] = GroupSummary(id: group.id, name: "Private group", created_by: group.created_by,
+                                             created_at: group.created_at, members: [])
+            }
+            do {
+                let current = try await api.getGroup(id: groupID, jwt: jwt)
+                guard isCurrentAccount, generation == identityCacheGeneration else { return }
+                if let index = groups.firstIndex(where: { $0.id == groupID }) { groups[index] = current }
+            } catch {
+                guard isCurrentAccount, generation == identityCacheGeneration else { return }
+                handle(error, jwt: jwt)
+                return
+            }
+        }
         async let feedTask: Void = refreshFeed(groupID: groupID)
         async let statsTask: Void = refreshStats(groupID: groupID)
         async let seriesTask: Void = refreshActivitySeries(groupID: groupID)
@@ -706,6 +736,64 @@ final class GroupModel: ObservableObject {
         activitySeries.removeAll()
         feedNextSince.removeAll()
         feedNextSinceID.removeAll()
+        await load()
+    }
+
+    // MARK: - Group safety
+
+    /// Drop every shared projection and fence earlier requests. Private history
+    /// and the activity outbox are separate and remain intact.
+    private func invalidateSharedGroups() {
+        identityCacheGeneration += 1
+        groups.removeAll()
+        feed.removeAll()
+        stats.removeAll()
+        activitySeries.removeAll()
+        feedNextSince.removeAll()
+        feedNextSinceID.removeAll()
+    }
+
+    func refreshGroupSafety() async throws {
+        guard let jwt = currentJWT else { throw APIError.http(401, "not_signed_in") }
+        let generation = identityCacheGeneration
+        groupSafety = nil
+        do {
+            let state: GroupSafetyState
+            if let groupSafetyLoader { state = try await groupSafetyLoader(jwt) }
+            else { state = try await api.getGroupSafety(jwt: jwt) }
+            guard isCurrentAccount, generation == identityCacheGeneration else { return }
+            groupSafety = state
+        } catch {
+            guard isCurrentAccount else { return }
+            handle(error, jwt: jwt)
+            throw error
+        }
+    }
+
+    func setGroupBlock(userID: String, active: Bool) async throws {
+        guard let jwt = currentJWT else { throw APIError.http(401, "not_signed_in") }
+        invalidateSharedGroups()
+        do {
+            if let groupBlockWriter { try await groupBlockWriter(userID, active, jwt) }
+            else { try await api.setGroupBlock(userID: userID, active: active, jwt: jwt) }
+        } catch {
+            guard isCurrentAccount else { return }
+            handle(error, jwt: jwt)
+            throw error
+        }
+        guard isCurrentAccount else { return }
+        invalidateSharedGroups()
+        // A failed refresh cannot turn an acknowledged block into a failed
+        // mutation. Retain empty projections until a later successful load.
+        await load()
+        try? await refreshGroupSafety()
+    }
+
+    func setSharingRestriction(userID: String, active: Bool, reason: GroupReportReason) async throws {
+        guard let jwt = currentJWT else { throw APIError.http(401, "not_signed_in") }
+        try await api.setSharingRestriction(userID: userID, active: active, reason: reason, jwt: jwt)
+        guard isCurrentAccount else { return }
+        invalidateSharedGroups()
         await load()
     }
 
