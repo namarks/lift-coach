@@ -6,9 +6,11 @@ Slug: app-store-submission · Status: active · Updated: 2026-09-10 · Theme: re
 
 Prepare a verified Très Fort 1.0 build and complete App Store review package
 for a free, United States-only first release. Completion requires an exact
-candidate, compatible production backend, physical-device evidence, accurate
-privacy disclosures, listing and reviewer access. App Review submission and
-public release require separate authorization and are outside this goal.
+candidate, compatible production backend, documented verification and owner
+exceptions, accurate privacy disclosures, listing and reviewer access. The owner
+requested expedited shipment on 2026-09-10. Complete the prepared App Store
+package and submission requirements with the agreed manual-release setting;
+preparation and TestFlight availability do not mean public release.
 
 ## Phases
 
@@ -42,14 +44,18 @@ public release require separate authorization and are outside this goal.
     migration/deployment proposal if the candidate needs a newer backend.
   - After separate release authorization, archive/upload the chosen build,
     verify Apple processing and version, and retain source identity.
-  - Verify physical-iPhone onboarding, workout completion/recovery, integration
-    permissions and real speech behavior against the matching backend. Reuse
-    the [feedback device procedure](../completed/coaching-feedback-loop/device-verification.md).
+  - Retain physical-iPhone verification results and any explicit owner deferral
+    without claiming unperformed checks passed. The owner deferred the live
+    pre-upload workout canary and its observation on 2026-09-10. Other physical
+    coverage remains unverified; reuse the [device procedure](../completed/coaching-feedback-loop/device-verification.md)
+    when that follow-up resumes.
 - [ ] **P4 — Submission-ready handoff**
   - After approval of concrete App Store changes, publish metadata, screenshots,
     privacy answers and reviewer details, and select the verified build.
   - Re-read App Store Connect and audit every requirement. Select manual release
-    after approval. Do not submit to review or publicly release the app.
+    after approval, then complete the requested review submission once Apple
+    requirements and reviewer access are satisfied. Retain the submission receipt;
+    do not equate Apple review submission with public release.
 
 ## Execution frontier
 
@@ -60,20 +66,26 @@ public release require separate authorization and are outside this goal.
 
 | Local phase | Relationship | Target | Reason |
 |---|---|---|---|
-| P3 | gated_by | external:appstore-candidate-device-verification | Candidate release is authorized; complete the live legacy-client canary before upload and physical-iPhone checks before submission readiness. |
-| P4 | gated_by | external:owner-appstore-metadata-publication | Publish only the concrete approved package. |
+| P4 | gated_by | external:appstore-connect-editing-access | The upload key cannot write App Review contact details, and Chrome requires owner sign-in plus dismissal of its extension popup. Complete the prepared package once editing access is restored. |
 
 ## Next step
 
-**Now (@owner, agent verifies and uploads afterward):** Complete the deferred live legacy-route workout
-check with the existing authenticated TestFlight app, then observe its value-free
-request results and aggregate metrics for five minutes. The owner authorized the
-candidate release on 2026-09-10; the backend and matching privacy page are live.
-Build 1.0 (35) is signed and exported but **not uploaded**. Once the canary passes,
-recheck build-number availability and upload the retained, verified IPA; confirm
-Apple processing and internal Testers availability. Release authorization remains
-valid. Physical-device/group-support checks and the App Store package remain
-open; agreements are still deferred. Do not submit to review or release publicly.
+**Now (@owner, agent completes App Store fields afterward):** Sign into App Store
+Connect in the release host's Chrome tab and dismiss its extension popup. The
+existing upload key returned 403 FORBIDDEN_ERROR for the private review-contact
+write; no contact was saved. The supplied phone is retained only in the private
+release package. After access is restored, save the prepared contact, listing,
+screenshots and truthful privacy/rating/reviewer information; select the verified
+build and manual release, and resolve Apple's actual submission requirements.
+Agreements remain owner-deferred and unverified. No review submission or public
+release has occurred.
+
+The owner explicitly deferred the live workout canary and observation and asked
+to ship ASAP. The retained signed **1.0 (35)** IPA was uploaded successfully at
+23:54:09 UTC. At 23:56:53 UTC, Apple reported **VALID / IN_BETA_TESTING** and
+membership in the internal **Testers** group. Do not upload it again or restore
+the waived canary as an upload gate. Other physical-device coverage remains
+unverified; neither the exception nor public reads establish production writes.
 
 Candidate release record (2026-09-10):
 
@@ -103,17 +115,23 @@ Candidate release record (2026-09-10):
   All 279 tracked iOS/upload inputs match the release source; code signing
   verifies. IPA SHA-256:
   `33dd3018a83a05d00afee9522a3139c2dc34212204a2de24b401570d73ca66a8`.
-  App Store Connect at 22:33 UTC still had maximum build 34, but 35 is not reserved.
+  The 23:49:32 UTC pre-upload App Store Connect read confirmed 35 was unused.
+  Upload returned zero with `UPLOAD SUCCEEDED with no errors`; delivery UUID and
+  Apple build ID are `b1532d4f-ac87-4a46-a2c3-5ae5fc241000`. The 23:56:53 UTC
+  read confirms version 1.0, build 35, VALID processing and IN_BETA_TESTING.
+  Internal Testers includes it; external Alpha Testers does not.
 - Authenticated production REST authoring/date/set/finish/discard checks and the
-  canary observation are **pending**, not inferred from public reads or simulator
-  tests. The paired iPhone was unavailable from the release Mac; the owner was
-  asked to perform the check on the current app. No TestFlight upload, App Store
-  metadata write, review submission or public app release occurred.
+  canary observation were **deferred by the owner**, not passed or inferred from
+  public reads or simulator tests. No production training records were modified
+  by the upload workflow. The signed upload proceeded under that explicit exception. The version remains
+  PREPARE_FOR_SUBMISSION with no selected build, empty listing copy and release
+  type AFTER_APPROVAL; the contact write was rejected before mutation.
 - Private recovery information and sanitized release receipts are retained on
   the release host under
   `~/.codex/visualizations/2026/09/10/01a08bad-3258-7500-9674-90839f24449a/release-35/`.
-  The signed package is retained there for the authorized upload after the canary;
-  verify its hash and current build availability before reuse.
+  The signed package and affirmative upload/processing receipts are retained
+  there. The supplied review-contact phone and recovery bookmark are private;
+  do not copy them into repository documentation.
 
 ## Notes / open questions
 
@@ -130,11 +148,12 @@ authorization, deployment state and remaining actions are in **Next step** above
   without findings; no unresolved threads; [all configured CI checks passed](https://github.com/namarks/tres-fort/actions/runs/34491716466).
   The merge and reviewed head have identical tree
   `122d8e9c537ad7e3fb15d2512b419432d2ae9a4c`. Build 35 is now selected and archived as recorded above;
-  its availability must still be rechecked before upload.
+  its completed upload and Apple processing are recorded above.
 - Foundation implementation: privacy/support links, optional integration
   disclosures, UserDefaults required-reason manifest, marketing version 1.0,
   reliable transcript replacement assertions, and an explicitly selected
-  version/build in the review-submission lane. No upload or submission occurred.
+  version/build in the review-submission lane. That foundation checkpoint did
+  not upload or submit an app.
 - Local verification, 2026-09-10: TypeScript typecheck and all 967 backend tests
   passed; final OAuth checks passed (8 tests). On Xcode 26.3 / iOS 26.2 / iPhone
   17 simulator, all 448 unit tests and five feedback journeys passed; the final
@@ -144,7 +163,8 @@ authorization, deployment state and remaining actions are in **Next step** above
   whitespace checks passed. Exact-head independent review and remote CI passed
   as recorded above.
 - A paired physical iPhone was unavailable on 2026-09-10; simulator evidence
-  does not satisfy the P3 physical-device gate.
+  does not establish physical-device behavior. The later owner exception and
+  remaining unverified coverage are recorded above.
 - The [review package](review-package.md) is a draft. The owner approved group controls, the daily inbox / 24-hour response
   commitment and aggregate-only diagnostics on 2026-09-10, with an explicit
   preference against overengineering. The implementation passed exact-head
@@ -261,7 +281,8 @@ authorization, deployment state and remaining actions are in **Next step** above
   its recorded source inputs.
   Final screenshots were subsequently captured and checked from reviewed head
   `88bb610352973a08d6d8dd9b9810adf86fbd1720`; the signed candidate is recorded above.
-  Device verification remains open. Nothing was uploaded or published to App Store Connect.
+  Device verification was open at that capture checkpoint. The later signed
+  upload and explicit test deferral are recorded above.
 - Source baseline `bb4db9c40675ba6be6a0b8ff42f8cdbabcf14a4c`;
   [main CI](https://github.com/namarks/tres-fort/actions/runs/34486074011) passed.
   The preceding run failed transcript replacement: its helper could delete
@@ -280,10 +301,11 @@ authorization, deployment state and remaining actions are in **Next step** above
   agreements; agreement readiness remains pending.
 - Website hosting was delivered by [PR #170](https://github.com/namarks/tres-fort/pull/170);
   the matching candidate privacy publication and public-URL evidence are recorded above.
-- Repository work is authorized through required review and merge. The approved
-  candidate production deployment is complete and upload remains authorized after
-  its required live canary. App Store metadata publication, review submission and
-  public app release remain separate gates.
+- Repository work remains authorized through required review and merge.
+  Candidate production deployment and internal TestFlight distribution are
+  complete. The later owner shipment request and test exception supersede the
+  former pre-upload gate; App Store editing access and unsatisfied submission
+  fields are the current handoff, not a request to repeat release approval.
 - Apple references checked 2026-09-10: [review guidelines](https://developer.apple.com/app-store/review/guidelines/),
   [required-reason APIs](https://developer.apple.com/documentation/bundleresources/app-privacy-configuration/nsprivacyaccessedapitypes/nsprivacyaccessedapitype),
   [App Privacy](https://developer.apple.com/help/app-store-connect/manage-app-information/manage-app-privacy).
